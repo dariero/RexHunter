@@ -126,9 +126,12 @@ Machine-enforced quality replaces team review, in two honest layers:
 `ruff check` + `ruff format --check` + `pyright` + `pytest`; any red aborts the push. Arm it
 once per clone: `git config core.hooksPath .githooks`. *It is bypassable with `--no-verify` –
 a convenience gate, not a wall.*
-- **Structural backstop** – GitHub branch protection on `main` requiring the CI check
-(`.github/workflows/ci.yml`). That is the layer `--no-verify` cannot skip. Local hook = speed;
-branch protection = the guarantee.
+- **Server-side protection** – GitHub branch protection on `main`: blocks force-pushes and
+deletion (admins included); CI (`.github/workflows/ci.yml`) runs on every push. Honest limit:
+required status checks gate PR *merges*, not direct pushes — a direct `git push` lands first and
+CI reports red *after*. Direct-to-main trades the hard pre-merge gate for speed: the pre-push hook
+makes red rare, CI makes it loud and fast; only a branch → required-check → merge flow makes red
+*structurally unable* to reach `main`.
 
 Never `--no-verify` into `main`. If the gate is red, the fix is green code, not a bypass.
 
