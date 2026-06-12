@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 .venv/
 
+# Packaging / build artifacts
+*.egg-info/
+.eggs/
+
 # OS
 .DS_Store
 

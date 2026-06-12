@@ -80,11 +80,11 @@ tests/               # mirrors src/, one failing test gate per stage
 ## Commands
 
 ```bash
-# Commands assume the project venv (./.venv) – activate it, or prefix each with .venv/bin/.
-ruff check . && ruff format .   # lint + format
-pyright                         # strict typecheck, whole project (reads [tool.pyright])
-pytest -q                       # all tests   ·   pytest tests/test_x.py -q   for one file
-uvicorn main:app --reload       # run the daemon (→ rexhunter.server:app after the src/ move)
+# Env is uv-managed (package=false app): `uv sync` once, then `uv run <cmd>` (or activate ./.venv).
+uv run ruff check . && uv run ruff format .   # lint + format
+uv run pyright                  # strict typecheck, whole project (reads [tool.pyright])
+uv run pytest -q                # all tests   ·   uv run pytest tests/test_x.py -q  for one file
+uv run uvicorn main:app --reload   # run the daemon (→ rexhunter.server:app after the src/ move)
 
 # verify the write-ahead log once Stage 1 creates it — expect: wal, then ok
 sqlite3 rexhunter.db 'PRAGMA journal_mode; PRAGMA integrity_check;'

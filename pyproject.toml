@@ -10,7 +10,7 @@ dependencies = [
     "pydantic>=2.13",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "ruff>=0.6",
     "pyright>=1.1.400",
@@ -19,20 +19,28 @@ dev = [
     # no separate pytest-anyio dependency is needed.
 ]
 
+[tool.uv]
+# RexHunter is an application, not a distributable package – uv manages the env and the
+# lockfile but never builds the project itself (no editable install, so no egg-info noise).
+package = false
+
 # Tooling config lives here so there is one source of truth (no scattered rc files).
 
 [tool.ruff]
 line-length = 100
-# target-version is inferred from requires-python.
+# target-version is inferred from requires-python (>=3.14).
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# E/F pycodestyle+pyflakes, I import-sort, UP pyupgrade, B bugbear,
+# ASYNC async-correctness (load-bearing for the hand-rolled loop), RUF Ruff-native.
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
 # main.py is the throwaway Hello World, replaced in Stage 1 – not worth strict-typing.
+# TODO(stage-1): drop the main.py exclude once the file is deleted.
 exclude = ["main.py", ".venv", "**/__pycache__"]
 
 [tool.pytest.ini_options]
