@@ -1,0 +1,39 @@
+[project]
+name = "rexhunter"
+version = "0.1.0"
+description = "Local-first autonomous job-hunting agent on a 'terrarium' model."
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.136",
+    "uvicorn>=0.49",
+    "aiosqlite>=0.20",   # Stage 1: the trajectory log driver
+    "pydantic>=2.13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest>=8",
+    # async tests use anyio's built-in pytest plugin (anyio ships with starlette);
+    # no separate pytest-anyio dependency is needed.
+]
+
+# Tooling config lives here so there is one source of truth (no scattered rc files).
+
+[tool.ruff]
+line-length = 100
+# target-version is inferred from requires-python.
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+strict = true
+# main.py is the throwaway Hello World, replaced in Stage 1 – not worth strict-typing.
+exclude = ['(^|/)main\.py$']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Async tests: mark with @pytest.mark.anyio; Stage 1 adds a conftest pinning
+# anyio_backend to "asyncio".

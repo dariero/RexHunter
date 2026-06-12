@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# OS
+.DS_Store
+
+# SQLite trajectory log
+*.db
+*.db-wal
+*.db-shm
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
