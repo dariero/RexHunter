@@ -30,10 +30,8 @@ if echo "$CMD" | grep -qiE 'linkedin\.com|seek\.com|indeed\.com'; then
   exit 2
 fi
 
-# --- No direct push to main -----------------------------------------------
-if echo "$CMD" | grep -qiE 'git[[:space:]]+push' && echo "$CMD" | grep -qiE '(^|[^a-z])(main|master)([^a-z]|$)'; then
-  echo "BLOCKED: no direct push to main/master. Work ships through a branch + PR." >&2
-  exit 2
-fi
+# NOTE: direct push to main is intentionally NOT blocked here. RexHunter is solo and
+# direct-to-main by design. Push safety lives one layer down, in the pre-push git hook
+# (.githooks/pre-push) — ruff + pyright + pytest must be green before a push leaves.
 
 exit 0

@@ -1,0 +1,24 @@
+# Structural backstop for the solo direct-to-main workflow: the check that
+# `git push --no-verify` cannot bypass. Pair with GitHub branch protection on
+# `main` requiring this job. NOTE: not run locally — verify on first push.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install ruff pyright pytest fastapi uvicorn aiosqlite pydantic
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pyright
+      - run: |
+          if ls tests/test_*.py >/dev/null 2>&1; then pytest -q; else echo "no tests yet"; fi

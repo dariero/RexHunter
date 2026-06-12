@@ -13,7 +13,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ruff>=0.6",
-    "mypy>=1.11",
+    "pyright>=1.1.400",
     "pytest>=8",
     # async tests use anyio's built-in pytest plugin (anyio ships with starlette);
     # no separate pytest-anyio dependency is needed.
@@ -28,10 +28,12 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
-[tool.mypy]
-strict = true
+[tool.pyright]
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
 # main.py is the throwaway Hello World, replaced in Stage 1 – not worth strict-typing.
-exclude = ['(^|/)main\.py$']
+exclude = ["main.py", ".venv", "**/__pycache__"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

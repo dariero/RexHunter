@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# pre-push — RexHunter solo CI/CD gate (the fast inner loop).
+# Runs the full local quality suite and aborts the push if anything is red.
+#
+# HONEST SCOPE: this is a LOCAL convenience gate. It catches red before it leaves
+# your machine, but it is bypassable (`git push --no-verify`) — it is NOT a
+# structural guarantee. The structural backstop is GitHub branch protection
+# requiring the CI check (.github/workflows/ci.yml) before `main` can update.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)" || exit 1
+cd "$ROOT" || exit 1
+VENV="$ROOT/.venv/bin"
+
+fail() { echo "❌ pre-push BLOCKED: $1 is red — fix it (don't --no-verify into main)." >&2; exit 1; }
+
+echo "pre-push gate → ruff · pyright · pytest"
+"$VENV/ruff" check . || fail "ruff lint"
+"$VENV/ruff" format --check . || fail "ruff format"
+"$VENV/pyright" || fail "pyright"
+if ls tests/test_*.py >/dev/null 2>&1; then
+  "$VENV/pytest" -q || fail "pytest"
+else
+  echo "  (no tests yet — pytest leg idle until Stage 1)"
+fi
+echo "✅ green — push allowed"
+exit 0

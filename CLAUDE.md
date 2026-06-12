@@ -53,8 +53,10 @@ upstream for verdicts/config.
 - **LLM (Stage 4):** provider-agnostic `brain()` – loop imports no vendor SDK. Native tool
 calling, constrained decoding where available, `ThinkingDelta` event relay, per-event
 cost accounting.
-- **Tooling:** `ruff` (lint + format), `mypy` (typecheck, strict), `pytest` (async tests via
+- **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict), `pytest` (async tests via
 anyio's built-in pytest plugin – no separate `pytest-anyio` dep). Pins + config in `pyproject.toml`.
+Pyright over mypy: a tie on correctness for our Pydantic v2 + aiosqlite stack (both clean, no
+plugin), but Pyright is the engine Cursor already runs – one type-truth in editor and gate.
 
 ## Project structure
 
@@ -79,11 +81,13 @@ tests/               # mirrors src/, one failing test gate per stage
 
 ```bash
 # Commands assume the project venv (./.venv) – activate it, or prefix each with .venv/bin/.
-pytest -q                  # run tests
-pytest tests/test_x.py -q  # a single file
-ruff check . && ruff format .
-mypy src/                  # strict typecheck; the typed package lands in Stage 1
-uvicorn main:app --reload  # run the daemon (→ rexhunter.server:app after the src/ move)
+ruff check . && ruff format .   # lint + format
+pyright                         # strict typecheck, whole project (reads [tool.pyright])
+pytest -q                       # all tests   ·   pytest tests/test_x.py -q   for one file
+uvicorn main:app --reload       # run the daemon (→ rexhunter.server:app after the src/ move)
+
+# verify the write-ahead log once Stage 1 creates it — expect: wal, then ok
+sqlite3 rexhunter.db 'PRAGMA journal_mode; PRAGMA integrity_check;'
 ```
 
 ## Build sequence – one stage at a time
@@ -112,6 +116,21 @@ architecture forks (anything hitting an ADR swap trigger – Postgres, external 
 multi-process, a new framework). Forks are ADR edits, not code edits.
 - **Push back with the invariant number** if I reach for a framework or shortcut that breaks
 a law (e.g. *"publishes before the commit – breaks invariant 1"*). Don't quietly comply.
+
+## Solo workflow – direct-to-main
+
+Solo engineer, no feature-branch / PR overhead – commit and push straight to `main`.
+Machine-enforced quality replaces team review, in two honest layers:
+
+- **Local pre-push gate** (`.githooks/pre-push`) – the fast inner loop. Every push runs
+`ruff check` + `ruff format --check` + `pyright` + `pytest`; any red aborts the push. Arm it
+once per clone: `git config core.hooksPath .githooks`. *It is bypassable with `--no-verify` –
+a convenience gate, not a wall.*
+- **Structural backstop** – GitHub branch protection on `main` requiring the CI check
+(`.github/workflows/ci.yml`). That is the layer `--no-verify` cannot skip. Local hook = speed;
+branch protection = the guarantee.
+
+Never `--no-verify` into `main`. If the gate is red, the fix is green code, not a bypass.
 
 ## Accepted limits – do not pre-solve
 
