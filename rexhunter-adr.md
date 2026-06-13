@@ -88,7 +88,7 @@ SQLite specifically: zero operational surface (no container, no port, no credent
 
 **PostgreSQL** adds a network hop, a running service, connection pooling, and migration ceremony to buy multi-process write concurrency the system does not have – there is exactly one writer process by design (invariant 7). The honest swap trigger: if RexHunter ever becomes multi-process (separate worker pool) or needs remote access, Postgres wins, and the repository layer exists so that swap touches one module. Until that trigger fires, Postgres is operational weight with no payoff.
 
-**Kafka-class systems** solve fan-out and offsets at a scale of thousands of consumers across machines. The Hello World prototype demonstrated that a consumer offset is an integer (`sent`) and is now a `WHERE id > ?` clause. Importing a distributed log to replace one indexed column is the definition of résumé-driven architecture.
+**Kafka-class systems** solve fan-out and offsets at a scale of thousands of consumers across machines. The Stage 0 prototype demonstrated that a consumer offset is an integer (`sent`) and is now a `WHERE id > ?` clause. Importing a distributed log to replace one indexed column is the definition of résumé-driven architecture.
 
 **Vector DBs as the trajectory store** misunderstand the queries. Trajectory access is ordered and exact ('events of run X in sequence', 'everything after id 412') – relational queries. Embeddings answer similarity questions, which trajectories never ask. A vector index may *later* join the system as a derived index over job postings (semantic dedupe, match scoring) – derived, rebuildable, never authoritative.
 
@@ -175,7 +175,7 @@ The data flow is fundamentally asymmetric: a continuous firehose downstream, occ
 
 **Long-polling.** Client holds a request open until data arrives, then immediately re-requests.
 
-**Short polling.** Client asks 'anything new?' on an interval. (The Hello World's internal generator effectively did this against a list.)
+**Short polling.** Client asks 'anything new?' on an interval. (The Stage 0 prototype's internal generator effectively did this against a list.)
 
 ### The Rejection (Why Not Chosen)
 
@@ -183,7 +183,7 @@ The data flow is fundamentally asymmetric: a continuous firehose downstream, occ
 
 **Long-polling** is SSE with extra connection churn and none of the cursor semantics – strictly dominated here.
 
-**Short polling** is acknowledged as the legitimate prototype fallback (it is how the Hello World's feed generator watched the list), but at terrarium timescales it forces a bad trade between latency and wasted wakeups, and the UI's 'consciousness stream' feel dies at any polite polling interval.
+**Short polling** is acknowledged as the legitimate prototype fallback (it is how the Stage 0 prototype's feed generator watched the list), but at terrarium timescales it forces a bad trade between latency and wasted wakeups, and the UI's 'consciousness stream' feel dies at any polite polling interval.
 
 **Accepted limit:** the in-process hub binds streaming to a single backend process. Horizontal scaling would require external pub/sub (e.g. Redis) between writer and SSE servers. The terrarium is single-user and single-process by design; this limit is accepted and documented rather than pre-solved.
 

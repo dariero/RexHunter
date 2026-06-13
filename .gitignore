@@ -17,5 +17,4 @@ __pycache__/
 
 # Tool caches
 .ruff_cache/
-.mypy_cache/
 .pytest_cache/

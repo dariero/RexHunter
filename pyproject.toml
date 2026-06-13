@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.136",
     "uvicorn>=0.49",
-    "aiosqlite>=0.20",   # Stage 1: the trajectory log driver
+    "aiosqlite>=0.20",   # Stage 1 trajectory-log driver
     "pydantic>=2.13",
 ]
 
@@ -15,35 +15,26 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.400",
     "pytest>=8",
-    # async tests use anyio's built-in pytest plugin (anyio ships with starlette);
-    # no separate pytest-anyio dependency is needed.
+    # Async tests use anyio's built-in pytest plugin (anyio ships with starlette);
+    # no pytest-anyio / pytest-asyncio dependency.
 ]
 
 [tool.uv]
-# RexHunter is an application, not a distributable package – uv manages the env and the
-# lockfile but never builds the project itself (no editable install, so no egg-info noise).
+# Application, not a distributable package: uv manages env + lockfile, never builds.
 package = false
-
-# Tooling config lives here so there is one source of truth (no scattered rc files).
 
 [tool.ruff]
 line-length = 100
-# target-version is inferred from requires-python (>=3.14).
 
 [tool.ruff.lint]
-# E/F pycodestyle+pyflakes, I import-sort, UP pyupgrade, B bugbear,
-# ASYNC async-correctness (load-bearing for the hand-rolled loop), RUF Ruff-native.
+# ASYNC rules are load-bearing for the hand-rolled agent loop.
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 
 [tool.pyright]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
-# main.py is the throwaway Hello World, replaced in Stage 1 – not worth strict-typing.
-# TODO(stage-1): drop the main.py exclude once the file is deleted.
-exclude = ["main.py", ".venv", "**/__pycache__"]
+exclude = [".venv", "**/__pycache__"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Async tests: mark with @pytest.mark.anyio; Stage 1 adds a conftest pinning
-# anyio_backend to "asyncio".
