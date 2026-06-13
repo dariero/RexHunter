@@ -8,8 +8,8 @@ promising postings into a pen for a human verdict. State is event-sourced – a 
 log is the single source of truth – and the frontend is a retro-game projection of that log:
 the agent's actual trajectory replayed as a creature moving through its world.
 
-> **Status: build-in-public, very early.** Today the daemon is a ~50-line prototype
-> (background loop + SSE feed + in-memory list). Stage 1 – the SQLite WAL log – is in progress.
+> **Status: build-in-public, early.** The daemon persists every event to the SQLite WAL log
+> (Stage 1 done, gate-tested). Stage 2 – the agent loop & tool harness – is next.
 
 ## Core constraints
 
@@ -54,8 +54,7 @@ Downstream is a firehose (SSE, `Last-Event-ID` resume); upstream is the occasion
 
 - **Python 3.14+ / asyncio** – one process, one event loop, no external services.
 - **FastAPI + uvicorn** – lifespan launches the background daemon; SSE + POST endpoints.
-- **SQLite + aiosqlite, WAL mode** – the trajectory store: one file, one writer, many readers
-  (lands in Stage 1).
+- **SQLite + aiosqlite, WAL mode** – the trajectory store: one file, one writer, many readers.
 - **Pydantic v2** – events are a discriminated union, validated at the network edge.
 - **Hand-rolled agent loop – no LangChain, no LangGraph.** The ~150-line loop, the tool
   contract, and the trajectory store *are* the point of this project; a framework would hide
@@ -67,13 +66,14 @@ Downstream is a firehose (SSE, `Last-Event-ID` resume); upstream is the occasion
 | Stage | What | Status |
 |---|---|---|
 | 0 | Prototype daemon – FastAPI lifespan + background loop + SSE feed + in-memory list | **Done** |
-| 1 | **Persistence** – in-memory list to SQLite WAL event log (`runs`, `trajectory_events`) | **In progress** |
+| 1 | **Persistence** – in-memory list to SQLite WAL event log (`runs`, `trajectory_events`) | **Done** |
 | 2 | Loop & tool harness – `@rex_tool` registry, validate then execute then append | Planned |
 | 3 | Durable pause & human-in-the-loop – `awaiting_verdict` rows, Feast / Release / Amber | Planned |
 | 4 | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | Planned |
 
-Stage gates are test-first. Stage 1's gate: `kill -9` mid-hunt → restart → every pre-kill
-event still queryable. Strict tooling, a green-gated pre-push hook, and CI are already wired.
+Stage gates are test-first. Stage 1's gate (`tests/test_stage1_gate.py`): a real hunt
+subprocess is `kill -9`ed mid-append; every confirmed event must survive the restart and the
+dangling run must be marked `'crashed'` at boot.
 
 ## Getting started
 
@@ -84,12 +84,12 @@ git clone https://github.com/dariero/RexHunter.git
 cd RexHunter
 uv sync                            # creates .venv, installs runtime + dev tools from uv.lock
 
-uv run uvicorn main:app --reload   # run the daemon → http://127.0.0.1:8000
+uv run uvicorn --app-dir src rexhunter.server:app --reload   # daemon → http://127.0.0.1:8000
 
 # quality gates
 uv run ruff check . && uv run ruff format --check .
 uv run pyright
-uv run pytest                      # no tests yet – Stage 1 writes the first
+uv run pytest                      # incl. the Stage 1 kill -9 crash-durability gate
 ```
 
 ## Full architecture

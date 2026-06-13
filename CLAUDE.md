@@ -83,9 +83,9 @@ tests/               # mirrors src/, one failing test gate per stage
 uv run ruff check . && uv run ruff format .   # lint + format
 uv run pyright                  # strict typecheck, whole project (reads [tool.pyright])
 uv run pytest -q                # all tests   ·   uv run pytest tests/test_x.py -q  for one file
-uv run uvicorn main:app --reload   # run the daemon (→ rexhunter.server:app after the src/ move)
+uv run uvicorn --app-dir src rexhunter.server:app --reload   # run the daemon
 
-# verify the write-ahead log once Stage 1 creates it — expect: wal, then ok
+# verify the write-ahead log — expect: wal, then ok
 sqlite3 rexhunter.db 'PRAGMA journal_mode; PRAGMA integrity_check;'
 ```
 
@@ -94,11 +94,11 @@ sqlite3 rexhunter.db 'PRAGMA journal_mode; PRAGMA integrity_check;'
 Dependency-ordered from the Stage 0 prototype (FastAPI + loop + SSE + in-memory list). **Do not
 start Stage N+1 until Stage N's gate is green.** Gates are in the ADR's Definition-of-done.
 
-- **▶ Stage 1 – Persistence (CURRENT).** In-memory list → SQLite WAL log.
-  *Gate:* `kill -9` mid-hunt → restart → all pre-kill events queryable; dangling
-  `outcome IS NULL` runs marked `'crashed'` at boot.
-- **Stage 2 – Loop & tool harness.** `@rex_tool` registry, validate→execute→append,
-  retryable-vs-fatal taxonomy.
+- **Stage 1 – Persistence (DONE).** In-memory list → SQLite WAL log.
+  *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
+  events queryable; dangling `outcome IS NULL` runs marked `'crashed'` at boot.
+- **▶ Stage 2 – Loop & tool harness (CURRENT).** `@rex_tool` registry,
+  validate→execute→append, retryable-vs-fatal taxonomy.
 - **Stage 3 – Durable pause & HITL.** `awaiting_verdict` rows, Feast/Release/Amber machine.
 - **Stage 4 – Brain socket.** `brain()`, native tool calling, thinking-delta relay.
 

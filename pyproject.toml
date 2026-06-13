@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.136",
     "uvicorn>=0.49",
-    "aiosqlite>=0.20",   # Stage 1 trajectory-log driver
+    "aiosqlite>=0.20",
     "pydantic>=2.13",
 ]
 
@@ -34,7 +34,9 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+extraPaths = ["src"]
 exclude = [".venv", "**/__pycache__"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
