@@ -4,30 +4,29 @@ version = "0.1.0"
 description = "Local-first autonomous job-hunting agent on a 'terrarium' model."
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.136",
+    "fastapi>=0.137",
     "uvicorn>=0.49",
-    "aiosqlite>=0.20",
+    "aiosqlite>=0.22",
     "pydantic>=2.13",
 ]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.6",
-    "pyright>=1.1.400",
-    "pytest>=8",
-    # Async tests use anyio's built-in pytest plugin (anyio ships with starlette);
-    # no pytest-anyio / pytest-asyncio dependency.
+    "ruff>=0.15",
+    "pyright>=1.1.410",
+    "pytest>=9.1",
+    # Async tests via anyio's pytest plugin (ships with starlette); no extra dep.
 ]
 
 [tool.uv]
-# Application, not a distributable package: uv manages env + lockfile, never builds.
+# App, not a package: uv owns env + lock, never builds.
 package = false
 
 [tool.ruff]
 line-length = 100
 
 [tool.ruff.lint]
-# ASYNC rules are load-bearing for the hand-rolled agent loop.
+# ASYNC: guards the hand-rolled async loop.
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 
 [tool.pyright]
