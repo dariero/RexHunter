@@ -101,11 +101,18 @@ start Stage N+1 until Stage N's gate is green.** Gates are in the ADR's Definiti
   events queryable; dangling `outcome IS NULL` runs marked `'crashed'` at boot.
 - **▶ Stage 2 – Loop & tool harness (CURRENT).** `@rex_tool` registry,
   validate→execute→append, retryable-vs-fatal taxonomy.
+  *Sub-slice done:* typed Pydantic event model (`events.py`: `SniffEvent`, the
+  `TrajectoryEvent` union, `decode_event`) + the read/write validation boundary
+  (`db.py` typed `append_event` / `read_events`), gated by `tests/test_events.py`.
+  *Remaining (▶ stays here):* the agent loop, the `@rex_tool` harness, the error
+  taxonomy — and the ADR's DoD #2 loop gate (tool raises / hangs past timeout /
+  unknown tool name → typed events, never an unhandled escape).
 - **Stage 3 – Durable pause & HITL.** `awaiting_verdict` rows, Feast/Release/Amber machine.
 - **Stage 4 – Brain socket.** `brain()`, native tool calling, thinking-delta relay.
 
-`payload` stays a raw string until Stage 2. Don't introduce event types or the LLM loop
-early.
+`payload` is a typed event union as of the Stage 2 event-model slice (`events.py`). Don't
+introduce the agent loop, the `@rex_tool` harness, or the LLM `brain()` early — those are
+later Stage-2 / Stage-4 slices.
 
 ## How to work with me
 

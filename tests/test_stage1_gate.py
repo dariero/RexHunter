@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from rexhunter import db
+from rexhunter.events import decode_event
 
 pytestmark = pytest.mark.anyio
 
@@ -26,6 +27,7 @@ import asyncio
 import sys
 
 from rexhunter import db
+from rexhunter.events import SniffEvent
 
 
 async def hunt(db_path: str) -> None:
@@ -34,7 +36,7 @@ async def hunt(db_path: str) -> None:
     print(run_id, flush=True)
     seq = 0
     while True:
-        event_id = await db.append_event(conn, run_id, type="sniff", payload=f"prey-{seq}")
+        event_id = await db.append_event(conn, run_id, SniffEvent(prey=f"prey-{seq}"))
         print(event_id, flush=True)
         seq += 1
 
@@ -79,12 +81,13 @@ async def test_pre_kill_events_survive_restart(killed_hunt: KilledHunt) -> None:
 
         ids = [int(row[0]) for row in rows]
         seqs = [int(row[1]) for row in rows]
-        payloads = [str(row[2]) for row in rows]
+        # payload is now typed JSON; decode through the read boundary and read .prey.
+        preys = [decode_event(str(row[2])).prey for row in rows]
 
         assert len(rows) >= CONFIRMED_APPENDS
         assert set(confirmed) <= set(ids)  # every confirmed append survived the kill
         assert seqs == list(range(len(rows)))  # per-run replay cursor is gapless and ordered
-        assert payloads[:CONFIRMED_APPENDS] == [f"prey-{i}" for i in range(CONFIRMED_APPENDS)]
+        assert preys[:CONFIRMED_APPENDS] == [f"prey-{i}" for i in range(CONFIRMED_APPENDS)]
     finally:
         await conn.close()
 

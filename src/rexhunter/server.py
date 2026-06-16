@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from rexhunter import db
+from rexhunter.events import SniffEvent
 
 DB_PATH = os.environ.get("REXHUNTER_DB", "rexhunter.db")
 SNIFF_INTERVAL = 5.0
@@ -26,9 +27,7 @@ async def rex_loop(conn: aiosqlite.Connection) -> None:
         while True:
             await asyncio.sleep(SNIFF_INTERVAL)
             prey = random.choice(["AI Engineer", "ML Platform Eng", "Eval Engineer"])
-            await db.append_event(
-                conn, run_id, type="sniff", payload=f"Rex sniffs the air... fresh {prey} scent!"
-            )
+            await db.append_event(conn, run_id, SniffEvent(prey=prey))
     except asyncio.CancelledError:
         await db.finish_run(conn, run_id, outcome="aborted", abort_reason="daemon shutdown")
         raise

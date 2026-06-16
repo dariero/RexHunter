@@ -209,6 +209,9 @@ A few things to unpack, SQL and Python both:
 - **`*` in the Python signature** (`async def append_event(conn, run_id, *, type, payload)`)
   makes everything after it keyword-only: callers must write `type="sniff",
   payload="…"` – impossible to swap them by accident, since both are strings.
+  *(Stage 2 update: those raw `type`/`payload` strings became a single typed
+  `event: TrajectoryEvent`; the keyword-only `*` is gone – the type system now prevents
+  the swap this guarded against.)*
 - **`cursor.lastrowid`** is how SQLite tells us which global `id` it just assigned – the
   function returns it so a future caller (the broadcast hub) can publish it.
 
@@ -221,7 +224,7 @@ Invariant 1 says: **commit to the log first, tell the world second.**
 A **commit** is the database's "make it permanent" moment. Writes inside a transaction
 are provisional – invisible to every other connection and discarded on a crash – until
 `commit()` returns; after it returns, the data is on disk and will survive `kill -9`.
-Here is the exact line, in `append_event` (`src/rexhunter/db.py:71`):
+Here is the exact line, in `append_event` (`src/rexhunter/db.py:80`):
 
 ```python
     cursor = await conn.execute(...)   # the INSERT - provisional

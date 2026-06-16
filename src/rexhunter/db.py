@@ -1,7 +1,9 @@
 """SQLite write-ahead trajectory log (ADR pillar 1).
 
 Commit before publish (invariant 1); single writer per run (invariant 7);
-events append-only and immutable. `payload` stays a raw string until Stage 2.
+events append-only and immutable. `payload` is a typed trajectory event
+(see events.py) serialised to JSON; reads cross the validation boundary
+(invariant 3) via read_events -> events.decode_event.
 """
 
 import uuid
@@ -9,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
+
+from rexhunter import events
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -58,7 +62,12 @@ async def start_run(conn: aiosqlite.Connection, *, territory: str) -> str:
     return run_id
 
 
-async def append_event(conn: aiosqlite.Connection, run_id: str, *, type: str, payload: str) -> int:
+async def append_event(
+    conn: aiosqlite.Connection, run_id: str, event: events.TrajectoryEvent
+) -> int:
+    # The event is already typed (validated at construction) - serialising it OUT is not a
+    # boundary crossing. model_dump_json() fills the payload column; event.type mirrors the
+    # discriminator into the type column for SQL-side filtering.
     # seq is assigned inside the INSERT itself: the per-run cursor cannot race or gap.
     cursor = await conn.execute(
         """
@@ -66,13 +75,27 @@ async def append_event(conn: aiosqlite.Connection, run_id: str, *, type: str, pa
         SELECT ?, COALESCE(MAX(seq) + 1, 0), ?, ?, ?
         FROM trajectory_events WHERE run_id = ?
         """,
-        (run_id, type, payload, _utcnow(), run_id),
+        (run_id, event.type, event.model_dump_json(), _utcnow(), run_id),
     )
     await conn.commit()
     event_id = cursor.lastrowid
     if event_id is None:  # pragma: no cover - an INSERT always sets a rowid
         raise RuntimeError("append_event: INSERT returned no rowid")
     return event_id
+
+
+async def read_events(conn: aiosqlite.Connection, run_id: str) -> list[events.TrajectoryEvent]:
+    """Per-run replay read, routed through the validation boundary (invariant 3).
+
+    Every stored payload crosses events.decode_event here; a corrupt or stale row raises
+    rather than leaking an untyped string into the system. Ordered by the per-run `seq`
+    cursor - the ghost-replay ordering.
+    """
+    async with conn.execute(
+        "SELECT payload FROM trajectory_events WHERE run_id = ? ORDER BY seq", (run_id,)
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [events.decode_event(str(row[0])) for row in rows]
 
 
 async def finish_run(
