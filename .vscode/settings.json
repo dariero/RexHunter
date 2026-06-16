@@ -1,0 +1,7 @@
+{
+  // Point Cursor / VS Code at the venv OUTSIDE iCloud. The in-repo ./.venv is a symlink
+  // to it; this stops the editor from ever recreating a real .venv in the iCloud-synced
+  // folder (which iCloud silently corrupts — metadata kept, payloads evicted).
+  // See scripts/setup-venv.sh.
+  "python.defaultInterpreterPath": "/Users/darliro/.venvs/rexhunter/bin/python"
+}

@@ -79,7 +79,9 @@ tests/               # mirrors src/, one failing test gate per stage
 ## Commands
 
 ```bash
-# Env is uv-managed (package=false app): `uv sync` once, then `uv run <cmd>`.
+# Env is uv-managed (package=false app). The real venv lives at ~/.venvs/rexhunter —
+# OUTSIDE iCloud, which silently corrupts an in-repo .venv; ./.venv is a symlink to it.
+# First-time setup, or to heal a lost symlink:  bash scripts/setup-venv.sh   (then `uv run`).
 uv run ruff check . && uv run ruff format .   # lint + format
 uv run pyright                  # strict typecheck, whole project (reads [tool.pyright])
 uv run pytest -q                # all tests   ·   uv run pytest tests/test_x.py -q  for one file

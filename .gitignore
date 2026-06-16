@@ -1,7 +1,10 @@
 # Python
 __pycache__/
 *.py[cod]
-.venv/
+# venv: a symlink to the external venv at ~/.venvs/rexhunter (see scripts/setup-venv.sh).
+# Bare `.venv` (no trailing slash) so the *symlink* is ignored too — `.venv/` only matches
+# a real directory and would let git commit the (machine-specific, CI-breaking) symlink.
+.venv
 
 # Packaging / build artifacts
 *.egg-info/

@@ -8,7 +8,7 @@ INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 [[ -z "$FILE" || ! -f "$FILE" ]] && exit 0
 
-RUFF=".venv/bin/ruff"
+RUFF="$HOME/.venvs/rexhunter/bin/ruff"  # venv lives outside iCloud — see scripts/setup-venv.sh
 [[ -x "$RUFF" ]] || exit 0   # no formatter installed yet → no-op, not an error
 
 case "$FILE" in

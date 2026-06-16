@@ -12,7 +12,9 @@ set -uo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)" || exit 1
 cd "$ROOT" || exit 1
-VENV="$ROOT/.venv/bin"
+# Tools live in the venv OUTSIDE iCloud (./.venv is a symlink to it); referencing the real
+# path keeps the gate working even if the symlink is disturbed. See scripts/setup-venv.sh.
+VENV="$HOME/.venvs/rexhunter/bin"
 
 fail() { echo "❌ pre-push BLOCKED: $1 is red — fix it (don't --no-verify into main)." >&2; exit 1; }
 

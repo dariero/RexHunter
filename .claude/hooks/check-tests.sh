@@ -16,7 +16,7 @@ if [[ "$(echo "$INPUT" | jq -r '.stop_hook_active')" == "true" ]]; then
   exit 0
 fi
 
-PYTEST=".venv/bin/pytest"
+PYTEST="$HOME/.venvs/rexhunter/bin/pytest"  # venv lives outside iCloud — see scripts/setup-venv.sh
 
 # No runner yet, or no tests yet → nothing to gate on. This is a SKIP, not a "red".
 [[ -x "$PYTEST" ]] || exit 0
