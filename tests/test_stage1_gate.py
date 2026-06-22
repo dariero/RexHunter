@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from rexhunter import db
-from rexhunter.events import decode_event
+from rexhunter.events import SniffEvent, decode_event
 
 pytestmark = pytest.mark.anyio
 
@@ -81,8 +81,11 @@ async def test_pre_kill_events_survive_restart(killed_hunt: KilledHunt) -> None:
 
         ids = [int(row[0]) for row in rows]
         seqs = [int(row[1]) for row in rows]
-        # payload is now typed JSON; decode through the read boundary and read .prey.
-        preys = [decode_event(str(row[2])).prey for row in rows]
+        # payload is now typed JSON; decode through the read boundary. The union widened in
+        # P2.2, but this P1 hunt writes only SniffEvents - narrow before reading .prey.
+        decoded = [decode_event(str(row[2])) for row in rows]
+        assert all(isinstance(e, SniffEvent) for e in decoded)
+        preys = [e.prey for e in decoded if isinstance(e, SniffEvent)]
 
         assert len(rows) >= CONFIRMED_APPENDS
         assert set(confirmed) <= set(ids)  # every confirmed append survived the kill
