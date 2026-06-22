@@ -100,7 +100,7 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position:** `P2.1` ✅ → **`P2.2` ▶ next** (gate: ADR DoD #2).
+**Current position:** `P2.2` ✅ → **`P2.3` ▶ next** (gate: DoD #2 under concurrency, invariant 7).
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -108,20 +108,22 @@ slice's gate (ADR Definition-of-done) is green.
 - **`P2.1` · Typed events — ✅ done.** `events.py` (`SniffEvent`, the `TrajectoryEvent`
   union, `decode_event`) + the read/write validation boundary (`db.py` typed
   `append_event` / `read_events`). *Gate (green):* `tests/test_events.py`.
-- **▶ `P2.2` · Loop & tool harness — next.** `@rex_tool` registry,
-  validate→execute→append, retryable-vs-fatal taxonomy. *Gate:* ADR **DoD #2** (tool raises /
-  hangs past timeout / unknown tool name → typed events, never an unhandled escape).
-- **`P2.3` · Hunt scheduler.** Concurrent-hunt task group + per-territory deadlines — one
-  slice bundling two concerns (see ADR), a candidate to split when built. *Gate:* DoD #2
+- **`P2.2` · Loop & tool harness — ✅ done.** Hand-rolled `run_hunt` loop, `@rex_tool`
+  registry (one signature → schema + validator + handler), retryable-vs-fatal taxonomy with
+  per-tool timeout + retry budget; stub brain (no LLM, no spend). *Gate (green,
+  `tests/test_stage2_gate.py`):* a tool that raises / hangs past timeout / an unknown tool
+  name → typed events + clean outcome, never an unhandled escape (ADR **DoD #2**).
+- **▶ `P2.3` · Hunt scheduler — next.** Concurrent-hunt task group + per-territory deadlines —
+  one slice bundling two concerns (see ADR), a candidate to split when built. *Gate:* DoD #2
   under concurrency (invariant 7).
 - **`P4` · Durable pause & HITL.** `awaiting_verdict` rows, Feast/Release/Amber machine.
 - **`P5` · Brain socket.** `brain()`, native tool calling, thinking-delta relay (paid).
 - **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
   SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
 
-`payload` is a typed event union as of `P2.1` (`events.py`). Don't introduce the agent loop,
-the `@rex_tool` harness, or the LLM `brain()` early — the loop/harness is `P2.2`, `brain()`
-is `P5`.
+`payload` is a typed event union (`events.py`); the agent loop & `@rex_tool` harness landed in
+`P2.2` (`loop.py`, `tools/`). The brain is still a **stub** — don't introduce the LLM
+`brain()` early; it's `P5` (paid), and the loop stays free until then.
 
 ## How to work with me
 

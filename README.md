@@ -8,9 +8,10 @@ promising postings into a pen for a human verdict. State is event-sourced – a 
 log is the single source of truth – and the frontend is a retro-game projection of that log:
 the agent's actual trajectory replayed as a creature moving through its world.
 
-> **Status: build-in-public, early.** Persistence (`P1`) and the typed event model + validation
-> boundary (`P2.1`) are done and gate-tested; the agent loop & tool harness (`P2.2`) is next.
-> Slice IDs, order, and gates live in the [ADR](rexhunter-adr.md#build-sequence-canonical).
+> **Status: build-in-public, early.** Persistence (`P1`), the typed event model + validation
+> boundary (`P2.1`), and the hand-rolled agent loop + `@rex_tool` harness (`P2.2`) are done and
+> gate-tested; the hunt scheduler (`P2.3`) is next. Slice IDs, order, and gates live in the
+> [ADR](rexhunter-adr.md#build-sequence-canonical).
 
 ## Core constraints
 
@@ -73,15 +74,17 @@ ADR owns the order and gates; this table tracks only status. Slices are named by
 | Baseline | Prototype daemon – FastAPI lifespan + loop + SSE + in-memory list | – | **Done** |
 | `P1` | **Persistence** – in-memory list → SQLite WAL event log (`runs`, `trajectory_events`) | 1 | **Done** |
 | `P2.1` | **Typed events** – discriminated-union model + validation boundary (`events.py`) | 2 | **Done** |
-| `P2.2` | Loop & tool harness – `@rex_tool` registry, validate → execute → append | 2 | **Next** |
-| `P2.3` | Hunt scheduler – concurrent-hunt task group + per-territory deadlines | 2 | Planned |
+| `P2.2` | **Loop & tool harness** – `@rex_tool` registry, validate → execute → append, error taxonomy | 2 | **Done** |
+| `P2.3` | Hunt scheduler – concurrent-hunt task group + per-territory deadlines | 2 | **Next** |
 | `P4` | Durable pause & HITL – `awaiting_verdict` rows, Feast / Release / Amber | 4 | Planned |
 | `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | Planned |
 | `P3` | Streaming hub – per-viewer queues, `Last-Event-ID` resume | 3 | Inherited; hub deferred |
 
 Gates are test-first and defined in the ADR. `P1`'s gate (`tests/test_stage1_gate.py`): a real
 hunt subprocess is `kill -9`ed mid-append; every confirmed event must survive the restart and the
-dangling run must be marked `'crashed'` at boot.
+dangling run must be marked `'crashed'` at boot. `P2.2`'s gate (`tests/test_stage2_gate.py`): a
+tool that raises, one that hangs past its timeout, and a stub brain naming an unknown tool each
+produce typed events and a clean run outcome — never an unhandled exception escaping the loop.
 
 ## Getting started
 

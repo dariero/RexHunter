@@ -121,6 +121,8 @@ Tools are plain async Python functions registered through a `@rex_tool` decorato
 
 The harness owns an explicit error taxonomy: retryable (network blips, 429s, transient 5xx) versus fatal (validation failures, unknown tools, budget exhaustion), with per-tool timeout and retry budgets. Every transition – plan, dispatch, result, retry, damage, abort – is appended as a typed event before anything else happens (invariant 1). Concurrent hunts run inside a bounded task group; a hung tool is cancelled at its deadline and recorded, never silently awaited forever.
 
+> **Reconciliation note (logged in `P2.2`): terminal decisions and events.** The pseudocode above ends `HuntComplete` / `NeedsHelp` *without* appending an event, recording the outcome on `runs.outcome` (a transactionally-maintained companion, invariant 2) — matching Pillar 1's pattern of closing runs through the `runs` table. Pillar 4's prose, however, says "the hunt logs `HuntCompleted` and exits cleanly," implying a terminal *event*. These disagree. `P2.2` ships the **no-event** form (terminal decisions touch only `runs.outcome`; `NeedsHelp → outcome="needs_help"`, which collapses to `aborted` trivially later). Whether terminal decisions should *also* emit an event is deferred to `P4`, when the verdict/pen machinery lands and can settle it; this ADR should be made internally consistent at that point.
+
 ### The Justification (The Why)
 
 Two reasons, one practical and one strategic.
