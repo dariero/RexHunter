@@ -40,7 +40,7 @@ the ADR.
 
 - **Runtime:** Python 3.14+, `asyncio`.
 - **Web/host:** FastAPI (lifespan-launched background daemon + SSE endpoints). Inherited
-  from the Stage 0 prototype; not named in the ADR.
+  from the prototype baseline; not named in the ADR.
 - **Persistence:** SQLite single file, `aiosqlite`, WAL + `busy_timeout=5000`. Core tables
   `runs` + `trajectory_events`, dual cursor: global `id` (SSE stream) + per-run `seq` (ghost
   replay). Append-only, immutable.
@@ -50,7 +50,7 @@ the ADR.
   typed signature (one definition = schema + validator + handler). **No agent framework.**
 - **Transport:** SSE downstream (`EventSource`, `Last-Event-ID` resume); plain HTTP POST
   upstream for verdicts/config.
-- **LLM (Stage 4):** provider-agnostic `brain()` – loop imports no vendor SDK. Native tool
+- **LLM (`P5`):** provider-agnostic `brain()` – loop imports no vendor SDK. Native tool
   calling, constrained decoding where available, `ThinkingDelta` event relay, per-event
   cost accounting.
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
@@ -63,17 +63,17 @@ Emerges over the stages; target shape:
 
 ```
 src/rexhunter/
-├── db.py            # connect(), schema bootstrap, start_run, append_event   ← Stage 1
-├── events.py        # Pydantic discriminated-union event types               ← Stage 2
-├── hub.py           # in-process broadcast hub (per-viewer queues)
-├── loop.py          # hand-rolled plan→tool→observe agent loop               ← Stage 2
-├── tools/           # @rex_tool registry + tool handlers                     ← Stage 2
-├── verdicts.py      # awaiting_verdict state machine, park-and-persist       ← Stage 3
-├── brain.py         # provider-agnostic LLM socket                           ← Stage 4
-├── scheduler.py     # per-territory deadline scheduler                       ← polish
+├── db.py            # connect(), schema bootstrap, start_run, append_event   ← P1
+├── events.py        # Pydantic discriminated-union event types               ← P2.1
+├── hub.py           # in-process broadcast hub (per-viewer queues)           ← P3
+├── loop.py          # hand-rolled plan→tool→observe agent loop               ← P2.2
+├── tools/           # @rex_tool registry + tool handlers                     ← P2.2
+├── verdicts.py      # awaiting_verdict state machine, park-and-persist       ← P4
+├── brain.py         # provider-agnostic LLM socket                           ← P5
+├── scheduler.py     # per-territory deadline scheduler                       ← P2.3
 ├── server.py        # FastAPI app: lifespan, SSE feed, POST endpoints
 └── board/           # mock job board (gym) + live Greenhouse/Lever adapters
-tests/               # mirrors src/, one failing test gate per stage
+tests/               # mirrors src/, one gate per slice
 ```
 
 ## Commands
@@ -91,28 +91,37 @@ uv run uvicorn --app-dir src rexhunter.server:app --reload   # run the daemon
 sqlite3 rexhunter.db 'PRAGMA journal_mode; PRAGMA integrity_check;'
 ```
 
-## Build sequence – one stage at a time
+## Build sequence
 
-Dependency-ordered from the Stage 0 prototype (FastAPI + loop + SSE + in-memory list). **Do not
-start Stage N+1 until Stage N's gate is green.** Gates are in the ADR's Definition-of-done.
+Canonical order + gates live in **`rexhunter-adr.md` § Build sequence** (the one place).
+"What's next" resolves across two files — the ADR gives the order, this section gives the
+current position; this is the entry point, not a one-file answer. Slices are named by
+**slice-ID** (`P<pillar>`) only — *never by a build-order number* (a bare "3" collides with
+`P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
+slice's gate (ADR Definition-of-done) is green.
 
-- **Stage 1 – Persistence (DONE).** In-memory list → SQLite WAL log.
+**Current position:** `P2.1` ✅ → **`P2.2` ▶ next** (gate: ADR DoD #2).
+
+- **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
   events queryable; dangling `outcome IS NULL` runs marked `'crashed'` at boot.
-- **▶ Stage 2 – Loop & tool harness (CURRENT).** `@rex_tool` registry,
-  validate→execute→append, retryable-vs-fatal taxonomy.
-  *Sub-slice done:* typed Pydantic event model (`events.py`: `SniffEvent`, the
-  `TrajectoryEvent` union, `decode_event`) + the read/write validation boundary
-  (`db.py` typed `append_event` / `read_events`), gated by `tests/test_events.py`.
-  *Remaining (▶ stays here):* the agent loop, the `@rex_tool` harness, the error
-  taxonomy — and the ADR's DoD #2 loop gate (tool raises / hangs past timeout /
-  unknown tool name → typed events, never an unhandled escape).
-- **Stage 3 – Durable pause & HITL.** `awaiting_verdict` rows, Feast/Release/Amber machine.
-- **Stage 4 – Brain socket.** `brain()`, native tool calling, thinking-delta relay.
+- **`P2.1` · Typed events — ✅ done.** `events.py` (`SniffEvent`, the `TrajectoryEvent`
+  union, `decode_event`) + the read/write validation boundary (`db.py` typed
+  `append_event` / `read_events`). *Gate (green):* `tests/test_events.py`.
+- **▶ `P2.2` · Loop & tool harness — next.** `@rex_tool` registry,
+  validate→execute→append, retryable-vs-fatal taxonomy. *Gate:* ADR **DoD #2** (tool raises /
+  hangs past timeout / unknown tool name → typed events, never an unhandled escape).
+- **`P2.3` · Hunt scheduler.** Concurrent-hunt task group + per-territory deadlines — one
+  slice bundling two concerns (see ADR), a candidate to split when built. *Gate:* DoD #2
+  under concurrency (invariant 7).
+- **`P4` · Durable pause & HITL.** `awaiting_verdict` rows, Feast/Release/Amber machine.
+- **`P5` · Brain socket.** `brain()`, native tool calling, thinking-delta relay (paid).
+- **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
+  SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
 
-`payload` is a typed event union as of the Stage 2 event-model slice (`events.py`). Don't
-introduce the agent loop, the `@rex_tool` harness, or the LLM `brain()` early — those are
-later Stage-2 / Stage-4 slices.
+`payload` is a typed event union as of `P2.1` (`events.py`). Don't introduce the agent loop,
+the `@rex_tool` harness, or the LLM `brain()` early — the loop/harness is `P2.2`, `brain()`
+is `P5`.
 
 ## How to work with me
 

@@ -8,8 +8,9 @@ promising postings into a pen for a human verdict. State is event-sourced – a 
 log is the single source of truth – and the frontend is a retro-game projection of that log:
 the agent's actual trajectory replayed as a creature moving through its world.
 
-> **Status: build-in-public, early.** The daemon persists every event to the SQLite WAL log
-> (Stage 1 done, gate-tested). Stage 2 – the agent loop & tool harness – is next.
+> **Status: build-in-public, early.** Persistence (`P1`) and the typed event model + validation
+> boundary (`P2.1`) are done and gate-tested; the agent loop & tool harness (`P2.2`) is next.
+> Slice IDs, order, and gates live in the [ADR](rexhunter-adr.md#build-sequence-canonical).
 
 ## Core constraints
 
@@ -63,16 +64,23 @@ Downstream is a firehose (SSE, `Last-Event-ID` resume); upstream is the occasion
 
 ## Build status
 
-| Stage | What | Status |
-|---|---|---|
-| 0 | Prototype daemon – FastAPI lifespan + background loop + SSE feed + in-memory list | **Done** |
-| 1 | **Persistence** – in-memory list to SQLite WAL event log (`runs`, `trajectory_events`) | **Done** |
-| 2 | Loop & tool harness – `@rex_tool` registry, validate then execute then append | Planned |
-| 3 | Durable pause & human-in-the-loop – `awaiting_verdict` rows, Feast / Release / Amber | Planned |
-| 4 | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | Planned |
+Status projection of the [ADR build sequence](rexhunter-adr.md#build-sequence-canonical) – the
+ADR owns the order and gates; this table tracks only status. Slices are named by **slice-ID**
+(`P<n>`, pillar-keyed), never a build-order number.
 
-Stage gates are test-first. Stage 1's gate (`tests/test_stage1_gate.py`): a real hunt
-subprocess is `kill -9`ed mid-append; every confirmed event must survive the restart and the
+| Slice | What | Pillar | Status |
+|---|---|---|---|
+| Baseline | Prototype daemon – FastAPI lifespan + loop + SSE + in-memory list | – | **Done** |
+| `P1` | **Persistence** – in-memory list → SQLite WAL event log (`runs`, `trajectory_events`) | 1 | **Done** |
+| `P2.1` | **Typed events** – discriminated-union model + validation boundary (`events.py`) | 2 | **Done** |
+| `P2.2` | Loop & tool harness – `@rex_tool` registry, validate → execute → append | 2 | **Next** |
+| `P2.3` | Hunt scheduler – concurrent-hunt task group + per-territory deadlines | 2 | Planned |
+| `P4` | Durable pause & HITL – `awaiting_verdict` rows, Feast / Release / Amber | 4 | Planned |
+| `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | Planned |
+| `P3` | Streaming hub – per-viewer queues, `Last-Event-ID` resume | 3 | Inherited; hub deferred |
+
+Gates are test-first and defined in the ADR. `P1`'s gate (`tests/test_stage1_gate.py`): a real
+hunt subprocess is `kill -9`ed mid-append; every confirmed event must survive the restart and the
 dangling run must be marked `'crashed'` at boot.
 
 ## Getting started
@@ -89,7 +97,7 @@ uv run uvicorn --app-dir src rexhunter.server:app --reload   # daemon → http:/
 # quality gates
 uv run ruff check . && uv run ruff format --check .
 uv run pyright
-uv run pytest                      # incl. the Stage 1 kill -9 crash-durability gate
+uv run pytest                      # incl. P1's kill -9 crash-durability gate
 ```
 
 ## Full architecture

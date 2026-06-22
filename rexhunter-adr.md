@@ -88,7 +88,7 @@ SQLite specifically: zero operational surface (no container, no port, no credent
 
 **PostgreSQL** adds a network hop, a running service, connection pooling, and migration ceremony to buy multi-process write concurrency the system does not have – there is exactly one writer process by design (invariant 7). The honest swap trigger: if RexHunter ever becomes multi-process (separate worker pool) or needs remote access, Postgres wins, and the repository layer exists so that swap touches one module. Until that trigger fires, Postgres is operational weight with no payoff.
 
-**Kafka-class systems** solve fan-out and offsets at a scale of thousands of consumers across machines. The Stage 0 prototype demonstrated that a consumer offset is an integer (`sent`) and is now a `WHERE id > ?` clause. Importing a distributed log to replace one indexed column is the definition of résumé-driven architecture.
+**Kafka-class systems** solve fan-out and offsets at a scale of thousands of consumers across machines. The prototype baseline demonstrated that a consumer offset is an integer (`sent`) and is now a `WHERE id > ?` clause. Importing a distributed log to replace one indexed column is the definition of résumé-driven architecture.
 
 **Vector DBs as the trajectory store** misunderstand the queries. Trajectory access is ordered and exact ('events of run X in sequence', 'everything after id 412') – relational queries. Embeddings answer similarity questions, which trajectories never ask. A vector index may *later* join the system as a derived index over job postings (semantic dedupe, match scoring) – derived, rebuildable, never authoritative.
 
@@ -175,7 +175,7 @@ The data flow is fundamentally asymmetric: a continuous firehose downstream, occ
 
 **Long-polling.** Client holds a request open until data arrives, then immediately re-requests.
 
-**Short polling.** Client asks 'anything new?' on an interval. (The Stage 0 prototype's internal generator effectively did this against a list.)
+**Short polling.** Client asks 'anything new?' on an interval. (The prototype's internal generator effectively did this against a list.)
 
 ### The Rejection (Why Not Chosen)
 
@@ -183,7 +183,7 @@ The data flow is fundamentally asymmetric: a continuous firehose downstream, occ
 
 **Long-polling** is SSE with extra connection churn and none of the cursor semantics – strictly dominated here.
 
-**Short polling** is acknowledged as the legitimate prototype fallback (it is how the Stage 0 prototype's feed generator watched the list), but at terrarium timescales it forces a bad trade between latency and wasted wakeups, and the UI's 'consciousness stream' feel dies at any polite polling interval.
+**Short polling** is acknowledged as the legitimate prototype fallback (it is how the prototype's feed generator watched the list), but at terrarium timescales it forces a bad trade between latency and wasted wakeups, and the UI's 'consciousness stream' feel dies at any polite polling interval.
 
 **Accepted limit:** the in-process hub binds streaming to a single backend process. Horizontal scaling would require external pub/sub (e.g. Redis) between writer and SSE servers. The terrarium is single-user and single-process by design; this limit is accepted and documented rather than pre-solved.
 
@@ -285,6 +285,47 @@ The governing principle: **LLM output is untrusted input.** It is probabilistic 
 | Lossy broadcast hub | Log is truth (invariant 1) | Never – this is the design, not a debt |
 | No auth on the local UI | localhost-only daemon | Any network exposure beyond localhost |
 | Live adapters limited to public ATS APIs (Greenhouse/Lever) | ToS-compliant, stable contracts | Never scrape ToS-prohibited boards |
+
+## Build sequence (canonical)
+
+The one place the build order lives. Slices are **ordered top-to-bottom, earliest first**; the
+next slice to build is the earliest one not yet marked done in the projections. Each slice is
+identified **only by its slice-ID** — `P<pillar>`, pillar-keyed so the integer is stable
+architectural identity that is never renumbered — **and its name.**
+
+**Naming rule (binds the whole scheme):** *never refer to a slice by a build-order number.* A
+bare position like "slice 3" collides with `P3` the instant the prefix is dropped — which is how
+the original three-way numbering drift began. Refer to a slice by its slice-ID, or relationally
+("the slice after `P2.2`"). This list therefore carries **no order integers** — order is row
+position, not a number.
+
+This list is **status-free**: it is the stable plan, and by the projection law (invariant 2,
+applied to the docs) status is never stored here, only derived downstream. Live status lives in
+its two projections — `CLAUDE.md` (current working position) and `README.md` (public
+done/planned) — both of which reference these slice-IDs and never restate the order as integers.
+
+| Slice | Pillar | Gate |
+|-------|--------|------|
+| Prototype baseline — FastAPI lifespan + loop + SSE + in-memory list | — | — |
+| **`P1` · Persistence** — SQLite WAL event log (`runs`, `trajectory_events`) | 1 | DoD #1 |
+| **`P2.1` · Typed events** — discriminated-union model + validation boundary | 2 | `tests/test_events.py` (sub-gate of DoD #2) |
+| **`P2.2` · Loop & tool harness** — agent loop + `@rex_tool` registry + error taxonomy | 2 | DoD #2 |
+| **`P2.3` · Hunt scheduler** — concurrent-hunt orchestration + per-territory deadlines | 2 | DoD #2 under concurrency (invariant 7) |
+| **`P4` · Durable pause & HITL** — `awaiting_verdict`, Feast/Release/Amber machine | 4 | DoD #4 |
+| **`P5` · Brain socket** — provider-agnostic LLM, native tool calling (paid) | 5 | DoD #5 |
+| **`P3` · Streaming hub** — per-viewer broadcast queues, `Last-Event-ID` resume | 3 | DoD #3 |
+
+Order is **dependency order, not pillar order.** `P3` (Streaming) sits last because the
+prototype's naive SSE feed covers it for now and the real broadcast hub is deferred; its pillar
+identity (3) is fixed regardless of build position. The gate column points at the per-pillar
+Definition-of-done below — and `DoD #N` is itself pillar-keyed (`P3` → `DoD #3`), so a gate can
+never drift from its slice.
+
+**`P2.3` bundles two concerns** under one slice: (a) **concurrent-hunt orchestration** — the
+bounded task group, squarely Pillar 2 and the concrete enforcement of invariant 7; and (b)
+**per-territory deadline timing** — operational scheduling with no native pillar, parked in
+Pillar 2. It is a **candidate to decompose into two slices when built**; kept as one until the
+work proves the seam.
 
 ## Definition of done per pillar (test-first)
 
