@@ -1,4 +1,4 @@
-# Stage 1 walkthrough – the trajectory log, from zero 🦖
+# P1 (Persistence) walkthrough – the trajectory log, from zero 🦖
 
 A guided tour of `src/rexhunter/db.py` and the persistence half of
 `src/rexhunter/server.py`, written for someone new to event sourcing. Every terminal
@@ -31,30 +31,30 @@ That's exactly RexHunter's two laws:
 - **Invariant 2 (projection):** everything on screen – the hunt feed, HP bars, run
   status – is computed *from* the log. The screen is the banking app, never the ledger.
 
-### What Stage 0 couldn't do
+### What the prototype baseline couldn't do
 
-Stage 0 kept events in a Python list:
+The prototype baseline kept events in a Python list:
 
 ```python
-events: list[str] = []          # Stage 0 – RAM only
+events: list[str] = []          # prototype baseline – RAM only
 ```
 
 A list lives in the process's memory (RAM). When the process dies – crash, `kill -9`,
 reboot – RAM is simply gone. Every hunt Rex ever ran: gone. There is no history to
 recompute anything from, no way for a browser that reconnects to ask "what did I miss?",
-and – the wallet argument – once Stage 4 makes each hunt step a *paid* LLM call, a crash
+and – the wallet argument – once P5 makes each hunt step a *paid* LLM call, a crash
 at step 9 of 10 would force re-buying steps 1–8.
 
-Stage 1 swaps the list for a **SQLite** database: a single ordinary file on disk that a
+P1 swaps the list for a **SQLite** database: a single ordinary file on disk that a
 small, ferociously well-tested library reads and writes for us. Disk survives the process.
-That one property is what this whole stage purchases.
+That one property is what this whole slice purchases.
 
 ---
 
 ## 2. The two tables
 
 A SQL database stores data in **tables** – grids with named, typed **columns**, where each
-record is a **row**. Stage 1 needs exactly two. Both are created by the `_SCHEMA` string
+record is a **row**. P1 needs exactly two. Both are created by the `_SCHEMA` string
 at the top of `db.py` (`src/rexhunter/db.py:13`), which `connect()` executes every boot –
 `CREATE TABLE IF NOT EXISTS` means "create it the first time, silently skip every time
 after", so booting is also bootstrapping.
@@ -111,9 +111,9 @@ CREATE TABLE IF NOT EXISTS trajectory_events (
   configuration knob).
 - **`seq`** – this event's step number *within its own run*: 0, 1, 2, … restarting for
   every run. The other half of section 3.
-- **`type`** – what kind of event (`"sniff"` today; a Pydantic discriminator in Stage 2).
+- **`type`** – what kind of event (`"sniff"` today; a Pydantic discriminator in P2.1).
 - **`payload`** – the event's content. Per the working contract this stays a plain string
-  until Stage 2 gives it typed structure.
+  until P2.1 gives it typed structure.
 - **`created_at`** – when it happened.
 - **`UNIQUE (run_id, seq)`** – a constraint: no run may have two events with the same
   step number. This turns invariant 7 ("only one writer per run") from a polite
@@ -209,7 +209,7 @@ A few things to unpack, SQL and Python both:
 - **`*` in the Python signature** (`async def append_event(conn, run_id, *, type, payload)`)
   makes everything after it keyword-only: callers must write `type="sniff",
   payload="…"` – impossible to swap them by accident, since both are strings.
-  *(Stage 2 update: those raw `type`/`payload` strings became a single typed
+  *(P2.1 update: those raw `type`/`payload` strings became a single typed
   `event: TrajectoryEvent`; the keyword-only `*` is gone – the type system now prevents
   the swap this guarded against.)*
 - **`cursor.lastrowid`** is how SQLite tells us which global `id` it just assigned – the
@@ -238,7 +238,7 @@ The function does not return until the commit has happened. So everything downst
 "the event exists" – the returned `event_id`, any future publish to the broadcast hub –
 is *structurally* after durability.
 
-And where is the "publish to the stream" that must come second? In Stage 1, the neat
+And where is the "publish to the stream" that must come second? In P1, the neat
 answer is: **there is no publish step to get wrong yet.** The SSE feed doesn't get
 handed events – it *reads the log* (`src/rexhunter/server.py:73-77`):
 
@@ -252,7 +252,7 @@ async with reader.execute(
 
 SQLite guarantees other connections only ever see *committed* data. A viewer literally
 cannot observe an event before it's durable, because the only window is the log itself.
-When the in-process hub arrives in a later stage, the rule becomes a real ordering of two
+When the in-process hub arrives in `P3`, the rule becomes a real ordering of two
 calls (`commit()` *then* `hub.publish()`), but the contract is set now.
 
 **Why is the order non-negotiable?** Imagine the reverse: publish first, crash before
@@ -297,7 +297,7 @@ data: Rex sniffs the air... fresh AI Engineer scent!
 ```
 
 That `id:` line is the global cursor riding the SSE protocol – the browser's bookmark
-for free. Now the part Stage 0 could never do: open the *file* with the `sqlite3`
+for free. Now the part the prototype baseline could never do: open the *file* with the `sqlite3`
 command-line tool, while the daemon is still running, and see the same events as rows on
 disk:
 
@@ -413,5 +413,5 @@ WAL mode, and its structure is intact – after one murder and one reboot.
 
 The same scenario runs automatically on every push: `tests/test_stage1_gate.py` spawns a
 real writer subprocess, SIGKILLs it mid-append, and asserts everything you just watched.
-Stage 2 replaces the string `payload` with typed Pydantic events and hands the loop a
+P2.1 replaces the string `payload` with typed Pydantic events and P2.2 hands the loop a
 real tool harness – the log underneath it does not change shape.
