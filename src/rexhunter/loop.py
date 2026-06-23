@@ -255,6 +255,22 @@ async def run_hunt(
             retry_budget=retry_budget,
             max_iterations=max_iterations,
         )
+    except asyncio.CancelledError as cancel:
+        # Graceful shutdown (P2.3) closes the run HERE, not via the boot crash-sweep - that
+        # conflates a clean stop with a kill -9 (DoD #1). The mark-aborted write must complete
+        # even if a SECOND cancel lands mid-flight (aggressive shutdown, a double cancel from the
+        # task group): we shield it and drive it to done before re-raising, so the run can never
+        # be left outcome IS NULL. CancelledError still propagates - the group tears down on
+        # purpose. (Tested adversarially in test_cancelled_cleanup_survives_a_second_cancel.)
+        cleanup = asyncio.ensure_future(
+            db.finish_run(conn, run_id, outcome="aborted", abort_reason="daemon shutdown")
+        )
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                pass  # a re-cancel hit our frame; the shielded write runs on - wait it out
+        raise cancel
     except Exception as exc:
         await db.append_event(
             conn,
