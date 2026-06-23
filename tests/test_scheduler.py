@@ -106,12 +106,16 @@ async def test_bounded_group_never_exceeds_cap(
 # ── Unit 3a · failure isolation between siblings ─────────────────────────────
 
 
+@pytest.mark.parametrize("max_concurrent", [5, 2], ids=["all_concurrent", "cap_below_n"])
 async def test_one_hunt_failure_does_not_corrupt_siblings(
-    tmp_path: Path, scripted_brain: BrainFactory
+    tmp_path: Path, scripted_brain: BrainFactory, max_concurrent: int
 ) -> None:
     # Mixed fates in ONE bounded group: a raise, a hang-past-timeout, an unknown tool, two
     # clean completions. The group must NOT raise; failures are isolated to their own runs with
     # typed events; successes complete with UNCORRUPTED logs (no sibling's events leak in).
+    # cap_below_n is the gate's coupled requirement: a failed/hung hunt must RELEASE its slot so
+    # a queued success proceeds. It is self-proving — a leaked slot would deadlock the queued
+    # hunts and the wait_for below would fail rather than the suite silently wedging.
     db_path = tmp_path / "rex.db"
     reg = ToolRegistry()
 
@@ -140,14 +144,17 @@ async def test_one_hunt_failure_does_not_corrupt_siblings(
             [ToolCallDecision(tool=good.__name__, args={"board": territory}), HuntComplete()]
         )
 
-    run_ids = await run_hunts(
-        db_path,
-        territories,
-        brain_for=brain_for,
-        registry=reg,
-        max_concurrent=5,  # all at once: failures and successes interleave
-        tool_timeout_s=0.05,
-        retry_budget=0,
+    run_ids = await asyncio.wait_for(
+        run_hunts(
+            db_path,
+            territories,
+            brain_for=brain_for,
+            registry=reg,
+            max_concurrent=max_concurrent,  # 5: all at once · 2: successes queue behind failures
+            tool_timeout_s=0.05,
+            retry_budget=0,
+        ),
+        timeout=5,  # a leaked slot deadlocks the queue -> fail fast, never wedge the suite
     )
     assert all(rid is not None for rid in run_ids)
     by_territory = dict(zip(territories, run_ids, strict=True))
