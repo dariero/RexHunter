@@ -100,7 +100,12 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position:** `P2.2` ✅ → **`P2.3` ▶ next** (gate: DoD #2 under concurrency, invariant 7).
+**Current position:** `P2.3` gate ✅ (DoD #2 under concurrency, invariant 7 — green) →
+**`P4` ▶ next**. One tail open: the scheduler is gate-green but not yet wired into the daemon
+lifespan (it still runs the prototype `rex_loop`); that wiring is tracked as **`P2.3-wiring`**
+(deferred — it wants the real `brain()`/tools from `P5` to be meaningful, and the projection
+stays honest until then). `P2.3-wiring` lives only in these projections, never in the ADR
+build sequence (which stays status-free).
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -113,10 +118,17 @@ slice's gate (ADR Definition-of-done) is green.
   per-tool timeout + retry budget; stub brain (no LLM, no spend). *Gate (green,
   `tests/test_stage2_gate.py`):* a tool that raises / hangs past timeout / an unknown tool
   name → typed events + clean outcome, never an unhandled escape (ADR **DoD #2**).
-- **▶ `P2.3` · Hunt scheduler — next.** Concurrent-hunt task group + per-territory deadlines —
-  one slice bundling two concerns (see ADR), a candidate to split when built. *Gate:* DoD #2
-  under concurrency (invariant 7).
-- **`P4` · Durable pause & HITL.** `awaiting_verdict` rows, Feast/Release/Amber machine.
+- **`P2.3` · Hunt scheduler — ✅ gate green.** `scheduler.py`: `run_hunts` (bounded
+  `TaskGroup` + `Semaphore`, one connection per run) and `run_scheduler` (per-territory
+  monotonic-clock deadlines, no stored schedule). Each hunt is a single writer per run
+  (invariant 7), failures are isolated (one hunt's abort never cancels or corrupts a sibling),
+  and graceful shutdown closes a cancelled run via `run_hunt`'s shielded cancel path. *Gate
+  (green, `tests/test_invariant7.py` + `tests/test_scheduler.py`):* N concurrent hunts → seq
+  collision-free + gapless per run (proven by a one-clause unscoped-`MAX` mutant), each
+  raising/hanging/unknown-tool failure isolated under the cap, no escape from the group (ADR
+  **DoD #2 under concurrency**). *Tail:* **`P2.3-wiring`** — wire `run_scheduler` into
+  `server.py` lifespan (deferred, see current-position note).
+- **▶ `P4` · Durable pause & HITL — next.** `awaiting_verdict` rows, Feast/Release/Amber machine.
 - **`P5` · Brain socket.** `brain()`, native tool calling, thinking-delta relay (paid).
 - **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
   SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
