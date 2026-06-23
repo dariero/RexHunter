@@ -62,19 +62,26 @@ async def start_run(conn: aiosqlite.Connection, *, territory: str) -> str:
     return run_id
 
 
+# seq is assigned INSIDE the INSERT (no read-then-write gap): COALESCE(MAX(seq) + 1, 0) scoped
+# to this run by `WHERE run_id = ?`. That scope is load-bearing under concurrency (invariant 7) —
+# SQLite serialises the statement under the WAL write lock, so a concurrent writer on a DIFFERENT
+# run never bumps this run's MAX. tests/test_invariant7.py derives the unscoped mutant by removing
+# exactly that clause from this constant, proving scope is the sole variable.
+APPEND_EVENT_SQL = (
+    "INSERT INTO trajectory_events (run_id, seq, type, payload, created_at) "
+    "SELECT ?, COALESCE(MAX(seq) + 1, 0), ?, ?, ? "
+    "FROM trajectory_events WHERE run_id = ?"
+)
+
+
 async def append_event(
     conn: aiosqlite.Connection, run_id: str, event: events.TrajectoryEvent
 ) -> int:
     # The event is already typed (validated at construction) - serialising it OUT is not a
     # boundary crossing. model_dump_json() fills the payload column; event.type mirrors the
     # discriminator into the type column for SQL-side filtering.
-    # seq is assigned inside the INSERT itself: the per-run cursor cannot race or gap.
     cursor = await conn.execute(
-        """
-        INSERT INTO trajectory_events (run_id, seq, type, payload, created_at)
-        SELECT ?, COALESCE(MAX(seq) + 1, 0), ?, ?, ?
-        FROM trajectory_events WHERE run_id = ?
-        """,
+        APPEND_EVENT_SQL,
         (run_id, event.type, event.model_dump_json(), _utcnow(), run_id),
     )
     await conn.commit()
