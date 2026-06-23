@@ -18,7 +18,7 @@ import pytest
 from rexhunter import db
 from rexhunter.events import ErrorEvent, ToolCallEvent, ToolResultEvent
 from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision, run_hunt
-from rexhunter.scheduler import run_hunts
+from rexhunter.scheduler import run_hunts, run_scheduler
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
@@ -266,3 +266,90 @@ async def test_cancelled_cleanup_survives_a_second_cancel(
         assert await abort_reason_of(conn, run_id) == "daemon shutdown"
     finally:
         await conn.close()
+
+
+# ── Unit 4 · per-territory deadline timing ───────────────────────────────────
+
+
+async def runs_in(conn: aiosqlite.Connection, territory: str) -> int:
+    async with conn.execute("SELECT COUNT(*) FROM runs WHERE territory = ?", (territory,)) as cur:
+        row = await cur.fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def _noop_registry() -> tuple[ToolRegistry, str]:
+    reg = ToolRegistry()
+
+    @reg.tool
+    async def noop() -> str:
+        return "ok"
+
+    return reg, noop.__name__
+
+
+async def test_scheduler_fires_each_territory_on_its_interval(
+    tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    # Each territory hunts on its OWN interval, timed by the monotonic event-loop clock
+    # (asyncio.sleep) — a faster interval fires more hunts in the same window. Tiny intervals
+    # keep the test deterministic without mocking any clock.
+    db_path = tmp_path / "rex.db"
+    reg, noop = _noop_registry()
+
+    def brain_for(_territory: str) -> Brain:
+        return scripted_brain([ToolCallDecision(tool=noop, args={}), HuntComplete()])
+
+    schedule = {"fast": 0.01, "slow": 0.1}  # 10x apart
+    task = asyncio.create_task(
+        run_scheduler(db_path, schedule, brain_for=brain_for, registry=reg, max_concurrent=4)
+    )
+    await asyncio.sleep(0.25)  # a window long enough for several fast cycles
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    reader = await db.connect(db_path)
+    try:
+        fast = await runs_in(reader, "fast")
+        slow = await runs_in(reader, "slow")
+        assert fast > slow  # cadence: the shorter interval fired strictly more often
+        assert fast >= 2 and slow >= 1
+    finally:
+        await reader.close()
+
+
+async def test_scheduler_persists_no_shadow_schedule(
+    tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    # invariant 5 (derive, don't store): timing is folded from the clock, never persisted. After
+    # running, the schema is EXACTLY runs + trajectory_events — no schedule table, no next_run_at
+    # column, nothing the live timing could drift from.
+    db_path = tmp_path / "rex.db"
+    reg, noop = _noop_registry()
+
+    def brain_for(_territory: str) -> Brain:
+        return scripted_brain([ToolCallDecision(tool=noop, args={}), HuntComplete()])
+
+    task = asyncio.create_task(
+        run_scheduler(db_path, {"t": 0.01}, brain_for=brain_for, registry=reg, max_concurrent=2)
+    )
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    reader = await db.connect(db_path)
+    try:
+        async with reader.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ) as cur:
+            tables = sorted(str(r[0]) for r in await cur.fetchall())
+        assert tables == ["runs", "trajectory_events"]
+
+        async with reader.execute("SELECT name FROM pragma_table_info('runs')") as cur:
+            cols = sorted(str(r[0]) for r in await cur.fetchall())
+        assert cols == sorted(
+            ["id", "territory", "started_at", "ended_at", "outcome", "abort_reason"]
+        )
+    finally:
+        await reader.close()

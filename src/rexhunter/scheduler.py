@@ -1,25 +1,29 @@
 """The hunt scheduler (ADR pillar 2, `P2.3`): bounded concurrent orchestration over the
-single-hunt loop built in `P2.2`.
+single-hunt loop built in `P2.2`, plus per-territory deadline timing.
 
 Two concerns under one slice. `run_hunts` is concern (a): a **bounded** task group running N
 single-hunt loops at once — the concrete enforcement of invariant 7 (single writer per run).
-Each hunt gets its OWN aiosqlite connection (the model the ADR's "SQLite write-lock serialises
-writers" presupposes — a single shared connection would serialise every write onto one worker
-thread and never exercise the write lock that makes invariant 7 load-bearing). The bound is an
-`asyncio.Semaphore`: a connection is opened only after a slot is acquired, so the cap also caps
-open connections, and territories past the cap WAIT for a slot (never rejected, never
-unbounded).
+`run_scheduler` is concern (b): each territory hunts on its own interval, forever, until the
+daemon shuts down. Both share `_bounded_hunt`: each hunt gets its OWN aiosqlite connection (the
+model the ADR's "SQLite write-lock serialises writers" presupposes — a single shared connection
+would serialise every write onto one worker thread and never exercise the write lock that makes
+invariant 7 load-bearing), opened only after a `Semaphore` slot is acquired (so the cap also
+caps open connections, and territories past the cap WAIT for a slot, never rejected).
 
 Failure isolation: `run_hunt` is a total backstop (DoD #2) — it returns normally on every
 `Exception`, so the `TaskGroup` never sees a child raise, so its cancel-all-siblings behaviour
-never triggers. The per-hunt wrapper here adds defence in depth: it catches `Exception` (never
+never triggers. `_bounded_hunt` adds defence in depth: it catches `Exception` (never
 `CancelledError`, which must still propagate so daemon shutdown tears the group down on
 purpose). One hunt's failure marks only its own run; siblings run to completion untouched.
+
+Timing reads the monotonic event-loop clock (`asyncio.sleep`), never wall-clock, and persists
+NO "next fire" anywhere (invariant 5, derive don't store): a missed tick is simply the next
+loop iteration, never a stored schedule that could drift from reality.
 """
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from rexhunter import db
@@ -27,6 +31,41 @@ from rexhunter.loop import Brain, run_hunt
 from rexhunter.tools import ToolRegistry
 
 logger = logging.getLogger("rexhunter")
+
+
+async def _bounded_hunt(
+    db_path: str | Path,
+    sem: asyncio.Semaphore,
+    territory: str,
+    *,
+    brain_for: Callable[[str], Brain],
+    registry: ToolRegistry,
+    tool_timeout_s: float,
+    retry_budget: int,
+    max_iterations: int,
+) -> str | None:
+    """Run one hunt under the concurrency cap, on its own connection, fully isolated.
+
+    Returns the run_id, or `None` if the hunt escaped `run_hunt`'s backstop (a bug — logged
+    loudly, contained so it cannot cancel siblings; under DoD #2 it never happens).
+    """
+    async with sem:  # surplus hunts wait here for a slot (bound + connection cap)
+        conn = await db.connect(db_path)  # one writer connection per run (invariant 7)
+        try:
+            return await run_hunt(
+                conn,
+                territory=territory,
+                brain=brain_for(territory),
+                registry=registry,
+                tool_timeout_s=tool_timeout_s,
+                retry_budget=retry_budget,
+                max_iterations=max_iterations,
+            )
+        except Exception:  # defence in depth over run_hunt's own backstop — never expected
+            logger.exception("hunt for %r escaped run_hunt's backstop", territory)
+            return None
+        finally:
+            await conn.close()
 
 
 async def run_hunts(
@@ -43,8 +82,6 @@ async def run_hunts(
     """Run one hunt per territory in a bounded task group; return their run_ids in order.
 
     `brain_for(territory)` yields a FRESH brain per hunt (each hunt owns its decision stream).
-    A run_id is `None` only if a hunt escaped `run_hunt`'s backstop entirely (a bug — logged
-    loudly, isolated so it cannot cancel siblings); under DoD #2 that never happens.
     """
     boot = await db.connect(db_path)  # bootstrap schema + WAL once, before the per-hunt opens
     await boot.close()
@@ -52,26 +89,60 @@ async def run_hunts(
     sem = asyncio.Semaphore(max_concurrent)
     run_ids: list[str | None] = [None] * len(territories)
 
-    async def _one_hunt(index: int, territory: str) -> None:
-        async with sem:  # surplus hunts wait here for a slot (bound + connection cap)
-            conn = await db.connect(db_path)  # one writer connection per run (invariant 7)
-            try:
-                run_ids[index] = await run_hunt(
-                    conn,
-                    territory=territory,
-                    brain=brain_for(territory),
-                    registry=registry,
-                    tool_timeout_s=tool_timeout_s,
-                    retry_budget=retry_budget,
-                    max_iterations=max_iterations,
-                )
-            except Exception:  # defence in depth over run_hunt's own backstop — never expected
-                logger.exception("hunt for %r escaped run_hunt's backstop", territory)
-            finally:
-                await conn.close()
+    async def _store(index: int, territory: str) -> None:
+        run_ids[index] = await _bounded_hunt(
+            db_path,
+            sem,
+            territory,
+            brain_for=brain_for,
+            registry=registry,
+            tool_timeout_s=tool_timeout_s,
+            retry_budget=retry_budget,
+            max_iterations=max_iterations,
+        )
 
     async with asyncio.TaskGroup() as tg:
         for i, territory in enumerate(territories):
-            tg.create_task(_one_hunt(i, territory))
+            tg.create_task(_store(i, territory))
 
     return run_ids
+
+
+async def run_scheduler(
+    db_path: str | Path,
+    schedule: Mapping[str, float],
+    *,
+    brain_for: Callable[[str], Brain],
+    registry: ToolRegistry,
+    max_concurrent: int,
+    tool_timeout_s: float = 30.0,
+    retry_budget: int = 2,
+    max_iterations: int = 50,
+) -> None:
+    """Run forever: each territory in `schedule` (territory -> interval seconds) hunts on its own
+    deadline, all bounded by `max_concurrent`. Cancellation (daemon shutdown) tears down every
+    per-territory loop and any in-flight hunt; each in-flight run closes itself (run_hunt's
+    shielded cancel path). The deadline is DERIVED from the monotonic clock via `asyncio.sleep`
+    and never stored (invariant 5)."""
+    boot = await db.connect(db_path)
+    await boot.close()
+
+    sem = asyncio.Semaphore(max_concurrent)
+
+    async def territory_loop(territory: str, interval: float) -> None:
+        while True:
+            await _bounded_hunt(
+                db_path,
+                sem,
+                territory,
+                brain_for=brain_for,
+                registry=registry,
+                tool_timeout_s=tool_timeout_s,
+                retry_budget=retry_budget,
+                max_iterations=max_iterations,
+            )
+            await asyncio.sleep(interval)  # monotonic deadline; derived, never persisted
+
+    async with asyncio.TaskGroup() as tg:
+        for territory, interval in schedule.items():
+            tg.create_task(territory_loop(territory, interval))
