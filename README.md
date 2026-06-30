@@ -9,10 +9,10 @@ log is the single source of truth – and the frontend is a retro-game projectio
 the agent's actual trajectory replayed as a creature moving through its world.
 
 > **Status: build-in-public, early.** Persistence (`P1`), the typed event model + validation
-> boundary (`P2.1`), the hand-rolled agent loop + `@rex_tool` harness (`P2.2`), and the
-> concurrent hunt scheduler (`P2.3`) are done and gate-tested — the scheduler now runs in the
-> daemon lifespan, driving a no-spend stub brain until the real `brain()` lands. Durable pause
-> & HITL (`P4`) is next. Slice IDs, order, and gates live in the
+> boundary (`P2.1`), the hand-rolled agent loop + `@rex_tool` harness (`P2.2`), the concurrent
+> hunt scheduler (`P2.3`), and durable pause & HITL — the prey pen + Feast/Release/Amber verdict
+> machine (`P4`) — are done and gate-tested, all driven by a no-spend stub brain until the real
+> `brain()` lands. The brain socket (`P5`) is next. Slice IDs, order, and gates live in the
 > [ADR](rexhunter-adr.md#build-sequence-canonical).
 
 ## Core constraints
@@ -78,8 +78,8 @@ ADR owns the order and gates; this table tracks only status. Slices are named by
 | `P2.1` | **Typed events** – discriminated-union model + validation boundary (`events.py`) | 2 | **Done** |
 | `P2.2` | **Loop & tool harness** – `@rex_tool` registry, validate → execute → append, error taxonomy | 2 | **Done** |
 | `P2.3` | Hunt scheduler – bounded concurrent-hunt task group + per-territory deadlines, wired into the daemon lifespan | 2 | **Done** |
-| `P4` | Durable pause & HITL – `awaiting_verdict` rows, Feast / Release / Amber | 4 | **Next** |
-| `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | Planned |
+| `P4` | Durable pause & HITL – prey pen + Feast / Release / Amber verdict machine (`verdicts.py`) | 4 | **Done** |
+| `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | **Next** |
 | `P3` | Streaming hub – per-viewer queues, `Last-Event-ID` resume | 3 | Inherited; hub deferred |
 
 Gates are test-first and defined in the ADR. `P1`'s gate (`tests/test_stage1_gate.py`): a real
@@ -89,7 +89,11 @@ tool that raises, one that hangs past its timeout, and a stub brain naming an un
 produce typed events and a clean run outcome — never an unhandled exception escaping the loop.
 `P2.3`'s gate (`tests/test_invariant7.py` + `tests/test_scheduler.py`): the same three failures
 hold under a bounded group of N concurrent hunts, each its own writer, with the per-run `seq`
-cursor proven collision-free and gapless by a one-clause `WHERE run_id = ?` mutant.
+cursor proven collision-free and gapless by a one-clause `WHERE run_id = ?` mutant. `P4`'s gate
+(`tests/test_stage4_gate.py`): boot the daemon through the real lifespan, pen a posting, drain,
+and boot again over the same file — the prey survives the restart, verdicts still apply, a
+double-FEAST and a replay-across-restart are no-ops (one event, one job ever), and the boot
+crash-sweep marks a dangling run `'crashed'` while leaving the committed prey untouched.
 
 ## Getting started
 

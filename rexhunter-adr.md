@@ -121,7 +121,7 @@ Tools are plain async Python functions registered through a `@rex_tool` decorato
 
 The harness owns an explicit error taxonomy: retryable (network blips, 429s, transient 5xx) versus fatal (validation failures, unknown tools, budget exhaustion), with per-tool timeout and retry budgets. Every transition – plan, dispatch, result, retry, damage, abort – is appended as a typed event before anything else happens (invariant 1). Concurrent hunts run inside a bounded task group; a hung tool is cancelled at its deadline and recorded, never silently awaited forever.
 
-> **Reconciliation note (logged in `P2.2`): terminal decisions and events.** The pseudocode above ends `HuntComplete` / `NeedsHelp` *without* appending an event, recording the outcome on `runs.outcome` (a transactionally-maintained companion, invariant 2) — matching Pillar 1's pattern of closing runs through the `runs` table. Pillar 4's prose, however, says "the hunt logs `HuntCompleted` and exits cleanly," implying a terminal *event*. These disagree. `P2.2` ships the **no-event** form (terminal decisions touch only `runs.outcome`; `NeedsHelp → outcome="needs_help"`, which collapses to `aborted` trivially later). Whether terminal decisions should *also* emit an event is deferred to `P4`, when the verdict/pen machinery lands and can settle it; this ADR should be made internally consistent at that point.
+> **Reconciliation note (logged in `P2.2`): terminal decisions and events.** The pseudocode above ends `HuntComplete` / `NeedsHelp` *without* appending an event, recording the outcome on `runs.outcome` (a transactionally-maintained companion, invariant 2) — matching Pillar 1's pattern of closing runs through the `runs` table. Pillar 4's prose, however, says "the hunt logs `HuntCompleted` and exits cleanly," implying a terminal *event*. These disagree. `P2.2` ships the **no-event** form (terminal decisions touch only `runs.outcome`; `NeedsHelp → outcome="needs_help"`, which collapses to `aborted` trivially later). **Settled in `P4`:** terminal decisions emit **no** event — the run closes through `runs.outcome`, and a completed hunt's durable trace is the `PreyCapturedEvent`(s) of its catch (an empty catch leaves only `runs.outcome`). Pillar 4's prose is corrected to match (see its `P4` reconciliation note).
 
 ### The Justification (The Why)
 
@@ -195,7 +195,7 @@ The data flow is fundamentally asymmetric: a continuous firehose downstream, occ
 
 ### The Architecture (The What)
 
-Hunts **run to completion** – there is no suspended coroutine waiting days for a click. Captured prey is written to the pen as rows with `status = 'awaiting_verdict'`; the hunt logs `HuntCompleted` and exits cleanly. Rex sitting at the gate is not a paused task – it is *rows in a table with a pending status*.
+Hunts **run to completion** – there is no suspended coroutine waiting days for a click. Captured prey is written to the pen as rows with `status = 'awaiting_verdict'` (each capture a run-scoped `PreyCapturedEvent`, invariant 6); the hunt closes via `runs.outcome` and exits cleanly – no terminal event (see the `P4` reconciliation note below). Rex sitting at the gate is not a paused task – it is *rows in a table with a pending status*.
 
 The verdict is a state machine on the prey row:
 
@@ -210,6 +210,11 @@ Each verdict POST is an idempotent transition: a status guard (`UPDATE ... WHERE
 For genuinely mid-run interventions with short horizons (Cracked Earth schema-drift emergencies), the **park-and-persist hybrid**: the run first appends a durable `awaiting_intervention` event, *then* awaits an in-memory `asyncio.Future` with a timeout. A click within the window resumes hot from RAM; a timeout or process death closes the run at the durable checkpoint, and the territory shows cracked earth until attended. Fast path in memory, truth on disk.
 
 The Tiny Arms law (invariant 4) completes the design: no registered tool can submit, send, or apply. The human verdict is not a confirmation dialog over an action the agent could take – it is the only path by which certain state transitions can occur at all.
+
+> **Reconciliation note (logged in `P4`): what `P4` built, and what it deferred.**
+> *Verdict as event, not just a row mutation.* The state machine above is implemented log-first. Each verdict appends a typed `VerdictEvent` to a dedicated, **non-run-scoped** `pen_events` log — a verdict arrives after the hunt has exited, from the POST handler, so it cannot be a trajectory event of the closed run without breaking invariant 7 — and `prey.status` (plus `reason`/`provenance`) is the **projection** of those events, maintained transactionally and rebuildable by folding them. This keeps Pillar 1's "any derived table is rebuildable from the log" *whole* rather than carving an exception for the pen. The status guard (`UPDATE ... WHERE status = <source>`) is still the idempotency mechanism, and a FEAST's `draft_pitch` enqueue rides the **same transaction** as the flip + event (exactly-once, even under a concurrent double-FEAST). `prey`/`pen_events`/`jobs` are deliberately **multi-writer** (hunt captures, POST verdicts, worker drains) — invariant 7's single-writer rule binds per-run *trajectory* only.
+> *Terminal decisions emit no event* (settling the Pillar 2 note): completion's durable trace is the capture events plus `runs.outcome`.
+> *Park-and-persist is deferred.* `P4` ships the prey-pen verdict machine (Feast/Release/Amber, the durable-table half) and its crash-equivalence gate. The **park-and-persist hybrid** of the paragraph above — the in-RAM `asyncio.Future` hot path for short-horizon mid-run interventions — is a separate, harder mechanism, **deferred to a later increment** and not part of the `P4` gate. DoD #4 therefore splits: its prey-pen clause is `P4`; its park-and-persist clause lands with that follow-up.
 
 ### The Justification (The Why)
 

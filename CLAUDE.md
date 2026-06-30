@@ -100,12 +100,13 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position:** `P2.3` ✅ **done — wired** (DoD #2 under concurrency + invariant 7 green,
-and the scheduler now runs in the real daemon lifespan) → **`P4` ▶ next**. `P2.3-wiring`
-landed: `run_scheduler` is launched on ASGI startup and drained on shutdown; the prototype
-`rex_loop` is deleted. The wired daemon drives a **no-spend stub brain** (`stub.py`) — the real
-`brain()`/tools stay `P5`. `P2.3-wiring` lived only in these projections, never in the ADR
-build sequence (which stays status-free).
+**Current position:** `P4` ✅ **done** (DoD #4 prey-pen clause green — crash-equivalence proven
+through the real lifespan) → **`P5` ▶ next**. The prey pen + Feast/Release/Amber verdict machine
+landed (`verdicts.py`): captures are run-scoped `PreyCapturedEvent`s; verdicts are a
+non-run-scoped `pen_events` log with `prey` as its projection (log-is-truth kept whole); a FEAST
+atomically enqueues a stub `draft_pitch` job drained by a worker in the lifespan; park-and-persist
+is deferred (DoD #4 split — see the ADR `P4` reconciliation note). The daemon still drives a
+**no-spend stub brain** (`stub.py`) — the real `brain()`/tools stay `P5`.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -131,8 +132,18 @@ build sequence (which stays status-free).
   (green, `tests/test_server_lifespan.py`):* booted through the real `lifespan_context`, ≥2
   concurrent hunts spawn on startup and shutdown leaves no run `outcome IS NULL`, no orphaned
   task, no leaked connection.
-- **▶ `P4` · Durable pause & HITL — next.** `awaiting_verdict` rows, Feast/Release/Amber machine.
-- **`P5` · Brain socket.** `brain()`, native tool calling, thinking-delta relay (paid).
+- **`P4` · Durable pause & HITL — ✅ done.** `verdicts.py`: the prey pen + Feast/Release/Amber
+  machine. Capture rides `HuntComplete` (run-scoped `PreyCapturedEvent` + prey row, one txn);
+  each verdict is a status-guarded, idempotent transition appending a `VerdictEvent` to the
+  non-run-scoped `pen_events` log, with `prey.status` its projection (`fold` proves no drift); a
+  FEAST atomically enqueues a `draft_pitch` job drained by `run_job_worker` (stub drafter, no
+  LLM); `POST /verdict` is the only path a captured row can move (invariant 4). Park-and-persist
+  deferred. *Gate (green, `tests/test_stage4_gate.py` + `tests/test_verdicts.py`):* restart
+  through the real `lifespan_context` → prey survives, verdicts still apply, double-FEAST and
+  replay-across-restart are no-ops (one event, one job ever), and the boot crash-sweep marks a
+  dangling run `'crashed'` while leaving the committed prey untouched (ADR **DoD #4**, prey-pen
+  clause).
+- **▶ `P5` · Brain socket — next.** `brain()`, native tool calling, thinking-delta relay (paid).
 - **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
   SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
 
