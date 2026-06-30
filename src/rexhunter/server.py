@@ -3,34 +3,19 @@
 import asyncio
 import logging
 import os
-import random
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
-import aiosqlite
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-from rexhunter import db
-from rexhunter.events import SniffEvent
+from rexhunter import db, stub
+from rexhunter.scheduler import run_scheduler
 
 DB_PATH = os.environ.get("REXHUNTER_DB", "rexhunter.db")
-SNIFF_INTERVAL = 5.0
 POLL_INTERVAL = 0.5
 
 logger = logging.getLogger("rexhunter")
-
-
-async def rex_loop(conn: aiosqlite.Connection) -> None:
-    run_id = await db.start_run(conn, territory="mock-gym")
-    try:
-        while True:
-            await asyncio.sleep(SNIFF_INTERVAL)
-            prey = random.choice(["AI Engineer", "ML Platform Eng", "Eval Engineer"])
-            await db.append_event(conn, run_id, SniffEvent(prey=prey))
-    except asyncio.CancelledError:
-        await db.finish_run(conn, run_id, outcome="aborted", abort_reason="daemon shutdown")
-        raise
 
 
 def surface_crash(task: asyncio.Task[None]) -> None:
@@ -41,19 +26,30 @@ def surface_crash(task: asyncio.Task[None]) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    conn = await db.connect(DB_PATH)
-    crashed = await db.mark_crashed_runs(conn)
-    if crashed:
-        logger.warning("boot: marked %d dangling run(s) as crashed", crashed)
-    task = asyncio.create_task(rex_loop(conn))
+    # Boot crash-sweep on its OWN short-lived connection; the scheduler opens one connection
+    # per hunt (invariant 7), so the lifespan shares no connection with it and spawns it once.
+    sweep = await db.connect(DB_PATH)
+    try:
+        crashed = await db.mark_crashed_runs(sweep)
+        if crashed:
+            logger.warning("boot: marked %d dangling run(s) as crashed", crashed)
+    finally:
+        await sweep.close()
+
+    schedule, brain_for, registry, cap = stub.daemon_config()
+    task = asyncio.create_task(
+        run_scheduler(DB_PATH, schedule, brain_for=brain_for, registry=registry, max_concurrent=cap)
+    )
     task.add_done_callback(surface_crash)
     try:
         yield
     finally:
+        # Graceful shutdown: cancel, then AWAIT to drain. run_hunt's shielded cleanup marks
+        # every in-flight run aborted/"daemon shutdown" before the group tears down - no run is
+        # left outcome IS NULL (which the next boot would mislabel 'crashed', breaking DoD #1).
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
-        await conn.close()
 
 
 app = FastAPI(lifespan=lifespan)
