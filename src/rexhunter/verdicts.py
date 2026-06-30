@@ -14,16 +14,29 @@ transactionally and rebuildable by folding the events — never a second source 
 Unit 1 (here): `capture_prey`. The verdict machine and the enqueued follow-up job follow.
 """
 
+import asyncio
+import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 import aiosqlite
 
 from rexhunter import db, events
 from rexhunter.events import Verdict, VerdictEvent
 
+logger = logging.getLogger("rexhunter")
+
 AWAITING = "awaiting_verdict"
+
+# The follow-up job queue (a FEAST enqueues one). A draft_pitch job moves queued → running → done.
+DRAFT_PITCH = "draft_pitch"
+QUEUED, RUNNING, DONE = "queued", "running", "done"
+
+# A pitch drafter: read the prey it is given, return the draft text. The stub this slice does no
+# LLM work; P5 swaps in the paid drafter. Injected (not imported) so this module stays free.
+Drafter = Callable[[aiosqlite.Connection, str], Awaitable[str]]
 
 # verdict -> (required source status, resulting status). This table IS the guard: a verdict fires
 # ONLY from its source status; from anywhere else it is a no-op. The SAME table drives the live
@@ -108,6 +121,15 @@ async def submit_verdict(
         "INSERT INTO pen_events (prey_id, type, payload, created_at) VALUES (?, ?, ?, ?)",
         (prey_id, event.type, event.model_dump_json(), now),
     )
+    if verdict is Verdict.FEAST:
+        # The follow-up draft_pitch job, enqueued ATOMICALLY with the flip + event (same txn, gated
+        # by the rowcount==1 above). Exactly-once: one FEAST → one job, even under a concurrent
+        # double-FEAST — the loser matched zero rows and never reached here. The handler does no
+        # heavy work; the worker drafts (Tiny Arms: Rex drafts, never sends).
+        await conn.execute(
+            "INSERT INTO jobs (id, kind, prey_id, status, created_at) VALUES (?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), DRAFT_PITCH, prey_id, QUEUED, now),
+        )
     await conn.commit()
     return True
 
@@ -137,3 +159,74 @@ def fold(verdict_events: Sequence[VerdictEvent]) -> tuple[str, str | None, str |
         if event.provenance is not None:
             provenance = event.provenance
     return status, reason, provenance
+
+
+# ── The follow-up worker (ADR pillar 4): the same background machinery as hunts ───────────────
+
+
+async def claim_job(conn: aiosqlite.Connection) -> tuple[str, str] | None:
+    """Atomically claim the oldest queued job: flip exactly one queued→running, return its
+    (job_id, prey_id), or None if the queue is empty. The guarded flip keeps the claim safe even
+    if a second worker ever races — each job is handed to at most one (jobs is multi-writer)."""
+    async with conn.execute(
+        "SELECT id, prey_id FROM jobs WHERE status = ? ORDER BY created_at, id LIMIT 1", (QUEUED,)
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    job_id, prey_id = str(row[0]), str(row[1])
+    cursor = await conn.execute(
+        "UPDATE jobs SET status = ? WHERE id = ? AND status = ?", (RUNNING, job_id, QUEUED)
+    )
+    await conn.commit()
+    if cursor.rowcount != 1:
+        return None  # lost the race; the next poll picks up whatever is left
+    return job_id, prey_id
+
+
+async def complete_job(conn: aiosqlite.Connection, job_id: str, result: str) -> None:
+    """Record the drafted pitch and mark the job done. The draft LANDS in `result` for human
+    editing — there is no send/submit path (invariant 4, Tiny Arms)."""
+    await conn.execute(
+        "UPDATE jobs SET status = ?, result = ? WHERE id = ?", (DONE, result, job_id)
+    )
+    await conn.commit()
+
+
+async def requeue_running_jobs(conn: aiosqlite.Connection) -> int:
+    """Boot sweep (the jobs analogue of db.mark_crashed_runs): a job left 'running' means the
+    worker died mid-draft. Reset it to 'queued' so it is picked up again. Safe because the stub
+    drafter is pure; P5's paid drafter will need an idempotency guard before re-running."""
+    cursor = await conn.execute("UPDATE jobs SET status = ? WHERE status = ?", (QUEUED, RUNNING))
+    await conn.commit()
+    return cursor.rowcount
+
+
+async def run_job_worker(
+    db_path: str | Path, *, drafter: Drafter, poll_interval: float = 0.5
+) -> None:
+    """Drain the jobs queue forever: claim a queued job, run the drafter, record the draft; sleep
+    when the queue is empty. The same background shape as the hunt scheduler — its own connection
+    (jobs is multi-writer), cancellable (daemon shutdown tears it down via its finally)."""
+    conn = await db.connect(db_path)
+    try:
+        while True:
+            claimed = await claim_job(conn)
+            if claimed is None:
+                await asyncio.sleep(poll_interval)  # idle: nothing queued
+                continue
+            job_id, prey_id = claimed
+            draft = await drafter(conn, prey_id)
+            await complete_job(conn, job_id, draft)
+    finally:
+        # The connection's worker thread is non-daemon: it MUST close or it blocks interpreter
+        # shutdown (and leaks). The close runs inside the very cancellation that triggers daemon
+        # shutdown, which would otherwise interrupt a bare `await conn.close()` — so, exactly like
+        # run_hunt's shielded finish_run, shield the close and drive it to done through any
+        # re-cancel that lands mid-flight.
+        closing = asyncio.ensure_future(conn.close())
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                pass

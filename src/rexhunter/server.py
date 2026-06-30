@@ -6,10 +6,12 @@ import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+from pydantic import BaseModel
 
-from rexhunter import db, stub
+from rexhunter import db, stub, verdicts
+from rexhunter.events import Verdict
 from rexhunter.scheduler import run_scheduler
 
 DB_PATH = os.environ.get("REXHUNTER_DB", "rexhunter.db")
@@ -33,26 +35,65 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         crashed = await db.mark_crashed_runs(sweep)
         if crashed:
             logger.warning("boot: marked %d dangling run(s) as crashed", crashed)
+        # The jobs analogue: a job left 'running' from a prior process is requeued, not stranded.
+        requeued = await verdicts.requeue_running_jobs(sweep)
+        if requeued:
+            logger.warning("boot: requeued %d running job(s)", requeued)
     finally:
         await sweep.close()
 
-    schedule, brain_for, registry, cap = stub.daemon_config()
-    task = asyncio.create_task(
-        run_scheduler(DB_PATH, schedule, brain_for=brain_for, registry=registry, max_concurrent=cap)
-    )
-    task.add_done_callback(surface_crash)
+    schedule, brain_for, registry, cap, drafter = stub.daemon_config()
+    tasks = [
+        asyncio.create_task(
+            run_scheduler(
+                DB_PATH, schedule, brain_for=brain_for, registry=registry, max_concurrent=cap
+            )
+        ),
+        asyncio.create_task(verdicts.run_job_worker(DB_PATH, drafter=drafter)),
+    ]
+    for task in tasks:
+        task.add_done_callback(surface_crash)
     try:
         yield
     finally:
-        # Graceful shutdown: cancel, then AWAIT to drain. run_hunt's shielded cleanup marks
-        # every in-flight run aborted/"daemon shutdown" before the group tears down - no run is
-        # left outcome IS NULL (which the next boot would mislabel 'crashed', breaking DoD #1).
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        # Graceful shutdown: cancel every daemon task, then AWAIT to drain. run_hunt's shielded
+        # cleanup marks every in-flight run aborted/"daemon shutdown" before the group tears down,
+        # and the worker closes its connection in its finally - no run left outcome IS NULL (which
+        # the next boot would mislabel 'crashed', breaking DoD #1), no orphaned task, no leak.
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+class VerdictRequest(BaseModel):
+    """The verdict POST body — the one Pydantic boundary the raw request bytes cross (inv. 3)."""
+
+    prey_id: str
+    verdict: Verdict
+    reason: str | None = None
+    provenance: str | None = None
+
+
+@app.post("/verdict")
+async def post_verdict(req: VerdictRequest) -> dict[str, bool]:
+    """Apply a human verdict (Feast/Release/Amber) as a guarded, idempotent DB transition. There is
+    no apply/send/submit tool anywhere in Rex — this POST IS the only path the state can move
+    (invariant 4, Tiny Arms). Returns {"applied": False} on a no-op (replay / already-resolved)."""
+    conn = await db.connect(DB_PATH)
+    try:
+        applied = await verdicts.submit_verdict(
+            conn, req.prey_id, req.verdict, reason=req.reason, provenance=req.provenance
+        )
+    except ValueError as exc:  # e.g. RELEASE without a reason — a boundary error, not a 500
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        await conn.close()
+    return {"applied": applied}
 
 
 @app.get("/events")

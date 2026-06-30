@@ -12,8 +12,11 @@ inject a deterministic blocking tool. Everything else here is the real (if trivi
 import asyncio
 from collections.abc import Callable, Mapping
 
+import aiosqlite
+
 from rexhunter.loop import Brain, Context, Decision, HuntComplete, ToolCallDecision
 from rexhunter.tools import ToolRegistry
+from rexhunter.verdicts import Drafter
 
 SNIFF_INTERVAL = 5.0  # the per-sniff beat, mirroring the prototype's cadence
 DEFAULT_SCHEDULE: dict[str, float] = {"mock-gym": SNIFF_INTERVAL}
@@ -45,7 +48,7 @@ def stub_brain_for(territory: str) -> Brain:
     """
     decisions: list[Decision] = [
         ToolCallDecision(tool=sniff.__name__, args={"prey": territory}),
-        HuntComplete(),
+        HuntComplete(catch=[f"posting:{territory}"]),  # one penned posting per hunt (P4)
     ]
     queue = iter(decisions)
 
@@ -58,9 +61,21 @@ def stub_brain_for(territory: str) -> Brain:
     return brain
 
 
-def daemon_config() -> tuple[Mapping[str, float], Callable[[str], Brain], ToolRegistry, int]:
+async def draft_pitch(conn: aiosqlite.Connection, prey_id: str) -> str:
+    """The stub pitch drafter — the `P5` paid drafter's placeholder. Reads the penned posting and
+    returns a draft for human editing; no LLM, no spend. Rex drafts, never sends (invariant 4)."""
+    async with conn.execute("SELECT posting FROM prey WHERE id = ?", (prey_id,)) as cur:
+        row = await cur.fetchone()
+    posting = str(row[0]) if row is not None else prey_id
+    return f"Draft pitch for {posting} — [stub, edit me]"
+
+
+def daemon_config() -> tuple[
+    Mapping[str, float], Callable[[str], Brain], ToolRegistry, int, Drafter
+]:
     """The single seam the lifespan reads (and the lifespan gate monkeypatches).
 
-    Returns (schedule, brain_for, registry, max_concurrent) — exactly `run_scheduler`'s knobs.
+    Returns (schedule, brain_for, registry, max_concurrent, drafter) — the scheduler's knobs plus
+    the follow-up worker's drafter.
     """
-    return DEFAULT_SCHEDULE, stub_brain_for, build_registry(), MAX_CONCURRENT
+    return DEFAULT_SCHEDULE, stub_brain_for, build_registry(), MAX_CONCURRENT, draft_pitch

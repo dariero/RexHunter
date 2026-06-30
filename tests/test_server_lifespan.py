@@ -25,6 +25,7 @@ from rexhunter import db, server, stub
 from rexhunter.events import ToolCallEvent, ToolResultEvent
 from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision
 from rexhunter.tools import ToolRegistry
+from rexhunter.verdicts import Drafter
 
 pytestmark = pytest.mark.anyio
 
@@ -60,8 +61,13 @@ async def test_scheduler_runs_through_real_lifespan_and_drains_on_shutdown(
         # the conftest stub-brain factory (no model, no spend); tool by .__name__, never a literal
         return scripted_brain([ToolCallDecision(tool=blocker.__name__, args={}), HuntComplete()])
 
-    def fake_config() -> tuple[Mapping[str, float], Callable[[str], Brain], ToolRegistry, int]:
-        return {"t0": 0.01, "t1": 0.01}, brain_for, reg, 4
+    async def drafter(_conn: aiosqlite.Connection, _prey_id: str) -> str:
+        return "stub draft"  # the job worker runs alongside; no FEAST here, so it just idles
+
+    def fake_config() -> tuple[
+        Mapping[str, float], Callable[[str], Brain], ToolRegistry, int, Drafter
+    ]:
+        return {"t0": 0.01, "t1": 0.01}, brain_for, reg, 4, drafter
 
     monkeypatch.setattr(server, "DB_PATH", str(db_path))
     monkeypatch.setattr(stub, "daemon_config", fake_config)

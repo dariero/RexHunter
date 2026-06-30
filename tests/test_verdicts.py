@@ -6,7 +6,9 @@ the raw posting bytes (invariant 6), and the event + row land in ONE transaction
 Later units grow this file with the verdict state machine and the enqueued follow-up job.
 """
 
+import asyncio
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from pathlib import Path
 
 import aiosqlite
@@ -256,3 +258,146 @@ async def test_projection_never_drifts_from_the_verdict_log(tmp_path: Path) -> N
         assert folded[0] == "released"  # awaiting →amber →awaiting →released
     finally:
         await conn.close()
+
+
+# ── Unit 3: the enqueued follow-up job (stub pitch) + the drain worker ────────────────────
+
+
+async def job_rows(
+    conn: aiosqlite.Connection, prey_id: str
+) -> list[tuple[str, str, str, str | None]]:
+    async with conn.execute(
+        "SELECT id, kind, status, result FROM jobs WHERE prey_id = ?", (prey_id,)
+    ) as cur:
+        return [(str(r[0]), str(r[1]), str(r[2]), r[3]) for r in await cur.fetchall()]
+
+
+async def test_feast_enqueues_one_draft_pitch_job(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)
+        await verdicts.submit_verdict(conn, prey_id, Verdict.FEAST)
+        jobs = await job_rows(conn, prey_id)
+        assert len(jobs) == 1
+        assert jobs[0][1] == "draft_pitch"
+        assert jobs[0][2] == "queued"
+        assert jobs[0][3] is None  # no draft yet — the worker fills it
+    finally:
+        await conn.close()
+
+
+async def test_release_and_amber_enqueue_no_job(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        released = await _pen_one(conn, posting="r")
+        ambered = await _pen_one(conn, posting="a")
+        await verdicts.submit_verdict(conn, released, Verdict.RELEASE, reason="not AI-eng")
+        await verdicts.submit_verdict(conn, ambered, Verdict.AMBER, provenance="later")
+        assert await job_rows(conn, released) == []
+        assert await job_rows(conn, ambered) == []
+    finally:
+        await conn.close()
+
+
+async def test_concurrent_double_feast_enqueues_exactly_one_job(tmp_path: Path) -> None:
+    # THE discriminating test: two FEASTs race the SAME prey on SEPARATE connections. The status
+    # guard + the one-transaction enqueue mean exactly one wins — one flip, one event, ONE job. A
+    # non-atomic or unguarded enqueue double-enqueues here; a sequential replay would not catch it.
+    db_path = tmp_path / "rex.db"
+    seed = await db.connect(db_path)
+    prey_id = await _pen_one(seed)
+    await seed.close()
+
+    async def feast() -> bool:
+        conn = await db.connect(db_path)
+        try:
+            return await verdicts.submit_verdict(conn, prey_id, Verdict.FEAST)
+        finally:
+            await conn.close()
+
+    results = await asyncio.gather(feast(), feast())
+    assert sorted(results) == [False, True]  # exactly one transitioned, the other no-opped
+
+    check = await db.connect(db_path)
+    try:
+        assert (await prey_status(check, prey_id))[0] == "feasted"
+        assert await pen_event_count(check, prey_id) == 1  # one verdict event, not two
+        assert len(await job_rows(check, prey_id)) == 1  # ONE job — the exactly-once property
+    finally:
+        await check.close()
+
+
+async def test_worker_drains_a_queued_job_to_a_draft(tmp_path: Path) -> None:
+    db_path = tmp_path / "rex.db"
+    seed = await db.connect(db_path)
+    prey_id = await _pen_one(seed)
+    await verdicts.submit_verdict(seed, prey_id, Verdict.FEAST)  # enqueues one job
+    await seed.close()
+
+    async def drafter(_conn: aiosqlite.Connection, pid: str) -> str:
+        return f"DRAFT pitch for {pid}"  # the stub: no LLM, no spend
+
+    worker = asyncio.create_task(
+        verdicts.run_job_worker(db_path, drafter=drafter, poll_interval=0.01)
+    )
+    check = await db.connect(db_path)
+    try:
+        for _ in range(200):  # bounded poll so the suite can never hang
+            jobs = await job_rows(check, prey_id)
+            if jobs and jobs[0][2] == "done":
+                break
+            await asyncio.sleep(0.01)
+        jobs = await job_rows(check, prey_id)
+        assert len(jobs) == 1 and jobs[0][2] == "done"
+        assert jobs[0][3] == f"DRAFT pitch for {prey_id}"  # the draft landed for human editing
+    finally:
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
+        await check.close()
+
+
+async def test_requeue_running_jobs_at_boot(tmp_path: Path) -> None:
+    # A worker that died mid-draft leaves a job 'running'. At boot it must be requeued, not stuck.
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)
+        await verdicts.submit_verdict(conn, prey_id, Verdict.FEAST)
+        await conn.execute("UPDATE jobs SET status = 'running' WHERE prey_id = ?", (prey_id,))
+        await conn.commit()  # simulate a claim that never completed
+
+        assert await verdicts.requeue_running_jobs(conn) == 1
+        assert (await job_rows(conn, prey_id))[0][2] == "queued"
+        assert await verdicts.requeue_running_jobs(conn) == 0  # nothing left running — idempotent
+    finally:
+        await conn.close()
+
+
+async def test_post_verdict_endpoint_delegates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    from rexhunter import server
+    from rexhunter.server import VerdictRequest
+
+    db_path = tmp_path / "rex.db"
+    monkeypatch.setattr(server, "DB_PATH", str(db_path))
+    seed = await db.connect(db_path)
+    prey_id = await _pen_one(seed)
+    other_id = await _pen_one(seed, posting="other")
+    await seed.close()
+
+    resp = await server.post_verdict(VerdictRequest(prey_id=prey_id, verdict=Verdict.FEAST))
+    assert resp == {"applied": True}
+
+    check = await db.connect(db_path)
+    try:
+        assert (await prey_status(check, prey_id))[0] == "feasted"
+    finally:
+        await check.close()
+
+    # RELEASE without a reason is rejected at the boundary as a 400, not a 500.
+    with pytest.raises(HTTPException) as exc:
+        await server.post_verdict(VerdictRequest(prey_id=other_id, verdict=Verdict.RELEASE))
+    assert exc.value.status_code == 400
