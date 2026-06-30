@@ -329,8 +329,9 @@ async def test_scheduler_persists_no_shadow_schedule(
     tmp_path: Path, scripted_brain: BrainFactory
 ) -> None:
     # invariant 5 (derive, don't store): timing is folded from the clock, never persisted. After
-    # running, the schema is EXACTLY runs + trajectory_events — no schedule table, no next_run_at
-    # column, nothing the live timing could drift from.
+    # running, the schema is EXACTLY the log (runs + trajectory_events) plus the P4 pen projection
+    # tables (prey/pen_events/jobs) — no schedule table, no next_run_at column, nothing the live
+    # timing could drift from. The exact-match still trips if a "next fire" table ever sneaks in.
     db_path = tmp_path / "rex.db"
     reg, noop = _noop_registry()
 
@@ -351,7 +352,7 @@ async def test_scheduler_persists_no_shadow_schedule(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
         ) as cur:
             tables = sorted(str(r[0]) for r in await cur.fetchall())
-        assert tables == ["runs", "trajectory_events"]
+        assert tables == ["jobs", "pen_events", "prey", "runs", "trajectory_events"]
 
         async with reader.execute("SELECT name FROM pragma_table_info('runs')") as cur:
             cols = sorted(str(r[0]) for r in await cur.fetchall())

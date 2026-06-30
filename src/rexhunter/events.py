@@ -56,6 +56,18 @@ class ToolResultEvent(_Event):
     raw_response: bytes
 
 
+class PreyCapturedEvent(_Event):
+    """A hunt caught a posting worth a human verdict. Run-scoped (the owning hunt writes it,
+    invariant 7); carries the raw posting bytes (invariant 6). The `prey` projection row is
+    inserted in the SAME transaction as this event (see verdicts.capture_prey), so the pen is
+    rebuildable from the log: this event is the capture half, VerdictEvent the lifecycle half."""
+
+    type: Literal["prey_captured"] = "prey_captured"
+    prey_id: str  # the pen row this event creates; makes the rebuild deterministic
+    territory: str
+    raw_posting: bytes
+
+
 class ErrorEvent(_Event):
     """A tool attempt failed: raised, timed out, unknown name, or invalid args.
 
@@ -78,7 +90,7 @@ class ErrorEvent(_Event):
 # payload straight to the model whose Literal tag matches, and an unknown/absent tag raises at
 # the boundary. Adding member #5 is one line here; the read crossing below never changes.
 type TrajectoryEvent = Annotated[
-    SniffEvent | ToolCallEvent | ToolResultEvent | ErrorEvent,
+    SniffEvent | ToolCallEvent | ToolResultEvent | ErrorEvent | PreyCapturedEvent,
     Field(discriminator="type"),
 ]
 

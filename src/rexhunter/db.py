@@ -35,6 +35,45 @@ CREATE TABLE IF NOT EXISTS trajectory_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_run ON trajectory_events (run_id, seq);
+
+-- The prey pen (ADR pillar 4). `prey` is a PROJECTION (invariant 2): base fields land at
+-- capture (with a PreyCapturedEvent in trajectory_events), status/decided_at/reason/provenance
+-- fold from pen_events. It is not a second source of truth — it is rebuildable from the logs.
+CREATE TABLE IF NOT EXISTS prey (
+    id          TEXT PRIMARY KEY,                  -- uuid4; mirrored on the capture event
+    run_id      TEXT NOT NULL REFERENCES runs(id), -- the hunt that caught it (provenance)
+    territory   TEXT NOT NULL,
+    posting     TEXT NOT NULL,
+    status      TEXT NOT NULL,                     -- awaiting_verdict|feasted|released|ambered
+    captured_at TEXT NOT NULL,
+    decided_at  TEXT,                              -- set on a verdict, cleared on re-entry
+    reason      TEXT,                              -- RELEASE: labelled rejection data
+    provenance  TEXT                               -- AMBER: why shelved
+);
+
+-- The verdict log (ADR pillar 4): NOT run-scoped — a verdict arrives after the hunt has exited,
+-- from a different writer (the POST handler), so it cannot be a trajectory event of the run
+-- (invariant 7). Append-only; `prey.status` is its projection. Global `id` is the pen cursor.
+CREATE TABLE IF NOT EXISTS pen_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    prey_id    TEXT NOT NULL REFERENCES prey(id),
+    type       TEXT NOT NULL,                      -- discriminator, mirrors the payload
+    payload    TEXT NOT NULL,                      -- JSON-serialised VerdictEvent
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pen_events_prey ON pen_events (prey_id, id);
+
+-- Follow-up work queue (ADR pillar 4): a FEAST enqueues a draft_pitch job here, atomically with
+-- the verdict. Picked up by the same background machinery as hunts; the draft (a stub this slice)
+-- lands in `result` for human editing — Rex drafts, never sends (invariant 4).
+CREATE TABLE IF NOT EXISTS jobs (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,                      -- 'draft_pitch'
+    prey_id    TEXT NOT NULL REFERENCES prey(id),
+    status     TEXT NOT NULL,                      -- queued|running|done
+    result     TEXT,                               -- the stub draft, once the worker runs
+    created_at TEXT NOT NULL
+);
 """
 
 

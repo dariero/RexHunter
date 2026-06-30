@@ -19,7 +19,7 @@ from typing import Any, assert_never
 import aiosqlite
 from pydantic import BaseModel, ValidationError
 
-from rexhunter import db, events
+from rexhunter import db, events, verdicts
 from rexhunter.tools import ToolFn, ToolRegistry
 
 # ── Error taxonomy + single-attempt execution (Unit C) ───────────────────────
@@ -84,7 +84,14 @@ class ToolCallDecision(BaseModel):
 
 
 class HuntComplete(BaseModel):
-    """Terminal: the hunt is done. Appends no event - the outcome lives in runs (like P1)."""
+    """Terminal: the hunt is done. The outcome lives in runs (like P1) - no terminal event.
+
+    `catch` is the postings the hunt judged worth a human verdict; on completion each is written
+    to the prey pen (status='awaiting_verdict') BEFORE the run closes (P4). Capturing is an
+    internal state write, not an externally visible side effect - Tiny Arms (invariant 4) is
+    untouched: the human verdict, not Rex, is what later moves a captured row."""
+
+    catch: list[str] = []
 
 
 class NeedsHelp(BaseModel):
@@ -194,6 +201,7 @@ async def _drive(
     conn: aiosqlite.Connection,
     run_id: str,
     *,
+    territory: str,
     brain: Brain,
     registry: ToolRegistry,
     timeout_s: float,
@@ -202,10 +210,11 @@ async def _drive(
 ) -> tuple[str, str | None]:
     """plan -> act -> observe until a terminal decision or the iteration breaker.
 
-    Returns (outcome, abort_reason). HuntComplete / NeedsHelp are terminal and append no event
-    (terminal decisions are recorded by runs.outcome, not the log - matching P1). A tool
-    failure aborts; exceeding max_iterations trips the breaker so a stub brain that never
-    finishes cannot loop forever.
+    Returns (outcome, abort_reason). NeedsHelp is terminal and appends no event; HuntComplete
+    captures its catch into the prey pen (each a PreyCapturedEvent + row, P4) THEN closes via
+    runs.outcome - still no terminal *completion* event (matching P1). A tool failure aborts;
+    exceeding max_iterations trips the breaker so a stub brain that never finishes cannot loop
+    forever.
     """
     for _ in range(max_iterations):
         context = await db.read_events(conn, run_id)  # minimal window; real assembly is P5
@@ -218,6 +227,8 @@ async def _drive(
                 if not ok:
                     return "aborted", "tool failure"
             case HuntComplete():
+                for posting in decision.catch:
+                    await verdicts.capture_prey(conn, run_id, territory=territory, posting=posting)
                 return "completed", None
             case NeedsHelp():
                 return "needs_help", None
@@ -249,6 +260,7 @@ async def run_hunt(
         outcome, abort_reason = await _drive(
             conn,
             run_id,
+            territory=territory,
             brain=brain,
             registry=registry,
             timeout_s=tool_timeout_s,
