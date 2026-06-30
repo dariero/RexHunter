@@ -100,11 +100,11 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position:** `P2.3` gate ✅ (DoD #2 under concurrency, invariant 7 — green) →
-**`P4` ▶ next**. One tail open: the scheduler is gate-green but not yet wired into the daemon
-lifespan (it still runs the prototype `rex_loop`); that wiring is tracked as **`P2.3-wiring`**
-(deferred — it wants the real `brain()`/tools from `P5` to be meaningful, and the projection
-stays honest until then). `P2.3-wiring` lives only in these projections, never in the ADR
+**Current position:** `P2.3` ✅ **done — wired** (DoD #2 under concurrency + invariant 7 green,
+and the scheduler now runs in the real daemon lifespan) → **`P4` ▶ next**. `P2.3-wiring`
+landed: `run_scheduler` is launched on ASGI startup and drained on shutdown; the prototype
+`rex_loop` is deleted. The wired daemon drives a **no-spend stub brain** (`stub.py`) — the real
+`brain()`/tools stay `P5`. `P2.3-wiring` lived only in these projections, never in the ADR
 build sequence (which stays status-free).
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
@@ -118,7 +118,7 @@ build sequence (which stays status-free).
   per-tool timeout + retry budget; stub brain (no LLM, no spend). *Gate (green,
   `tests/test_stage2_gate.py`):* a tool that raises / hangs past timeout / an unknown tool
   name → typed events + clean outcome, never an unhandled escape (ADR **DoD #2**).
-- **`P2.3` · Hunt scheduler — ✅ gate green.** `scheduler.py`: `run_hunts` (bounded
+- **`P2.3` · Hunt scheduler — ✅ done (wired).** `scheduler.py`: `run_hunts` (bounded
   `TaskGroup` + `Semaphore`, one connection per run) and `run_scheduler` (per-territory
   monotonic-clock deadlines, no stored schedule). Each hunt is a single writer per run
   (invariant 7), failures are isolated (one hunt's abort never cancels or corrupts a sibling),
@@ -126,8 +126,11 @@ build sequence (which stays status-free).
   (green, `tests/test_invariant7.py` + `tests/test_scheduler.py`):* N concurrent hunts → seq
   collision-free + gapless per run (proven by a one-clause unscoped-`MAX` mutant), each
   raising/hanging/unknown-tool failure isolated under the cap, no escape from the group (ADR
-  **DoD #2 under concurrency**). *Tail:* **`P2.3-wiring`** — wire `run_scheduler` into
-  `server.py` lifespan (deferred, see current-position note).
+  **DoD #2 under concurrency**). *Wired (`P2.3-wiring`):* `run_scheduler` runs in `server.py`'s
+  lifespan driving a no-spend stub brain (`stub.py`); `rex_loop` deleted. *Lifespan gate
+  (green, `tests/test_server_lifespan.py`):* booted through the real `lifespan_context`, ≥2
+  concurrent hunts spawn on startup and shutdown leaves no run `outcome IS NULL`, no orphaned
+  task, no leaked connection.
 - **▶ `P4` · Durable pause & HITL — next.** `awaiting_verdict` rows, Feast/Release/Amber machine.
 - **`P5` · Brain socket.** `brain()`, native tool calling, thinking-delta relay (paid).
 - **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype

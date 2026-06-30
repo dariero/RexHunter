@@ -10,9 +10,9 @@ the agent's actual trajectory replayed as a creature moving through its world.
 
 > **Status: build-in-public, early.** Persistence (`P1`), the typed event model + validation
 > boundary (`P2.1`), the hand-rolled agent loop + `@rex_tool` harness (`P2.2`), and the
-> concurrent hunt scheduler (`P2.3`) are done and gate-tested; durable pause & HITL (`P4`) is
-> next. `P2.3`'s scheduler is gate-green but not yet wired into the daemon lifespan (a tracked
-> tail, `P2.3-wiring`). Slice IDs, order, and gates live in the
+> concurrent hunt scheduler (`P2.3`) are done and gate-tested — the scheduler now runs in the
+> daemon lifespan, driving a no-spend stub brain until the real `brain()` lands. Durable pause
+> & HITL (`P4`) is next. Slice IDs, order, and gates live in the
 > [ADR](rexhunter-adr.md#build-sequence-canonical).
 
 ## Core constraints
@@ -77,7 +77,7 @@ ADR owns the order and gates; this table tracks only status. Slices are named by
 | `P1` | **Persistence** – in-memory list → SQLite WAL event log (`runs`, `trajectory_events`) | 1 | **Done** |
 | `P2.1` | **Typed events** – discriminated-union model + validation boundary (`events.py`) | 2 | **Done** |
 | `P2.2` | **Loop & tool harness** – `@rex_tool` registry, validate → execute → append, error taxonomy | 2 | **Done** |
-| `P2.3` | Hunt scheduler – bounded concurrent-hunt task group + per-territory deadlines | 2 | **Gate ✅ · wiring deferred** (`P2.3-wiring`) |
+| `P2.3` | Hunt scheduler – bounded concurrent-hunt task group + per-territory deadlines, wired into the daemon lifespan | 2 | **Done** |
 | `P4` | Durable pause & HITL – `awaiting_verdict` rows, Feast / Release / Amber | 4 | **Next** |
 | `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | Planned |
 | `P3` | Streaming hub – per-viewer queues, `Last-Event-ID` resume | 3 | Inherited; hub deferred |
