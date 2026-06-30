@@ -13,6 +13,7 @@ in `P2.1` goes live. Tool/error events carry the raw request and response *bytes
 operated on (invariant 6) - which is why the shared base encodes bytes as base64.
 """
 
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -102,3 +103,37 @@ _EVENT_ADAPTER: TypeAdapter[TrajectoryEvent] = TypeAdapter(TrajectoryEvent)
 def decode_event(payload: str) -> TrajectoryEvent:
     """Invariant-3 read crossing: raw bytes -> typed, or ValidationError. The ONE line."""
     return _EVENT_ADAPTER.validate_json(payload)
+
+
+# ── The pen log: verdict events (ADR pillar 4) ────────────────────────────────
+# A second log, NOT the trajectory union: a verdict arrives after the run has exited, from the
+# POST handler, so it is not a run-scoped trajectory event (invariant 7). It crosses the SAME
+# validation boundary (invariant 3) on read, via decode_verdict_event below.
+
+
+class Verdict(StrEnum):
+    """The human verdicts on a penned posting. FEAST/RELEASE/AMBER act on an awaiting row;
+    REENTER returns an ambered row to the pen. The string value is what the log stores."""
+
+    FEAST = "feast"
+    RELEASE = "release"
+    AMBER = "amber"
+    REENTER = "reenter"
+
+
+class VerdictEvent(_Event):
+    """A human verdict, appended to pen_events. `prey.status`/`reason`/`provenance` are the
+    projection of these (invariant 2); the kind is the transition applied. RELEASE carries the
+    rejection reason (labelled data); AMBER carries provenance."""
+
+    type: Literal["verdict"] = "verdict"
+    prey_id: str
+    verdict: Verdict
+    reason: str | None = None
+    provenance: str | None = None
+
+
+def decode_verdict_event(payload: str) -> VerdictEvent:
+    """Invariant-3 read crossing for the pen log — the sibling of decode_event for the trajectory
+    log. Raw bytes from a durable, possibly stale row -> typed VerdictEvent, or ValidationError."""
+    return VerdictEvent.model_validate_json(payload)

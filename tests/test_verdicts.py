@@ -13,7 +13,7 @@ import aiosqlite
 import pytest
 
 from rexhunter import db, verdicts
-from rexhunter.events import PreyCapturedEvent
+from rexhunter.events import PreyCapturedEvent, Verdict
 from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision, run_hunt
 from rexhunter.tools import ToolRegistry
 
@@ -117,3 +117,142 @@ async def test_capture_prey_is_atomic(tmp_path: Path) -> None:
         assert row is not None and row[0] == 0  # row rolled back
     finally:
         await fresh.close()
+
+
+# ── Unit 2: the verdict state machine (guarded, idempotent) + the projection ──────────────
+
+
+async def _pen_one(
+    conn: aiosqlite.Connection, *, territory: str = "t", posting: str = "posting:x"
+) -> str:
+    """Capture one posting and return its prey_id (the verdict tests' fixture)."""
+    run_id = await db.start_run(conn, territory=territory)
+    return await verdicts.capture_prey(conn, run_id, territory=territory, posting=posting)
+
+
+async def prey_status(conn: aiosqlite.Connection, prey_id: str) -> tuple[str, str | None]:
+    async with conn.execute("SELECT status, decided_at FROM prey WHERE id = ?", (prey_id,)) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    return str(row[0]), row[1]
+
+
+async def pen_event_count(conn: aiosqlite.Connection, prey_id: str) -> int:
+    async with conn.execute("SELECT COUNT(*) FROM pen_events WHERE prey_id = ?", (prey_id,)) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+async def test_feast_transitions_awaiting_to_feasted(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.FEAST) is True
+        status, decided_at = await prey_status(conn, prey_id)
+        assert status == "feasted"
+        assert decided_at is not None  # a verdict stamps decided_at
+        assert await pen_event_count(conn, prey_id) == 1  # exactly one VerdictEvent appended
+    finally:
+        await conn.close()
+
+
+async def test_release_records_reason_and_requires_one(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)
+        # reason is the labelled-rejection payoff — required, enforced before any DB write.
+        with pytest.raises(ValueError):
+            await verdicts.submit_verdict(conn, prey_id, Verdict.RELEASE)
+        assert (await prey_status(conn, prey_id))[0] == "awaiting_verdict"  # unchanged
+        assert await pen_event_count(conn, prey_id) == 0
+
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.RELEASE, reason="not AI-eng")
+        async with conn.execute("SELECT status, reason FROM prey WHERE id = ?", (prey_id,)) as cur:
+            row = await cur.fetchone()
+        assert row is not None and row[0] == "released" and row[1] == "not AI-eng"
+    finally:
+        await conn.close()
+
+
+async def test_amber_records_provenance_and_can_reenter(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.AMBER, provenance="maybe later")
+        async with conn.execute(
+            "SELECT status, provenance, decided_at FROM prey WHERE id = ?", (prey_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and row[0] == "ambered" and row[1] == "maybe later"
+        assert row[2] is not None
+
+        # ambered is the ONLY state that re-enters the pen; re-entry clears decided_at.
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.REENTER) is True
+        status, decided_at = await prey_status(conn, prey_id)
+        assert status == "awaiting_verdict" and decided_at is None
+        assert await pen_event_count(conn, prey_id) == 2  # amber + reenter both logged
+    finally:
+        await conn.close()
+
+
+async def test_double_feast_is_a_noop(tmp_path: Path) -> None:
+    # Idempotency: the status guard makes a replayed / double-clicked FEAST a harmless no-op —
+    # the second call matches zero rows, transitions nothing, appends NO second event.
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.FEAST) is True
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.FEAST) is False  # no-op
+        assert (await prey_status(conn, prey_id))[0] == "feasted"
+        assert await pen_event_count(conn, prey_id) == 1  # one event, not two
+    finally:
+        await conn.close()
+
+
+async def test_verdict_on_a_resolved_row_is_a_noop(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.FEAST) is True
+        # feasted is terminal: RELEASE requires status='awaiting_verdict', so it no-ops.
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.RELEASE, reason="x") is False
+        assert (await prey_status(conn, prey_id))[0] == "feasted"  # untouched
+        assert await pen_event_count(conn, prey_id) == 1
+    finally:
+        await conn.close()
+
+
+async def test_reenter_only_from_ambered(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)  # status awaiting_verdict, never ambered
+        assert await verdicts.submit_verdict(conn, prey_id, Verdict.REENTER) is False  # no-op
+        assert (await prey_status(conn, prey_id))[0] == "awaiting_verdict"
+        assert await pen_event_count(conn, prey_id) == 0
+    finally:
+        await conn.close()
+
+
+async def test_projection_never_drifts_from_the_verdict_log(tmp_path: Path) -> None:
+    # The payoff of choosing the event form: prey is a PROJECTION. Fold the verdict log and it
+    # must reproduce the row exactly — the column can never silently drift from the log.
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        prey_id = await _pen_one(conn)
+        await verdicts.submit_verdict(conn, prey_id, Verdict.AMBER, provenance="first look")
+        await verdicts.submit_verdict(conn, prey_id, Verdict.REENTER)
+        await verdicts.submit_verdict(conn, prey_id, Verdict.RELEASE, reason="stale")
+
+        log = await verdicts.read_pen_events(conn, prey_id)
+        folded = verdicts.fold(log)  # (status, reason, provenance)
+
+        async with conn.execute(
+            "SELECT status, reason, provenance FROM prey WHERE id = ?", (prey_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None
+        assert folded == (row[0], row[1], row[2])
+        assert folded[0] == "released"  # awaiting →amber →awaiting →released
+    finally:
+        await conn.close()
