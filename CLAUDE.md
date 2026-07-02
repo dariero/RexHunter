@@ -100,13 +100,15 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position:** `P4` ✅ **done** (DoD #4 prey-pen clause green — crash-equivalence proven
-through the real lifespan) → **`P5` ▶ next**. The prey pen + Feast/Release/Amber verdict machine
-landed (`verdicts.py`): captures are run-scoped `PreyCapturedEvent`s; verdicts are a
-non-run-scoped `pen_events` log with `prey` as its projection (log-is-truth kept whole); a FEAST
-atomically enqueues a stub `draft_pitch` job drained by a worker in the lifespan; park-and-persist
-is deferred (DoD #4 split — see the ADR `P4` reconciliation note). The daemon still drives a
-**no-spend stub brain** (`stub.py`) — the real `brain()`/tools stay `P5`.
+**Current position:** `P4` ✅ **done** (DoD #4 prey-pen clause green) → **`P5` ▶ in progress**
+(Unit 1, the edge boundary). `P5` Unit 1 adds the **offline** parser (`brain.py`:
+`parse_decision` — raw provider bytes → typed `Decision` at one Pydantic boundary, invariant 3)
++ the malformed→`ErrorEvent` path (invariant 6), plus `tool_use_id` threaded onto
+`ToolCallEvent`/`ToolResultEvent` (the provider's correlation key doubles as the log's pairing
+key). This unit is **no-spend**: no vendor SDK, no network, no paid call — it is the whole of
+DoD #5. The provider adapter (the SDK + the first paid call), streaming `ThinkingDelta`, and the
+cost ceiling are later `P5` units, each cost-quoted before any live call. The daemon still drives
+the **no-spend stub brain** (`stub.py`) until the adapter lands.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -143,7 +145,12 @@ is deferred (DoD #4 split — see the ADR `P4` reconciliation note). The daemon 
   replay-across-restart are no-ops (one event, one job ever), and the boot crash-sweep marks a
   dangling run `'crashed'` while leaving the committed prey untouched (ADR **DoD #4**, prey-pen
   clause).
-- **▶ `P5` · Brain socket — next.** `brain()`, native tool calling, thinking-delta relay (paid).
+- **▶ `P5` · Brain socket — in progress.** *Unit 1 (the edge boundary) — active:* `brain.py`
+  `parse_decision` (raw provider bytes → typed `Decision`, invariant 3), the malformed→`ErrorEvent`
+  path (invariant 6), `tool_use_id` correlation on `ToolCallEvent`/`ToolResultEvent`; offline,
+  no-spend (the whole of DoD #5, gate `tests/test_stage5_gate.py`). *Later units (paid):* the
+  provider adapter + `brain()` (SDK, first paid call), native tool calling, thinking-delta relay,
+  cost ceiling — each cost-quoted first.
 - **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
   SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
 
