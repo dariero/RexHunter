@@ -46,6 +46,7 @@ class ToolCallEvent(_Event):
     type: Literal["tool_call"] = "tool_call"
     tool: str
     raw_request: bytes  # the JSON-serialised validated args (invariant 6)
+    tool_use_id: str = ""  # the provider's correlation key (P5); "" for stub/pre-P5 dispatches
 
 
 class ToolResultEvent(_Event):
@@ -55,6 +56,7 @@ class ToolResultEvent(_Event):
     tool: str
     raw_request: bytes
     raw_response: bytes
+    tool_use_id: str = ""  # mirrors the ToolCallEvent's key -> the log's pairing key (P5)
 
 
 class PreyCapturedEvent(_Event):
@@ -103,6 +105,19 @@ _EVENT_ADAPTER: TypeAdapter[TrajectoryEvent] = TypeAdapter(TrajectoryEvent)
 def decode_event(payload: str) -> TrajectoryEvent:
     """Invariant-3 read crossing: raw bytes -> typed, or ValidationError. The ONE line."""
     return _EVENT_ADAPTER.validate_json(payload)
+
+
+class BrainParseError(Exception):
+    """The provider->Decision boundary (P5) rejected a payload: LLM output is untrusted input
+    (invariant 3), and this raw payload does not validate into the decision union. Carries the
+    raw bytes (invariant 6) so the loop can attach them to an ErrorEvent - a malformed response
+    is diagnosable from the ghost replay, never a mystery string. Raised by brain.parse_decision;
+    caught by run_hunt, which records it and ends the run in a typed outcome."""
+
+    def __init__(self, raw: bytes, detail: str) -> None:
+        super().__init__(detail)
+        self.raw = raw
+        self.detail = detail
 
 
 # ── The pen log: verdict events (ADR pillar 4) ────────────────────────────────

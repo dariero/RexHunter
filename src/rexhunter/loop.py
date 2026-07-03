@@ -81,6 +81,7 @@ class ToolCallDecision(BaseModel):
 
     tool: str
     args: dict[str, Any]
+    tool_use_id: str = ""  # the provider's correlation key (P5); "" for the stub brain
 
 
 class HuntComplete(BaseModel):
@@ -125,7 +126,7 @@ async def _run_tool(
     aborts. Every append happens here, in the owning task (single writer, invariant 7). The raw
     request rides on every event so a dead attempt is a pytest fixture for free (invariant 6).
     """
-    tool_name, args = decision.tool, decision.args
+    tool_name, args, tool_use_id = decision.tool, decision.args, decision.tool_use_id
 
     try:
         tool = registry.get(tool_name)
@@ -162,7 +163,9 @@ async def _run_tool(
     raw_request = validated.model_dump_json().encode()
     kwargs = validated.model_dump()
     await db.append_event(
-        conn, run_id, events.ToolCallEvent(tool=tool_name, raw_request=raw_request)
+        conn,
+        run_id,
+        events.ToolCallEvent(tool=tool_name, raw_request=raw_request, tool_use_id=tool_use_id),
     )
 
     attempts = retry_budget + 1  # retry_budget is the number of RETRIES after the first try
@@ -190,7 +193,10 @@ async def _run_tool(
                 conn,
                 run_id,
                 events.ToolResultEvent(
-                    tool=tool_name, raw_request=raw_request, raw_response=raw_response
+                    tool=tool_name,
+                    raw_request=raw_request,
+                    raw_response=raw_response,
+                    tool_use_id=tool_use_id,
                 ),
             )
             return True  # success -> continue the hunt
@@ -283,6 +289,24 @@ async def run_hunt(
             except asyncio.CancelledError:
                 pass  # a re-cancel hit our frame; the shielded write runs on - wait it out
         raise cancel
+    except events.BrainParseError as exc:
+        # The provider->Decision boundary (P5) rejected a payload. The generic backstop below
+        # would drop the bytes (raw_request=b""); this specific clause, placed first, preserves
+        # the raw payload (invariant 6) so the malformed response is a ghost-replay fixture, then
+        # ends the run in a typed outcome - never an unhandled escape (DoD #5).
+        await db.append_event(
+            conn,
+            run_id,
+            events.ErrorEvent(
+                tool="<brain>",
+                retryable=False,
+                error="malformed provider response",
+                raw_request=b"",
+                raw_response=exc.raw,
+                detail=exc.detail,
+            ),
+        )
+        outcome, abort_reason = "aborted", "malformed provider response"
     except Exception as exc:
         await db.append_event(
             conn,
