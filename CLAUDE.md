@@ -100,15 +100,17 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position:** `P4` ✅ **done** (DoD #4 prey-pen clause green) → **`P5` ▶ in progress**
-(Unit 1, the edge boundary). `P5` Unit 1 adds the **offline** parser (`brain.py`:
-`parse_decision` — raw provider bytes → typed `Decision` at one Pydantic boundary, invariant 3)
-+ the malformed→`ErrorEvent` path (invariant 6), plus `tool_use_id` threaded onto
-`ToolCallEvent`/`ToolResultEvent` (the provider's correlation key doubles as the log's pairing
-key). This unit is **no-spend**: no vendor SDK, no network, no paid call — it is the whole of
-DoD #5. The provider adapter (the SDK + the first paid call), streaming `ThinkingDelta`, and the
-cost ceiling are later `P5` units, each cost-quoted before any live call. The daemon still drives
-the **no-spend stub brain** (`stub.py`) until the adapter lands.
+**Current position:** `P4` ✅ **done** · `P5` Unit 1 (edge boundary) ✅ **done** (`020283e`,
+DoD #5 green offline) → **`P5` ▶ in progress** (Unit 2a, the provider adapter — offline half).
+Unit 2a adds the provider-agnostic `Brain` adapter over **httpx** (`brain.py`:
+`adapter_brain_for` wraps `parse_decision` around a real Anthropic Messages-API request), presents
+`sniff` + `hunt_complete` + `needs_help` as tool schemas derived from `@rex_tool` signatures (D1),
+and tightens `parse_decision` to reject multiple `tool_use` blocks (one-tool-per-iteration). It is
+**no-spend, offline**: the transport is injected (`httpx.MockTransport` in tests → zero network);
+**no live call**. `SMOKE_MODEL = "claude-haiku-4-5-20251001"` is set now but unused until 2b. This
+unit does **not** re-gate DoD #5 (adapter-contract tests, not a DoD gate). The paid smoke test
+(Unit 2b, cost-quoted first), streaming `ThinkingDelta`, and the cost ceiling are later units. The
+daemon still drives the **no-spend stub brain** (`stub.py`) until 2b wires the live adapter.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -145,12 +147,16 @@ the **no-spend stub brain** (`stub.py`) until the adapter lands.
   replay-across-restart are no-ops (one event, one job ever), and the boot crash-sweep marks a
   dangling run `'crashed'` while leaving the committed prey untouched (ADR **DoD #4**, prey-pen
   clause).
-- **▶ `P5` · Brain socket — in progress.** *Unit 1 (the edge boundary) — active:* `brain.py`
-  `parse_decision` (raw provider bytes → typed `Decision`, invariant 3), the malformed→`ErrorEvent`
-  path (invariant 6), `tool_use_id` correlation on `ToolCallEvent`/`ToolResultEvent`; offline,
-  no-spend (the whole of DoD #5, gate `tests/test_stage5_gate.py`). *Later units (paid):* the
-  provider adapter + `brain()` (SDK, first paid call), native tool calling, thinking-delta relay,
-  cost ceiling — each cost-quoted first.
+- **▶ `P5` · Brain socket — in progress.** *Unit 1 (the edge boundary) — ✅ done (`020283e`):*
+  `brain.py` `parse_decision` (raw provider bytes → typed `Decision`, invariant 3), the
+  malformed→`ErrorEvent` path (invariant 6), `tool_use_id` correlation on
+  `ToolCallEvent`/`ToolResultEvent`; offline, no-spend — the whole of DoD #5, gate
+  `tests/test_stage5_gate.py`. *Unit 2a (provider adapter, offline half) — active:*
+  `adapter_brain_for` over **httpx** wraps `parse_decision` around the Anthropic Messages API,
+  presents `sniff`/`hunt_complete`/`needs_help` as derived tool schemas (D1), rejects multiple
+  `tool_use` blocks; injected transport, **no live call** (contract gate
+  `tests/test_brain_adapter.py`). *Later units (paid):* Unit 2b (the SDK-free live smoke call +
+  one-call cost guard, cost-quoted first), thinking-delta relay, cost ceiling.
 - **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
   SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
 
