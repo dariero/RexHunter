@@ -100,17 +100,19 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position:** `P4` ✅ **done** · `P5` Unit 1 (edge boundary) ✅ **done** (`020283e`,
-DoD #5 green offline) → **`P5` ▶ in progress** (Unit 2a, the provider adapter — offline half).
-Unit 2a adds the provider-agnostic `Brain` adapter over **httpx** (`brain.py`:
-`adapter_brain_for` wraps `parse_decision` around a real Anthropic Messages-API request), presents
-`sniff` + `hunt_complete` + `needs_help` as tool schemas derived from `@rex_tool` signatures (D1),
-and tightens `parse_decision` to reject multiple `tool_use` blocks (one-tool-per-iteration). It is
-**no-spend, offline**: the transport is injected (`httpx.MockTransport` in tests → zero network);
-**no live call**. `SMOKE_MODEL = "claude-haiku-4-5-20251001"` is set now but unused until 2b. This
-unit does **not** re-gate DoD #5 (adapter-contract tests, not a DoD gate). The paid smoke test
-(Unit 2b, cost-quoted first), streaming `ThinkingDelta`, and the cost ceiling are later units. The
-daemon still drives the **no-spend stub brain** (`stub.py`) until 2b wires the live adapter.
+**Current position:** `P4` ✅ **done** · `P5` Unit 1 (edge boundary) ✅ **done** (`020283e`) ·
+Unit 2a (provider adapter, offline) ✅ **done** (`edd4ec8`) → **`P5` ▶ in progress** (Unit 2b, the
+first paid call). Unit 2b makes ONE real Anthropic call on **`SMOKE_MODEL = "claude-sonnet-5"`** —
+a single-shot live smoke through the 2a adapter path, to prove the pipe end-to-end and capture a
+real response (with adaptive-thinking sibling blocks) as a golden fixture (`tests/fixtures/`,
+invariant 6). It **spends real money on exactly one call**. Offline half first: `build_tools`
+strips `title` from the derived schemas; a shared `build_request_body` holds the Sonnet 5 guards
+(no `temperature`/`top_p`/`top_k`, no `thinking`, no prefill; `max_tokens ≥ 1024`); `smoke.py` is
+the paid entrypoint (free `count_tokens` pre-flight → one `messages` call → persist raw bytes →
+`parse_decision`). The paid call gates on: `ANTHROPIC_API_KEY` exported, `count_tokens` 200, and an
+explicit go after the exact cost is quoted. DoD #5 (`tests/test_stage5_gate.py`) must not regress.
+The daemon still drives the **no-spend stub brain** (`stub.py`) until a later unit wires the live
+adapter in.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -155,8 +157,12 @@ daemon still drives the **no-spend stub brain** (`stub.py`) until 2b wires the l
   `adapter_brain_for` over **httpx** wraps `parse_decision` around the Anthropic Messages API,
   presents `sniff`/`hunt_complete`/`needs_help` as derived tool schemas (D1), rejects multiple
   `tool_use` blocks; injected transport, **no live call** (contract gate
-  `tests/test_brain_adapter.py`). *Later units (paid):* Unit 2b (the SDK-free live smoke call +
-  one-call cost guard, cost-quoted first), thinking-delta relay, cost ceiling.
+  `tests/test_brain_adapter.py`). *Unit 2b (the first paid call) — active:* one live smoke on
+  `claude-sonnet-5` through the 2a adapter (free `count_tokens` pre-flight → one `messages` call →
+  persist raw bytes → `parse_decision`), captured as a golden fixture (invariant 6); Sonnet 5
+  guards (no sampling params / `thinking` / prefill) + `title`-stripped schemas; hard one-call
+  guard; `smoke.py` entrypoint, spends real money on exactly one call. *Later units:* streaming
+  thinking-delta relay (Unit 3), extraction/strict mode, cost ceiling, live-adapter wiring.
 - **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
   SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
 

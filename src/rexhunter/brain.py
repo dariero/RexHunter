@@ -1,4 +1,4 @@
-"""The brain socket — Pillar 5. Unit 1: the edge boundary. Unit 2a: the provider adapter.
+"""The brain socket — Pillar 5. Unit 1: the edge boundary. Unit 2a/2b: the provider adapter.
 
 `parse_decision` is the ONE line (ADR §The What point 3) where a raw provider response becomes
 a typed `Decision`. LLM output is untrusted input (invariant 3) — treated with the same
@@ -17,13 +17,14 @@ per iteration) is a `BrainParseError`, not a silent first-wins.
 
 Unit 2a adds the provider adapter (`adapter_brain_for`) over **httpx** — still no vendor SDK (the
 loop stays SDK-free, ADR §The What point 1). The adapter POSTs through an INJECTED client, so this
-module opens no connection of its own; a `MockTransport` gives the offline tests zero network. The
-live smoke call is Unit 2b (paid, cost-quoted first); streaming and budget accounting are later
-units.
+module opens no connection of its own; a `MockTransport` gives the offline tests zero network.
+Unit 2b splits out `build_request_body` + `request_headers` (shared with the paid smoke, one
+request shape, no drift) and strips `title` from the derived tool schemas. Streaming and budget
+accounting are later units.
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -39,15 +40,18 @@ NEEDS_HELP = "needs_help"
 
 _TOOL_USE = "tool_use"  # the Anthropic content-block type we act on
 
-# The Anthropic Messages API surface (from the claude-api reference). The adapter targets the full
-# URL rather than the client's base_url, so the injected client needs no configuration.
-_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+# The Anthropic Messages API surface (from the claude-api reference). The adapter/smoke target the
+# full URLs rather than a client base_url, so an injected client needs no configuration.
+MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 1024
 
-# Reserved for the Unit 2b paid smoke call; UNUSED in this offline unit (set now so 2b inherits
-# it). A cheap tier is appropriate for a single one-call smoke test.
-SMOKE_MODEL = "claude-haiku-4-5-20251001"
+# The model for the Unit 2b single live smoke call (the first paid call). Sonnet 5: adaptive
+# thinking runs automatically (so the response carries `thinking` sibling blocks), and sampling
+# params / manual thinking / assistant prefill are all rejected with a 400 — build_request_body
+# holds those guards by construction.
+SMOKE_MODEL = "claude-sonnet-5"
 
 
 class _ToolUseBlock(BaseModel):
@@ -111,7 +115,7 @@ def parse_decision(raw: bytes) -> Decision:
     return ToolCallDecision(tool=block.name, args=block.input, tool_use_id=block.id)
 
 
-# ── The provider adapter (Unit 2a): httpx, no vendor SDK ─────────────────────
+# ── The provider adapter (Unit 2a) + the shared request shape (Unit 2b): httpx, no vendor SDK ──
 
 # Concise, model-facing descriptions for the reserved terminal tools. These are prose (how the
 # model should use the signal), NOT the schema — the schema is still DERIVED from the typed model
@@ -122,17 +126,56 @@ _TERMINAL_TOOLS: tuple[tuple[str, type[BaseModel], str], ...] = (
 )
 
 
+def _strip_titles(schema: Any) -> Any:
+    """Recursively drop `title` keys from a JSON schema. Pydantic's `model_json_schema()` emits a
+    `title` at the object root and on every property; Anthropic's `input_schema` neither needs nor
+    wants them, so we present the model a cleaner, provider-neutral schema. `additionalProperties`
+    (emitted by the `@rex_tool` args-models' `extra="forbid"`) is KEPT — Anthropic accepts it."""
+    if isinstance(schema, dict):
+        items = cast("dict[str, Any]", schema).items()
+        return {key: _strip_titles(value) for key, value in items if key != "title"}
+    if isinstance(schema, list):
+        return [_strip_titles(item) for item in cast("list[Any]", schema)]
+    return schema
+
+
+def request_headers(api_key: str) -> dict[str, str]:
+    """The Anthropic auth + version headers. Shared by the adapter and the Unit 2b smoke."""
+    return {"x-api-key": api_key, "anthropic-version": _ANTHROPIC_VERSION}
+
+
+def build_request_body(
+    *, model: str, max_tokens: int, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """The Anthropic Messages request body — shared by the adapter and the Unit 2b smoke so there
+    is ONE request shape (no drift). It carries ONLY model / max_tokens / messages / tools: no
+    `temperature`/`top_p`/`top_k` (any non-default → 400 on Sonnet 5), no `thinking` field (manual
+    thinking → 400; adaptive runs automatically), and `messages` is passed through unchanged — the
+    caller never appends an assistant prefill (→ 400). The Sonnet 5 guards therefore hold by
+    construction, not by remembering (locked by tests/test_smoke_offline.py)."""
+    return {"model": model, "max_tokens": max_tokens, "messages": messages, "tools": tools}
+
+
 def build_tools(registry: ToolRegistry) -> list[dict[str, Any]]:
     """The Anthropic `tools` array: every registered tool plus the two reserved terminal tools.
     Each `input_schema` is DERIVED from a typed signature — the registry tool's args-model, or the
-    terminal decision's Pydantic model — never hand-written (ADR §What point 1). The terminal tools
-    have no registry handler; the model calls them to signal completion (the D1 commitment)."""
+    terminal decision's Pydantic model — never hand-written (ADR §What point 1), then `title`-
+    stripped (`_strip_titles`) for a clean provider-neutral schema. The terminal tools have no
+    registry handler; the model calls them to signal completion (the D1 commitment)."""
     tools: list[dict[str, Any]] = [
-        {"name": tool.name, "description": tool.description, "input_schema": tool.json_schema}
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": _strip_titles(tool.json_schema),
+        }
         for tool in registry.registered()
     ]
     tools.extend(
-        {"name": name, "description": description, "input_schema": model.model_json_schema()}
+        {
+            "name": name,
+            "description": description,
+            "input_schema": _strip_titles(model.model_json_schema()),
+        }
         for name, model, description in _TERMINAL_TOOLS
     )
     return tools
@@ -176,17 +219,17 @@ def adapter_brain_for(
         at `parse_decision` (the user's spec + invariant 3).
     """
     tools = build_tools(registry)  # derived once — stable across the run
-    headers = {"x-api-key": api_key, "anthropic-version": _ANTHROPIC_VERSION}
+    headers = request_headers(api_key)
 
     def brain_for(territory: str) -> Brain:
         async def brain(_context: Context) -> Decision:
-            body: dict[str, Any] = {
-                "model": model,
-                "max_tokens": max_tokens,
-                "messages": _seed_messages(territory),
-                "tools": tools,
-            }
-            response = await client.post(_MESSAGES_URL, headers=headers, json=body)
+            body = build_request_body(
+                model=model,
+                max_tokens=max_tokens,
+                messages=_seed_messages(territory),
+                tools=tools,
+            )
+            response = await client.post(MESSAGES_URL, headers=headers, json=body)
             return parse_decision(response.content)  # one boundary (invariant 3)
 
         return brain
