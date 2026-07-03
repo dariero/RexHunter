@@ -57,6 +57,12 @@ class RegisteredTool:
         """Artifact 1 — the schema brain() is handed (P5)."""
         return self.args_model.model_json_schema()
 
+    @property
+    def description(self) -> str:
+        """The model-facing description brain() presents (P5) — the tool's docstring, so it too
+        derives from the one definition rather than a second hand-written declaration."""
+        return inspect.getdoc(self.fn) or ""
+
     def validate(self, args: dict[str, Any]) -> BaseModel:
         """Artifact 2 — the boundary: raw args → typed, or ValidationError. Never executes."""
         return self.args_model.model_validate(args)
@@ -85,6 +91,11 @@ class ToolRegistry:
             return self._tools[name]
         except KeyError:
             raise KeyError(f"unknown tool: {name!r}") from None
+
+    def registered(self) -> tuple[RegisteredTool, ...]:
+        """Every registered tool, in registration order. Provider-agnostic (pillar 2): the P5
+        adapter iterates these to present their schemas; no vendor shape leaks in here."""
+        return tuple(self._tools.values())
 
     def __contains__(self, name: object) -> bool:
         return name in self._tools
