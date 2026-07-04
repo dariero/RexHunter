@@ -101,18 +101,16 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 slice's gate (ADR Definition-of-done) is green.
 
 **Current position:** `P4` ✅ **done** · `P5` Unit 1 (edge boundary) ✅ **done** (`020283e`) ·
-Unit 2a (provider adapter, offline) ✅ **done** (`edd4ec8`) → **`P5` ▶ in progress** (Unit 2b, the
-first paid call). Unit 2b makes ONE real Anthropic call on **`SMOKE_MODEL = "claude-sonnet-5"`** —
-a single-shot live smoke through the 2a adapter path, to prove the pipe end-to-end and capture a
-real response (with adaptive-thinking sibling blocks) as a golden fixture (`tests/fixtures/`,
-invariant 6). It **spends real money on exactly one call**. Offline half first: `build_tools`
-strips `title` from the derived schemas; a shared `build_request_body` holds the Sonnet 5 guards
-(no `temperature`/`top_p`/`top_k`, no `thinking`, no prefill; `max_tokens ≥ 1024`); `smoke.py` is
-the paid entrypoint (free `count_tokens` pre-flight → one `messages` call → persist raw bytes →
-`parse_decision`). The paid call gates on: `ANTHROPIC_API_KEY` exported, `count_tokens` 200, and an
-explicit go after the exact cost is quoted. DoD #5 (`tests/test_stage5_gate.py`) must not regress.
-The daemon still drives the **no-spend stub brain** (`stub.py`) until a later unit wires the live
-adapter in.
+Unit 2a (provider adapter, offline) ✅ **done** (`edd4ec8`) · Unit 2b (the first paid call) ✅
+**done** — one real Sonnet 5 call landed and parsed (`tool=sniff`), captured as a golden fixture
+(`tests/fixtures/smoke_sonnet5.json`, invariant 6; it carries a live adaptive-thinking sibling
+block, so it validates the 2a lenient scan on genuine output). `SMOKE_MODEL = "claude-sonnet-5"`;
+`build_tools` strips `title` from the derived schemas (Anthropic accepted them — confirmed by the
+free `count_tokens` pre-flight); a shared `build_request_body` holds the Sonnet 5 guards (no
+`temperature`/`top_p`/`top_k`, no `thinking`, no prefill); `smoke.py` is the paid entrypoint
+(`--count-only` free pre-flight → one `messages` call → persist raw bytes → `parse_decision`),
+hard one-call guard. **→ Next: `P5` Unit 3** (streaming `ThinkingDelta` relay). The daemon still
+drives the **no-spend stub brain** (`stub.py`) until a later unit wires the live adapter in.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -157,12 +155,14 @@ adapter in.
   `adapter_brain_for` over **httpx** wraps `parse_decision` around the Anthropic Messages API,
   presents `sniff`/`hunt_complete`/`needs_help` as derived tool schemas (D1), rejects multiple
   `tool_use` blocks; injected transport, **no live call** (contract gate
-  `tests/test_brain_adapter.py`). *Unit 2b (the first paid call) — active:* one live smoke on
+  `tests/test_brain_adapter.py`). *Unit 2b (the first paid call) — ✅ done:* one live smoke on
   `claude-sonnet-5` through the 2a adapter (free `count_tokens` pre-flight → one `messages` call →
-  persist raw bytes → `parse_decision`), captured as a golden fixture (invariant 6); Sonnet 5
-  guards (no sampling params / `thinking` / prefill) + `title`-stripped schemas; hard one-call
-  guard; `smoke.py` entrypoint, spends real money on exactly one call. *Later units:* streaming
-  thinking-delta relay (Unit 3), extraction/strict mode, cost ceiling, live-adapter wiring.
+  persist raw bytes → `parse_decision`) landed and parsed to `ToolCallDecision(tool="sniff")`,
+  captured as `tests/fixtures/smoke_sonnet5.json` (invariant 6, a real adaptive-thinking sibling
+  block); Sonnet 5 guards (no sampling params / `thinking` / prefill) + `title`-stripped schemas;
+  hard one-call guard; `smoke.py` entrypoint. Offline gates `tests/test_smoke_offline.py` +
+  `tests/test_smoke_replay.py`. *Later units:* streaming thinking-delta relay (Unit 3),
+  extraction/strict mode, cost ceiling, live-adapter wiring.
 - **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
   SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
 
