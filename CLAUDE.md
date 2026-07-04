@@ -125,8 +125,14 @@ calls, `needs_help`, $0.0149. **Call two fired: the reconstructed assistant `too
 Each call's raw bytes captured as golden fixtures (`tests/fixtures/hunt_smoke_call_0{1,2}.json`, inv 6);
 `tests/test_hunt_replay.py` re-drives them offline to identical events (DoD #5). The daemon still drives
 the **no-spend stub brain** (`stub.py`); daemon-lifespan live wiring is a later unit.
-**▶ Next: `P5` Unit 3** (streaming `ThinkingDelta` relay) — where the vendor-SDK frugality call and the
-deferred P3 broadcast hub re-open.
+**▶ Now: `P3` · Streaming hub — in progress (`P3.1` active).** Building the real broadcast hub ahead of
+`P5` Unit 3: the deferred P3 re-opened here (its `ThinkingDelta` render target is what P3 builds, but
+thinking stays `{type:"disabled"}` — not consumed yet). *`P3.1` (hub + fan-out, offline):* one bounded
+`asyncio.Queue` per viewer, events offered post-commit (inv 1), lossy drop-and-resync (no producer
+back-pressure), fan-out + heartbeat; `publish` threaded through the `{db.append_event, verdicts.capture_prey}`
+choke set, wired alongside the prototype `/events` (not yet retired). *`P3.2` (next):* snapshot +
+catch-up + live-splice resume + the DoD #3 gate, then the prototype `/events` retires. **After P3: `P5`
+Unit 3** (streaming `ThinkingDelta` relay) — where the vendor-SDK frugality call re-opens.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
