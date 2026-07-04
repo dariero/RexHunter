@@ -79,7 +79,7 @@ ADR owns the order and gates; this table tracks only status. Slices are named by
 | `P2.2` | **Loop & tool harness** – `@rex_tool` registry, validate → execute → append, error taxonomy | 2 | **Done** |
 | `P2.3` | Hunt scheduler – bounded concurrent-hunt task group + per-territory deadlines, wired into the daemon lifespan | 2 | **Done** |
 | `P4` | Durable pause & HITL – prey pen + Feast / Release / Amber verdict machine (`verdicts.py`) | 4 | **Done** |
-| `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | **Next** |
+| `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | **In progress** – Unit 2c.1 done (brain-in-loop, offline); 2c.2 (gated live hunt) next |
 | `P3` | Streaming hub – per-viewer queues, `Last-Event-ID` resume | 3 | Inherited; hub deferred |
 
 Gates are test-first and defined in the ADR. `P1`'s gate (`tests/test_stage1_gate.py`): a real
