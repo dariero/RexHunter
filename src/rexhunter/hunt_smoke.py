@@ -92,11 +92,16 @@ class CapturingTransport(httpx.AsyncBaseTransport):
         return httpx.Response(response.status_code, content=body, request=request)
 
 
-def _write_fixtures(captured: list[bytes]) -> list[Path]:
-    """Persist each captured brain response as an ordered golden fixture (invariant 6)."""
+def _write_fixtures(captured: list[bytes], run_id: str) -> list[Path]:
+    """Persist each captured brain response as an ordered golden fixture (invariant 6), namespaced
+    UNDER the run's id (`hunt_<run_id>/call_NN.json`). Run-id scoping means a re-run writes a fresh
+    directory instead of clobbering a prior run's fixtures (and the replay test pins one run, so it
+    can never mix `call_NN` bytes across two different hunts)."""
+    run_dir = FIXTURE_DIR / f"hunt_{run_id}"
+    run_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     for i, raw in enumerate(captured, start=1):
-        path = FIXTURE_DIR / f"hunt_smoke_call_{i:02d}.json"
+        path = run_dir / f"call_{i:02d}.json"
         path.write_bytes(raw)
         paths.append(path)
     return paths
@@ -161,8 +166,8 @@ async def run_live_hunt(api_key: str) -> None:
         f"spend=${spend:.4f} (ceiling ${COST_CEILING_USD})"
     )
     _report_findings(tee.captured)
-    paths = _write_fixtures(tee.captured)
-    print(f"[fixtures] wrote {len(paths)} golden fixture(s): {', '.join(p.name for p in paths)}")
+    paths = _write_fixtures(tee.captured, run_id)
+    print(f"[fixtures] wrote {len(paths)} golden fixture(s) under hunt_{run_id}/")
 
 
 def main() -> None:

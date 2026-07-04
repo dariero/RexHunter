@@ -109,21 +109,24 @@ block, so it validates the 2a lenient scan on genuine output). `SMOKE_MODEL = "c
 free `count_tokens` pre-flight); a shared `build_request_body` holds the Sonnet 5 guards (no
 `temperature`/`top_p`/`top_k`, no `thinking`, no prefill); `smoke.py` is the paid entrypoint
 (`--count-only` free pre-flight → one `messages` call → persist raw bytes → `parse_decision`),
-hard one-call guard. **▶ `P5` Unit 2c — brain-in-loop — active (Unit 2c.2).** Wires the adapter
-into the hunt loop, closing ADR upgrade-map stage 3. *2c.1 (offline, no-spend) — ✅ done (`71ab898`):*
-the loop projects the trajectory log into an Anthropic `messages` array (inv 2, `project_messages`),
-threads a `HUNT_SYSTEM_PROMPT`, folds per-call usage into a running cost from `UsageEvent`s (inv 5,
+hard one-call guard. **`P5` Unit 2c — brain-in-loop — ✅ done. ADR upgrade-map stage 3 CLOSED:** the
+LLM drives a full hunt end to end (plan → tool runs → observation threads back into `messages` → next
+iteration → typed outcome), replay-gated. *2c.1 (offline, no-spend) — ✅ done (`71ab898`):* the loop
+projects the trajectory log into an Anthropic `messages` array (inv 2, `project_messages`), threads a
+`HUNT_SYSTEM_PROMPT`, folds per-call usage into a running cost from `UsageEvent`s (inv 5,
 `cost.fold_cost`) with a `COST_CEILING_USD` breaker, `classify` learns httpx transport/status failures
 (429/5xx/timeouts → retryable), and `select_brain_for`/`REXHUNTER_BRAIN` gate the spender surface
-(stub default, opt-in `live`). The live loop path sends `thinking: {type: "disabled"}` — bare
-`tool_use` replay turns until thinking capture lands in Unit 3. *2c.2 (gated live) — active:* the
-request adds `tool_choice: {disable_parallel_tool_use: true}` (one tool per iteration), a free
-`count_tokens` pre-flight guards the exact payload, and `rexhunter.hunt_smoke` runs one budget-capped
-(`COST_CEILING_USD=0.05`, `MAX_ITERATIONS=3`) hunt on `SMOKE_MODEL` against the mock-gym board,
-capturing each call's raw bytes as golden fixtures (inv 6) for an offline replay test (DoD #5). Part A
-(offline setup) lands first; the paid hunt is HELD for an explicit go with a cost quote. The daemon
-still drives the **no-spend stub brain** (`stub.py`); daemon-lifespan live wiring is a later unit.
-**→ Next after 2c: `P5` Unit 3** (streaming `ThinkingDelta` relay).
+(stub default, opt-in `live`). The live loop path sends `thinking: {type: "disabled"}` +
+`tool_choice: {disable_parallel_tool_use: true}` — bare one-`tool_use` replay turns until thinking
+capture lands in Unit 3. *2c.2 (gated live) — ✅ done:* one budget-capped hunt (`rexhunter.hunt_smoke`,
+`COST_CEILING_USD=0.05`, `MAX_ITERATIONS=3`) on `SMOKE_MODEL` against the mock-gym board — 2 brain
+calls, `needs_help`, $0.0149. **Call two fired: the reconstructed assistant `tool_use` + user
+`tool_result` (paired by `tool_use_id`) was accepted by the real API** — the never-run path is proven.
+Each call's raw bytes captured as golden fixtures (`tests/fixtures/hunt_smoke_call_0{1,2}.json`, inv 6);
+`tests/test_hunt_replay.py` re-drives them offline to identical events (DoD #5). The daemon still drives
+the **no-spend stub brain** (`stub.py`); daemon-lifespan live wiring is a later unit.
+**▶ Next: `P5` Unit 3** (streaming `ThinkingDelta` relay) — where the vendor-SDK frugality call and the
+deferred P3 broadcast hub re-open.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
