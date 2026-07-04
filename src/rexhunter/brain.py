@@ -74,6 +74,12 @@ HUNT_SYSTEM_PROMPT = (
     "capture; a human alone decides what happens to each catch."
 )
 
+# One tool per iteration. `disable_parallel_tool_use` caps the model to a single `tool_use`
+# block, so a parallel-tool reply can't trip the 2a multi-`tool_use` reject and abort the hunt.
+# `type:"auto"` still lets the model choose or terminate. Threaded via build_request_body; the
+# 2b smoke omits it (unforced) and keeps its shape.
+HUNT_TOOL_CHOICE: dict[str, Any] = {"type": "auto", "disable_parallel_tool_use": True}
+
 
 class _ToolUseBlock(BaseModel):
     """The one content block we consume, validated strictly on the fields we read. Extra keys are
@@ -196,12 +202,13 @@ def build_request_body(
     tools: list[dict[str, Any]],
     system: str | None = None,
     thinking: dict[str, Any] | None = None,
+    tool_choice: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The Anthropic Messages request body — shared by the adapter and the Unit 2b smoke so there
-    is ONE request shape (no drift). Core keys are model / max_tokens / messages / tools; `system`
-    and `thinking` are OPTIONAL and only added when passed, so the Unit 2b smoke (which passes
-    neither) keeps its exact captured shape and its guard test (tests/test_smoke_offline.py) stays
-    green. The always-omitted Sonnet 5 guards still hold by construction: never `temperature`/
+    is ONE request shape (no drift). Core keys are model / max_tokens / messages / tools; `system`,
+    `thinking`, and `tool_choice` are OPTIONAL and only added when passed, so the Unit 2b smoke
+    (passing none) keeps its captured shape and its guard (tests/test_smoke_offline.py) stays green.
+    The always-omitted Sonnet 5 guards still hold by construction: never `temperature`/
     `top_p`/`top_k` (any non-default → 400), never MANUAL thinking `{type:"enabled",budget_tokens}`
     (→ 400 — but `{type:"disabled"}` IS accepted on Sonnet 5, which the loop path uses), and
     `messages` is passed through unchanged (no assistant prefill → 400)."""
@@ -215,6 +222,8 @@ def build_request_body(
         body["system"] = system
     if thinking is not None:
         body["thinking"] = thinking
+    if tool_choice is not None:
+        body["tool_choice"] = tool_choice
     return body
 
 
@@ -353,6 +362,7 @@ def adapter_brain_for(
                 tools=tools,
                 system=HUNT_SYSTEM_PROMPT,
                 thinking={"type": "disabled"},
+                tool_choice=HUNT_TOOL_CHOICE,
             )
             response = await client.post(MESSAGES_URL, headers=headers, json=body)
             response.raise_for_status()  # non-2xx -> HTTPStatusError, classified by the loop

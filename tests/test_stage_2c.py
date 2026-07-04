@@ -20,12 +20,13 @@ fixture (`tests/fixtures/smoke_sonnet5.json`, a genuine Sonnet 5 response) ancho
 
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 from pydantic import ValidationError
 
-from rexhunter import brain, cost, db, stub
+from rexhunter import brain, cost, db, hunt_smoke, stub
 from rexhunter.events import (
     BrainParseError,
     ErrorEvent,
@@ -375,3 +376,119 @@ async def test_live_brain_is_opt_in_and_never_called(monkeypatch: pytest.MonkeyP
     finally:
         if client is not None:
             await client.aclose()  # closed without ever calling brain() → zero spend
+
+
+# ── 6. Unit 2c.2 — live request shape + count_tokens pre-flight (offline) ──────
+
+
+async def _capture_adapter_body(
+    registry: ToolRegistry, territory: str = "mock-gym"
+) -> dict[str, Any]:
+    """Drive one adapter turn over MockTransport and return the request body it actually sent."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, content=FIXTURE.read_bytes())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=registry
+        )
+        await brain_for(territory)([])
+    return captured["body"]
+
+
+async def test_live_request_shape() -> None:
+    body = await _capture_adapter_body(_sniff_registry())
+    for param in ("temperature", "top_p", "top_k"):
+        assert param not in body  # any non-default sampling param → 400 on Sonnet 5
+    assert body["thinking"] == {"type": "disabled"}  # accepted on Sonnet 5; only "enabled" 400s
+    assert body["tool_choice"]["disable_parallel_tool_use"] is True  # one tool per iteration
+    assert body["max_tokens"] >= 1024
+
+
+def test_build_request_body_omits_tool_choice_when_absent() -> None:
+    msgs = [{"role": "user", "content": "hi"}]
+    tools = brain.build_tools(_sniff_registry())
+    without = brain.build_request_body(
+        model=brain.SMOKE_MODEL, max_tokens=1024, messages=msgs, tools=tools
+    )
+    assert "tool_choice" not in without  # 2b smoke shape unchanged
+    with_tc = brain.build_request_body(
+        model=brain.SMOKE_MODEL,
+        max_tokens=1024,
+        messages=msgs,
+        tools=tools,
+        tool_choice=brain.HUNT_TOOL_CHOICE,
+    )
+    assert with_tc["tool_choice"] == brain.HUNT_TOOL_CHOICE
+
+
+async def test_count_tokens_preflight_posts_exact_payload_and_returns_count() -> None:
+    seen: dict[str, httpx.Request] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["req"] = request
+        return httpx.Response(200, json={"input_tokens": 1234})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        n = await hunt_smoke.count_tokens_preflight(client, "sk-test", _sniff_registry())
+
+    assert n == 1234
+    assert str(seen["req"].url) == brain.COUNT_TOKENS_URL
+    count_body = json.loads(seen["req"].content)
+    assert "max_tokens" not in count_body  # count_tokens takes no max_tokens
+    assert count_body["system"] == brain.HUNT_SYSTEM_PROMPT
+    assert count_body["thinking"] == {"type": "disabled"}
+    assert count_body["tool_choice"]["disable_parallel_tool_use"] is True
+
+
+async def test_preflight_payload_matches_adapter_body_minus_max_tokens() -> None:
+    # Drift guard: the free count must price the exact bytes the paid call will send.
+    adapter_body = await _capture_adapter_body(_sniff_registry())
+
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"input_tokens": 1})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await hunt_smoke.count_tokens_preflight(client, "sk-test", _sniff_registry())
+
+    assert seen["body"] == {k: v for k, v in adapter_body.items() if k != "max_tokens"}
+
+
+async def test_count_tokens_preflight_stops_on_non_200() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="bad schema — a paid call must not follow")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(SystemExit):
+            await hunt_smoke.count_tokens_preflight(client, "sk-test", _sniff_registry())
+
+
+async def test_capturing_transport_tees_only_messages_responses(tmp_path: Path) -> None:
+    raw = FIXTURE.read_bytes()
+    inner = httpx.MockTransport(lambda _r: httpx.Response(200, content=raw))
+    tee = hunt_smoke.CapturingTransport(inner, brain.MESSAGES_URL)
+    reg = _sniff_registry()
+    async with httpx.AsyncClient(transport=tee) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=reg
+        )
+        conn = await db.connect(tmp_path / "rex.db")
+        try:
+            await run_hunt(
+                conn,
+                territory="mock-gym",
+                brain=brain_for("mock-gym"),
+                registry=reg,
+                cost_ceiling_usd=1e-9,  # one brain call, then abort — one captured response
+                max_iterations=50,
+                tool_timeout_s=5.0,
+            )
+        finally:
+            await conn.close()
+    assert tee.captured == [raw]  # the brain's raw bytes, teed for the fixture (invariant 6)

@@ -109,16 +109,21 @@ block, so it validates the 2a lenient scan on genuine output). `SMOKE_MODEL = "c
 free `count_tokens` pre-flight); a shared `build_request_body` holds the Sonnet 5 guards (no
 `temperature`/`top_p`/`top_k`, no `thinking`, no prefill); `smoke.py` is the paid entrypoint
 (`--count-only` free pre-flight → one `messages` call → persist raw bytes → `parse_decision`),
-hard one-call guard. **▶ `P5` Unit 2c — brain-in-loop — active (Unit 2c.1).** Wires the adapter
-into the hunt loop, closing ADR upgrade-map stage 3. *2c.1 (offline, no-spend):* the loop projects
-the trajectory log into an Anthropic `messages` array (inv 2), threads a `HUNT_SYSTEM_PROMPT`, folds
-per-call usage into a running cost from `UsageEvent`s (inv 5) with a `COST_CEILING_USD` breaker,
-`classify` learns httpx transport/status failures (429/5xx/timeouts → retryable), and
-`REXHUNTER_BRAIN` gates the spender surface (stub default, opt-in `live`). The live loop path sends
-`thinking: {type: "disabled"}` — bare `tool_use` replay turns until thinking capture lands in Unit 3.
-*2c.2 (gated live):* one budget-capped multi-iteration hunt on `SMOKE_MODEL` against the mock board.
-The daemon still drives the **no-spend stub brain** (`stub.py`); daemon-lifespan live wiring is a
-later unit. **→ Next after 2c: `P5` Unit 3** (streaming `ThinkingDelta` relay).
+hard one-call guard. **▶ `P5` Unit 2c — brain-in-loop — active (Unit 2c.2).** Wires the adapter
+into the hunt loop, closing ADR upgrade-map stage 3. *2c.1 (offline, no-spend) — ✅ done (`71ab898`):*
+the loop projects the trajectory log into an Anthropic `messages` array (inv 2, `project_messages`),
+threads a `HUNT_SYSTEM_PROMPT`, folds per-call usage into a running cost from `UsageEvent`s (inv 5,
+`cost.fold_cost`) with a `COST_CEILING_USD` breaker, `classify` learns httpx transport/status failures
+(429/5xx/timeouts → retryable), and `select_brain_for`/`REXHUNTER_BRAIN` gate the spender surface
+(stub default, opt-in `live`). The live loop path sends `thinking: {type: "disabled"}` — bare
+`tool_use` replay turns until thinking capture lands in Unit 3. *2c.2 (gated live) — active:* the
+request adds `tool_choice: {disable_parallel_tool_use: true}` (one tool per iteration), a free
+`count_tokens` pre-flight guards the exact payload, and `rexhunter.hunt_smoke` runs one budget-capped
+(`COST_CEILING_USD=0.05`, `MAX_ITERATIONS=3`) hunt on `SMOKE_MODEL` against the mock-gym board,
+capturing each call's raw bytes as golden fixtures (inv 6) for an offline replay test (DoD #5). Part A
+(offline setup) lands first; the paid hunt is HELD for an explicit go with a cost quote. The daemon
+still drives the **no-spend stub brain** (`stub.py`); daemon-lifespan live wiring is a later unit.
+**→ Next after 2c: `P5` Unit 3** (streaming `ThinkingDelta` relay).
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
