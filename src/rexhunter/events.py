@@ -89,11 +89,24 @@ class ErrorEvent(_Event):
     detail: str | None = None
 
 
+class UsageEvent(_Event):
+    """Per-brain-call token accounting (ADR pillar 5, `P5`). Run-scoped telemetry (invariant 7)
+    the cost breaker folds into a running spend (invariant 5 — cost is DERIVED from these, never a
+    stored counter). NOT part of the messages projection: it is cost metadata, not conversation, so
+    the projection (brain.py) skips it. `model` names the priced model; the fold lives in cost.py.
+    """
+
+    type: Literal["usage"] = "usage"
+    model: str
+    input_tokens: int
+    output_tokens: int
+
+
 # The trajectory-event union, now multi-member and discriminated by `type`: Pydantic routes a
 # payload straight to the model whose Literal tag matches, and an unknown/absent tag raises at
-# the boundary. Adding member #5 is one line here; the read crossing below never changes.
+# the boundary. Adding a member is one line here; the read crossing below never changes.
 type TrajectoryEvent = Annotated[
-    SniffEvent | ToolCallEvent | ToolResultEvent | ErrorEvent | PreyCapturedEvent,
+    SniffEvent | ToolCallEvent | ToolResultEvent | ErrorEvent | PreyCapturedEvent | UsageEvent,
     Field(discriminator="type"),
 ]
 

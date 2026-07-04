@@ -23,13 +23,22 @@ request shape, no drift) and strips `title` from the derived tool schemas. Strea
 accounting are later units.
 """
 
-from collections.abc import Callable
+import json
+import os
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from rexhunter.events import BrainParseError
+from rexhunter.events import (
+    BrainParseError,
+    ErrorEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    TrajectoryEvent,
+    UsageEvent,
+)
 from rexhunter.loop import Brain, Context, Decision, HuntComplete, NeedsHelp, ToolCallDecision
 from rexhunter.tools import ToolRegistry
 
@@ -52,6 +61,18 @@ _DEFAULT_MAX_TOKENS = 1024
 # params / manual thinking / assistant prefill are all rejected with a 400 — build_request_body
 # holds those guards by construction.
 SMOKE_MODEL = "claude-sonnet-5"
+
+# The hunt directive as a stable system prompt (the thing the P2.2 stub brain never needed). It
+# tells the model what sniff/hunt_complete/needs_help mean AND encodes Tiny Arms (invariant 4) in
+# prose — Rex scouts and captures, a human decides. Kept module-level + frozen so the request prefix
+# is byte-stable (prompt-cache friendly). Threaded via build_request_body(system=...).
+HUNT_SYSTEM_PROMPT = (
+    "You are Rex, an autonomous agent scouting AI-engineering job postings. Investigate a "
+    "territory by calling the sniff tool. When you have gathered postings worth a human's verdict, "
+    "call hunt_complete with them as your catch. If the territory is unworkable or you are stuck, "
+    "call needs_help. You cannot apply, submit, message, or contact anyone — you only scout and "
+    "capture; a human alone decides what happens to each catch."
+)
 
 
 class _ToolUseBlock(BaseModel):
@@ -76,15 +97,34 @@ class _ProviderResponse(BaseModel):
 
     stop_reason: str | None = None
     content: list[dict[str, Any]]
+    model: str | None = None  # names the priced model (P5 Unit 2c cost accounting)
+    usage: dict[str, Any] | None = None  # {input_tokens, output_tokens, …}; absent on hand fixtures
+
+
+def _extract_usage(response: _ProviderResponse) -> UsageEvent | None:
+    """Read the envelope's token counts into a typed `UsageEvent` (P5 Unit 2c). None when the
+    payload carries no `usage` (hand-authored fixtures) — the loop then records no spend for that
+    call. Reads the SAME validated envelope as the decision, not a second inv-3 crossing."""
+    if response.usage is None:
+        return None
+    return UsageEvent(
+        model=response.model or "",
+        input_tokens=int(response.usage.get("input_tokens", 0)),
+        output_tokens=int(response.usage.get("output_tokens", 0)),
+    )
 
 
 def parse_decision(raw: bytes) -> Decision:
     """Raw provider bytes -> typed `Decision`, or `BrainParseError` (invariants 3 + 6). Pure: no
-    clock, no randomness, no network — the same bytes always yield the same decision."""
+    clock, no randomness, no network — the same bytes always yield the same decision. The parsed
+    `UsageEvent` (token cost, P5 Unit 2c) rides onto the Decision so the loop can fold spend from
+    the log (invariant 5) without a second crossing of the raw bytes."""
     try:
         response = _ProviderResponse.model_validate_json(raw)
     except ValidationError as exc:
         raise BrainParseError(raw=raw, detail=str(exc)) from exc
+
+    usage = _extract_usage(response)
 
     # Exactly one actionable block. We count `tool_use`-typed blocks only, so a `thinking` (or
     # other) sibling doesn't count against the total — zero means nothing to act on, more than one
@@ -105,14 +145,18 @@ def parse_decision(raw: bytes) -> Decision:
 
     # Reserved names are terminal decisions (they have no registry handler, so this parser is
     # their only boundary — hence `catch` IS validated here, unlike regular-tool args).
+    decision: Decision
     if block.name == HUNT_COMPLETE:
         try:
-            return HuntComplete.model_validate(block.input)
+            decision = HuntComplete.model_validate(block.input)
         except ValidationError as exc:
             raise BrainParseError(raw=raw, detail=str(exc)) from exc
-    if block.name == NEEDS_HELP:
-        return NeedsHelp()
-    return ToolCallDecision(tool=block.name, args=block.input, tool_use_id=block.id)
+    elif block.name == NEEDS_HELP:
+        decision = NeedsHelp()
+    else:
+        decision = ToolCallDecision(tool=block.name, args=block.input, tool_use_id=block.id)
+    decision.usage = usage  # every Decision carries the call's cost (None for a no-usage payload)
+    return decision
 
 
 # ── The provider adapter (Unit 2a) + the shared request shape (Unit 2b): httpx, no vendor SDK ──
@@ -145,15 +189,33 @@ def request_headers(api_key: str) -> dict[str, str]:
 
 
 def build_request_body(
-    *, model: str, max_tokens: int, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    *,
+    model: str,
+    max_tokens: int,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    system: str | None = None,
+    thinking: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The Anthropic Messages request body — shared by the adapter and the Unit 2b smoke so there
-    is ONE request shape (no drift). It carries ONLY model / max_tokens / messages / tools: no
-    `temperature`/`top_p`/`top_k` (any non-default → 400 on Sonnet 5), no `thinking` field (manual
-    thinking → 400; adaptive runs automatically), and `messages` is passed through unchanged — the
-    caller never appends an assistant prefill (→ 400). The Sonnet 5 guards therefore hold by
-    construction, not by remembering (locked by tests/test_smoke_offline.py)."""
-    return {"model": model, "max_tokens": max_tokens, "messages": messages, "tools": tools}
+    is ONE request shape (no drift). Core keys are model / max_tokens / messages / tools; `system`
+    and `thinking` are OPTIONAL and only added when passed, so the Unit 2b smoke (which passes
+    neither) keeps its exact captured shape and its guard test (tests/test_smoke_offline.py) stays
+    green. The always-omitted Sonnet 5 guards still hold by construction: never `temperature`/
+    `top_p`/`top_k` (any non-default → 400), never MANUAL thinking `{type:"enabled",budget_tokens}`
+    (→ 400 — but `{type:"disabled"}` IS accepted on Sonnet 5, which the loop path uses), and
+    `messages` is passed through unchanged (no assistant prefill → 400)."""
+    body: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages,
+        "tools": tools,
+    }
+    if system is not None:
+        body["system"] = system
+    if thinking is not None:
+        body["thinking"] = thinking
+    return body
 
 
 def build_tools(registry: ToolRegistry) -> list[dict[str, Any]]:
@@ -181,21 +243,82 @@ def build_tools(registry: ToolRegistry) -> list[dict[str, Any]]:
     return tools
 
 
-def _seed_messages(territory: str) -> list[dict[str, Any]]:
-    """A minimal valid `messages` array — one seed user turn per territory. Full multi-turn
-    threading of prior ToolCallEvent/ToolResultEvent (paired by `tool_use_id`) is DEFERRED to a
-    later unit (the loop flags this same seam, loop.py:220 "real assembly is P5"); the offline
-    tests inject a transport that ignores the body, and `max_iterations` bounds any repeat-the-seed
-    behaviour, so this does not block the Unit 2b smoke call."""
-    return [
-        {
-            "role": "user",
-            "content": (
-                f"Hunt {territory} for AI-engineering job postings. Call sniff to investigate; "
-                "call hunt_complete with your catch when done, or needs_help if you are stuck."
-            ),
-        }
-    ]
+def _seed_directive(territory: str) -> str:
+    """The opening user turn: name the territory and the tools it can call."""
+    return (
+        f"Hunt {territory} for AI-engineering job postings. Call sniff to investigate; "
+        "call hunt_complete with your catch when done, or needs_help if you are stuck."
+    )
+
+
+def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list[dict[str, Any]]:
+    """Fold the trajectory log into a valid Anthropic `messages` array (P5 Unit 2c). This is a
+    PROJECTION of the log (invariant 2), derived per brain call — not a second stored chat history.
+    The seed directive opens it; then each event maps to its conversational turn:
+
+      - ToolCallEvent    -> an assistant turn with the native `tool_use` block (id/name/input);
+      - ToolResultEvent  -> a user turn with the matching `tool_result` (paired by `tool_use_id`);
+      - a FATAL tool ErrorEvent -> an `is_error` tool_result paired to the open tool_use (ErrorEvent
+        carries no id, so we pair it with the last-opened call).
+
+    Skipped (not conversation): retryable ErrorEvents (a retry follows, superseded by its
+    ToolResultEvent), `<brain>`/`<loop>` failures (transport/loop errors, not turns), and
+    SniffEvent / PreyCapturedEvent / UsageEvent. Assistant *thinking* is NOT reconstructed — it is
+    not captured until Unit 3, which is why the loop path disables thinking (bare tool_use replay).
+    """
+    messages: list[dict[str, Any]] = [{"role": "user", "content": _seed_directive(territory)}]
+    open_tool_use_id = ""  # the id of the tool_use awaiting its result (for id-less ErrorEvents)
+    for event in context:
+        if isinstance(event, ToolCallEvent):
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": event.tool_use_id,
+                            "name": event.tool,
+                            "input": json.loads(event.raw_request),
+                        }
+                    ],
+                }
+            )
+            open_tool_use_id = event.tool_use_id
+        elif isinstance(event, ToolResultEvent):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": event.tool_use_id,
+                            "content": event.raw_response.decode(),
+                        }
+                    ],
+                }
+            )
+            open_tool_use_id = ""
+        elif isinstance(event, ErrorEvent):
+            if event.retryable or event.tool in ("<brain>", "<loop>"):
+                continue  # a retry follows / not a conversational turn
+            # A fatal TOOL error — only reachable for a tool that already emitted a ToolCallEvent,
+            # so open_tool_use_id is its id. (unknown-tool / bad-args errors abort the run before
+            # any re-projection, so this branch never pairs against a stale/empty id.)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": open_tool_use_id,
+                            "content": event.error,
+                            "is_error": True,
+                        }
+                    ],
+                }
+            )
+            open_tool_use_id = ""
+    return messages
 
 
 def adapter_brain_for(
@@ -211,27 +334,57 @@ def adapter_brain_for(
     belongs to whoever constructed it (the daemon/lifespan for a live call, a `MockTransport` in
     tests), the same single-owner discipline the run connections follow.
 
-    Deferred, each named (not silent), each a later unit:
-      - `system` prompt — the model isn't yet told sniff=investigate / hunt_complete=terminate.
-      - non-200 handling — the raw error body flows straight into `parse_decision` and becomes a
-        `BrainParseError` carrying it (invariant 6); retryable-vs-fatal HTTP classification (429 /
-        5xx) is a later unit. There is no `raise_for_status`: the response bytes cross one boundary,
-        at `parse_decision` (the user's spec + invariant 3).
+    Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), thread the
+    `HUNT_SYSTEM_PROMPT`, send `thinking:{type:"disabled"}` — assistant thinking is not captured
+    until Unit 3, so replaying bare `tool_use` turns needs thinking off (Sonnet 5 accepts it).
+    `raise_for_status()` turns a non-2xx into an `httpx.HTTPStatusError` the loop's `classify` sorts
+    (429/5xx retryable, 4xx fatal); on 2xx the bytes cross the single boundary at `parse_decision`
+    (inv 3), whose `UsageEvent` rides onto the Decision for the loop's cost fold (invariant 5).
     """
     tools = build_tools(registry)  # derived once — stable across the run
     headers = request_headers(api_key)
 
     def brain_for(territory: str) -> Brain:
-        async def brain(_context: Context) -> Decision:
+        async def brain(context: Context) -> Decision:
             body = build_request_body(
                 model=model,
                 max_tokens=max_tokens,
-                messages=_seed_messages(territory),
+                messages=project_messages(territory, context),
                 tools=tools,
+                system=HUNT_SYSTEM_PROMPT,
+                thinking={"type": "disabled"},
             )
             response = await client.post(MESSAGES_URL, headers=headers, json=body)
+            response.raise_for_status()  # non-2xx -> HTTPStatusError, classified by the loop
             return parse_decision(response.content)  # one boundary (invariant 3)
 
         return brain
 
     return brain_for
+
+
+def select_brain_for(
+    registry: ToolRegistry,
+) -> tuple[Callable[[str], Brain], httpx.AsyncClient | None]:
+    """The autonomous-spender containment (P5 Unit 2c): the daemon's `brain_for`, selected by the
+    `REXHUNTER_BRAIN` env var. Default `"stub"` returns the no-spend stub brain and no client — a
+    default start constructs nothing that could hit the network. `"live"` is the single opt-in that
+    arms spending: it builds the paid adapter over a real httpx client and RETURNS that client so
+    the caller (lifespan / the 2c.2 entrypoint) owns its close. Any other value is a hard error,
+    never a silent fall-through to spending.
+    """
+    mode = os.environ.get("REXHUNTER_BRAIN", "stub")
+    if mode == "stub":
+        from rexhunter import stub  # lazy: the stub path pulls in no adapter/client machinery
+
+        return stub.stub_brain_for, None
+    if mode == "live":
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError("REXHUNTER_BRAIN=live requires ANTHROPIC_API_KEY to be set")
+        client = httpx.AsyncClient(timeout=120.0)
+        brain_for = adapter_brain_for(
+            client=client, api_key=api_key, model=SMOKE_MODEL, registry=registry
+        )
+        return brain_for, client
+    raise ValueError(f"unknown REXHUNTER_BRAIN={mode!r} (expected 'stub' or 'live')")

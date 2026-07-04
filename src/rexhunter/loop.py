@@ -17,10 +17,15 @@ from collections.abc import Awaitable, Callable
 from typing import Any, assert_never
 
 import aiosqlite
+import httpx
 from pydantic import BaseModel, ValidationError
 
-from rexhunter import db, events, verdicts
+from rexhunter import cost, db, events, verdicts
 from rexhunter.tools import ToolFn, ToolRegistry
+
+# The default per-run spend guard (USD). The stub/scripted brains carry no usage (cost folds to 0),
+# so this never bites them; the paid smoke (`P5` Unit 2c.2) overrides it low. Enforced in `_drive`.
+COST_CEILING_USD = 1.0
 
 # ── Error taxonomy + single-attempt execution (Unit C) ───────────────────────
 
@@ -36,12 +41,20 @@ class RetryableToolError(Exception):
 def classify(exc: BaseException) -> bool:
     """The retryable-vs-fatal taxonomy. ``True`` = retryable (re-try within budget).
 
-    Retryable: a timeout (the tool may simply have been slow this once) and any
-    RetryableToolError. Fatal: everything else - a ValidationError (bad args never become good
-    on retry), a bug in the tool, an unknown-tool lookup. Retrying a fatal error only burns
-    budget without changing the outcome.
+    Retryable: a timeout (the tool may simply have been slow this once), any RetryableToolError,
+    and — since `P5` Unit 2c — transient httpx failures from the brain's HTTP call: any transport
+    error (connect/read/write/pool timeouts, connection resets) and a 429 / 5xx HTTP status.
+    Fatal: everything else - a 4xx client error, a BrainParseError / ValidationError (bad bytes
+    never become good on retry), a bug in the tool, an unknown-tool lookup. Retrying a fatal error
+    only burns budget without changing the outcome. httpx is the transport, not a vendor SDK, so
+    the loop knowing its exception shapes does not couple it to a provider (ADR §What point 1).
     """
-    return isinstance(exc, TimeoutError | RetryableToolError)
+    if isinstance(exc, TimeoutError | RetryableToolError | httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or 500 <= code < 600
+    return False
 
 
 def _to_bytes(result: object) -> bytes:
@@ -82,6 +95,7 @@ class ToolCallDecision(BaseModel):
     tool: str
     args: dict[str, Any]
     tool_use_id: str = ""  # the provider's correlation key (P5); "" for the stub brain
+    usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
 
 
 class HuntComplete(BaseModel):
@@ -93,12 +107,15 @@ class HuntComplete(BaseModel):
     untouched: the human verdict, not Rex, is what later moves a captured row."""
 
     catch: list[str] = []
+    usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
 
 
 class NeedsHelp(BaseModel):
     """Terminal: Rex is stuck and wants a human. P2.2 ends the run cleanly with
     outcome="needs_help"; the durable-pause machinery (awaiting_verdict, park-and-persist)
     is P4. needs_help collapses to aborted trivially later; aborted can't be split back."""
+
+    usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
 
 
 type Decision = ToolCallDecision | HuntComplete | NeedsHelp
@@ -203,6 +220,48 @@ async def _run_tool(
     return False  # defensive: range(attempts >= 1) always returns inside the loop
 
 
+async def _call_brain(
+    conn: aiosqlite.Connection,
+    run_id: str,
+    brain: Brain,
+    context: list[events.TrajectoryEvent],
+    *,
+    retry_budget: int,
+) -> Decision | None:
+    """One brain call, retrying the brain's HTTP transport failures; ``None`` = abort.
+
+    Owns exactly the errors this unit adds: httpx transport + status failures. A transient blip
+    (`classify` True: timeout / 429 / 5xx) is re-tried within budget, each attempt appending its own
+    ErrorEvent(tool="<brain>") in the owning task (single writer, invariant 7); a fatal one (a 4xx)
+    logs once and aborts. Everything else propagates unchanged: BrainParseError to run_hunt's clause
+    (invariant 6, raw bytes preserved) and any genuinely unforeseen exception to run_hunt's `<loop>`
+    backstop (DoD #2) - `_call_brain` narrows to httpx so it never swallows a brain bug.
+    """
+    attempts = retry_budget + 1
+    for attempt in range(attempts):
+        try:
+            return await brain(context)
+        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+            retryable = classify(exc)
+            raw_response = exc.response.content if isinstance(exc, httpx.HTTPStatusError) else None
+            await db.append_event(
+                conn,
+                run_id,
+                events.ErrorEvent(
+                    tool="<brain>",
+                    retryable=retryable,
+                    error=repr(exc),
+                    raw_request=b"",
+                    raw_response=raw_response,
+                    detail=traceback.format_exc(),
+                ),
+            )
+            if retryable and attempt < attempts - 1:
+                continue  # transient blip -> re-try within budget
+            return None  # fatal 4xx, or retryable budget exhausted -> abort
+    return None  # pragma: no cover - range(attempts >= 1) always returns inside the loop
+
+
 async def _drive(
     conn: aiosqlite.Connection,
     run_id: str,
@@ -213,18 +272,27 @@ async def _drive(
     timeout_s: float,
     retry_budget: int,
     max_iterations: int,
+    cost_ceiling_usd: float,
 ) -> tuple[str, str | None]:
-    """plan -> act -> observe until a terminal decision or the iteration breaker.
+    """plan -> act -> observe until a terminal decision, a breaker, or a brain failure.
 
-    Returns (outcome, abort_reason). NeedsHelp is terminal and appends no event; HuntComplete
-    captures its catch into the prey pen (each a PreyCapturedEvent + row, P4) THEN closes via
-    runs.outcome - still no terminal *completion* event (matching P1). A tool failure aborts;
-    exceeding max_iterations trips the breaker so a stub brain that never finishes cannot loop
-    forever.
+    Returns (outcome, abort_reason). Two circuit breakers guard the loop (ADR §Budget guards):
+    max_iterations bounds the turn count, and the cost ceiling - folded from the run's UsageEvents
+    (invariant 5, no stored counter) - aborts BEFORE the next paid call once spend crosses it. Each
+    iteration projects the log into the brain's context, records the call's UsageEvent (if the brain
+    reported one), then acts. NeedsHelp is terminal and appends no event; HuntComplete captures its
+    catch into the prey pen (each a PreyCapturedEvent + row, P4) THEN closes via runs.outcome. A
+    tool failure or an exhausted brain retry budget aborts.
     """
     for _ in range(max_iterations):
-        context = await db.read_events(conn, run_id)  # minimal window; real assembly is P5
-        decision = await brain(context)
+        context = await db.read_events(conn, run_id)  # the window the brain projects into messages
+        if cost.fold_cost(context) >= cost_ceiling_usd:
+            return "aborted", "cost ceiling"
+        decision = await _call_brain(conn, run_id, brain, context, retry_budget=retry_budget)
+        if decision is None:
+            return "aborted", "brain call failed"
+        if decision.usage is not None:
+            await db.append_event(conn, run_id, decision.usage)  # per-call spend, folded next iter
         match decision:
             case ToolCallDecision():
                 ok = await _run_tool(
@@ -252,6 +320,7 @@ async def run_hunt(
     tool_timeout_s: float = 30.0,
     retry_budget: int = 2,
     max_iterations: int = 50,
+    cost_ceiling_usd: float = COST_CEILING_USD,
 ) -> str:
     """Drive one hunt to a typed outcome; return its run_id (the durable handle).
 
@@ -272,6 +341,7 @@ async def run_hunt(
             timeout_s=tool_timeout_s,
             retry_budget=retry_budget,
             max_iterations=max_iterations,
+            cost_ceiling_usd=cost_ceiling_usd,
         )
     except asyncio.CancelledError as cancel:
         # Graceful shutdown (P2.3) closes the run HERE, not via the boot crash-sweep - that
