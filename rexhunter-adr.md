@@ -323,8 +323,9 @@ done/planned) — both of which reference these slice-IDs and never restate the 
 | **`P3` · Streaming hub** — per-viewer broadcast queues, `Last-Event-ID` resume | 3 | DoD #3 |
 
 Order is **dependency order, not pillar order.** `P3` (Streaming) sits last because the
-prototype's naive SSE feed covers it for now and the real broadcast hub is deferred; its pillar
-identity (3) is fixed regardless of build position. The gate column points at the per-pillar
+prototype's naive SSE feed covered it while the rest was built; the real broadcast hub was
+deferred to the end and is now built (retiring that poll). Its pillar identity (3) is fixed
+regardless of build position. The gate column points at the per-pillar
 Definition-of-done below — and `DoD #N` is itself pillar-keyed (`P3` → `DoD #3`), so a gate can
 never drift from its slice.
 

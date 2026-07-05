@@ -125,14 +125,28 @@ calls, `needs_help`, $0.0149. **Call two fired: the reconstructed assistant `too
 Each call's raw bytes captured as golden fixtures (`tests/fixtures/hunt_smoke_call_0{1,2}.json`, inv 6);
 `tests/test_hunt_replay.py` re-drives them offline to identical events (DoD #5). The daemon still drives
 the **no-spend stub brain** (`stub.py`); daemon-lifespan live wiring is a later unit.
-**▶ Now: `P3` · Streaming hub — in progress (`P3.1` active).** Building the real broadcast hub ahead of
-`P5` Unit 3: the deferred P3 re-opened here (its `ThinkingDelta` render target is what P3 builds, but
-thinking stays `{type:"disabled"}` — not consumed yet). *`P3.1` (hub + fan-out, offline):* one bounded
-`asyncio.Queue` per viewer, events offered post-commit (inv 1), lossy drop-and-resync (no producer
-back-pressure), fan-out + heartbeat; `publish` threaded through the `{db.append_event, verdicts.capture_prey}`
-choke set, wired alongside the prototype `/events` (not yet retired). *`P3.2` (next):* snapshot +
-catch-up + live-splice resume + the DoD #3 gate, then the prototype `/events` retires. **After P3: `P5`
-Unit 3** (streaming `ThinkingDelta` relay) — where the vendor-SDK frugality call re-opens.
+**▶ `P3` · Streaming hub — ✅ done. DoD #3 CLOSED.** The prototype poll is retired; the real in-process
+broadcast hub now serves the live feed (pipeline: hunt task → SQLite append (write-ahead) → hub → SSE →
+projection). *`P3.1` (hub + fan-out, offline) — ✅ done (`380e5af`):* `hub.py` — one bounded
+`asyncio.Queue` per viewer; `publish()` offers a committed event to every queue via `put_nowait` and
+DROPS a full queue (drop-and-resync), never awaiting (a slow viewer can't slow the hunter);
+`Envelope(id, data)` carries the stored payload STRING so live-splice == catch-up bytes by construction;
+a heartbeat is `id=None` → renders `": keep-alive\n\n"`, never advancing `Last-Event-ID`. Write-ahead
+(inv 1) made structural: the publish choke SET is `{db.append_event, verdicts.capture_prey}` — the second
+bypasses `append_event` for one-txn atomicity and the stub captures on every hunt, so BOTH publish,
+strictly post-commit; `type PublishFn` threaded (default `None` → prototype/tests untouched) through loop +
+scheduler; server lifespan feeds the hub + runs the heartbeat task. *`P3.2` (resume + gate) — ✅ done:*
+`server.py` `snapshot_state` (open runs + prey pen + per-territory latest + `latest_id`, from the log,
+inv 2), `catch_up` (`WHERE id > :last_seen`) and `stream_events` (register FIRST → catch-up → live-splice
+with monotonic-id dedup; `finally` deregisters); `/events` repointed at the hub (`?since=` seed +
+`Last-Event-ID` resume), `/snapshot` added, `/` does snapshot-then-stream. DoD #3 gate
+(`tests/test_stage3_gate.py`): two viewers render byte-identical feeds; a viewer closed for a full hunt
+reconnects via `Last-Event-ID` with zero gaps / zero dups (catch-up + splice + dedup, incl. the
+≤-high-water drop); a full-queue viewer is dropped while the hunt completes unslowed. Verified
+end-to-end through the real uvicorn server (curl `/events` streamed a full hunt's
+`tool_call`/`tool_result`/`prey_captured` frames + heartbeats; `/snapshot` `latest_id` 0→3). Thinking stays
+`{type:"disabled"}` — P3 built its render target, does not consume it. **▶ Next: `P5` Unit 3** (streaming
+`ThinkingDelta` relay) — where the vendor-SDK frugality call and the now-built hub's broadcast path meet.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -185,8 +199,13 @@ Unit 3** (streaming `ThinkingDelta` relay) — where the vendor-SDK frugality ca
   hard one-call guard; `smoke.py` entrypoint. Offline gates `tests/test_smoke_offline.py` +
   `tests/test_smoke_replay.py`. *Later units:* streaming thinking-delta relay (Unit 3),
   extraction/strict mode, cost ceiling, live-adapter wiring.
-- **`P3` · Streaming hub.** Per-viewer broadcast queues + `Last-Event-ID` resume; prototype
-  SSE is live, the real hub + DoD #3 gate are deferred (built late — see ADR order).
+- **`P3` · Streaming hub — ✅ done.** Per-viewer broadcast queues + `Last-Event-ID` resume; the
+  prototype poll is retired and `/events` streams from the real in-process hub. *Gate (green,
+  `tests/test_stage3_gate.py`):* two viewers render byte-identical feeds; a viewer closed for a full
+  hunt reconnects via `Last-Event-ID` with zero gaps + zero duplicates (snapshot + catch-up +
+  live-splice, monotonic-id dedup); a full-queue viewer is dropped without slowing the hunt (ADR
+  **DoD #3**). Offline hub unit (`tests/test_hub.py`) proves the write-ahead order structurally: an
+  envelope reaches a viewer only after a separate reader sees the committed row (inv 1).
 
 `payload` is a typed event union (`events.py`); the agent loop & `@rex_tool` harness landed in
 `P2.2` (`loop.py`, `tools/`). The brain is still a **stub** — don't introduce the LLM
