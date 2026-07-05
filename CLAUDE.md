@@ -146,17 +146,27 @@ reconnects via `Last-Event-ID` with zero gaps / zero dups (catch-up + splice + d
 end-to-end through the real uvicorn server (curl `/events` streamed a full hunt's
 `tool_call`/`tool_result`/`prey_captured` frames + heartbeats; `/snapshot` `latest_id` 0→3). Thinking stays
 `{type:"disabled"}` — P3 built its render target, does not consume it.
-**▶ Now: `P5` · Unit 3 — the `ThinkingDelta` relay — in progress (`3a` active).** Turning thinking back
-on and streaming Rex's reasoning through the P3 hub. Split: *`3a`* hand-rolled SSE stream transport
-(offline) — assemble a streamed response into content blocks (text, tool_use, **thinking + signature**);
-*`3b`* the write-ahead `ThinkingDelta` relay (offline) — the loop appends each delta (inv 1) then the P3
-hub broadcasts it, reusing `publish()` (no new fan-out); *`3c`* signed-block replay + the gate — Sonnet 5
-runs adaptive thinking by default, so each reconstructed assistant turn must lead with the model's
-**verbatim signed thinking block** (invariant 6) or the API 400s ("thinking blocks cannot be modified");
-`project_messages` echoes the block, never rebuilds it. The gate is 3c's replay correctness, not the UI
-stream. Streaming parse stays hand-rolled over httpx (no vendor SDK — invariants 3/6 need the raw
-signed-block bytes the SDK's typed-delta layer hides); the frugality call re-opens only if the parse
-exceeds ~150 lines (the user's call, not a silent import). Nothing spends until 3c, on explicit go.
+**▶ `P5` · Unit 3 — the `ThinkingDelta` relay — ✅ done.** Thinking is back on and Rex's reasoning
+streams through the P3 hub. *`3a` (streaming transport, offline) — ✅ done (`a3e05b4`):* `brain.py`
+`iter_sse_events` + `StreamAssembler` (90 lines, under the frugality threshold — no vendor SDK; invs
+3/6 need the raw signed-block bytes the SDK's typed-delta layer hides) fold a Sonnet 5 SSE response
+into the SAME `_ProviderResponse` shape `parse_decision` consumes; display streams, execution waits
+(tool_use `input` finalized only at `content_block_stop`). *`3b` (write-ahead relay, offline) — ✅ done
+(`2c37708`):* `ThinkingDelta` joins the union (relay-only, skipped by `project_messages`); `Brain` gains
+a call-time `ThinkingSink`, a loop-built closure over `(conn, run_id, publish)` that appends each delta
+write-ahead (inv 1) then the hub broadcasts it — reusing `publish()`, no new fan-out. *`3c`
+(signed-block replay + gate) — ✅ done, replay-gated (`c70f2f7`):* `ToolCallEvent.thinking` stores the
+turn's VERBATIM signed block (inv 6); `project_messages` leads each reconstructed assistant turn with it,
+echoed never rebuilt (the signature is bound to the exact bytes — a rebuild would 400). **One gated
+thinking-on live hunt PROVEN** (`rexhunter.hunt_smoke_thinking`, `claude-sonnet-5`, adaptive+summarized,
+`HUNT_MAX_TOKENS=4096`, `COST_CEILING_USD=0.20`, `MAX_ITERATIONS=3`): 2 brain calls, `completed`, $0.0187.
+**Call two was accepted — the reconstructed assistant turn led with call one's verbatim signed thinking
+block and the real API took it** (not a 400). Raw SSE streams captured as golden fixtures
+(`tests/fixtures/hunt_32975e98.../call_0{1,2}.json`, inv 6); `tests/test_thinking_hunt_replay.py`
+re-drives them offline to identical events (DoD #5). The daemon still drives the no-spend stub brain;
+daemon-lifespan live wiring is a later unit.
+**▶ Next: `P5` extraction/strict mode + live-adapter daemon wiring**, or the remaining pillar polish —
+the streaming `ThinkingDelta` render target (P3 hub) and the signed-block replay path are both closed.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -207,8 +217,12 @@ exceeds ~150 lines (the user's call, not a silent import). Nothing spends until 
   captured as `tests/fixtures/smoke_sonnet5.json` (invariant 6, a real adaptive-thinking sibling
   block); Sonnet 5 guards (no sampling params / `thinking` / prefill) + `title`-stripped schemas;
   hard one-call guard; `smoke.py` entrypoint. Offline gates `tests/test_smoke_offline.py` +
-  `tests/test_smoke_replay.py`. *Later units:* streaming thinking-delta relay (Unit 3),
-  extraction/strict mode, cost ceiling, live-adapter wiring.
+  `tests/test_smoke_replay.py`. *Unit 3 (streaming `ThinkingDelta` relay + signed-block replay) — ✅
+  done, replay-gated (`c70f2f7`):* hand-rolled SSE `StreamAssembler` (no vendor SDK), the write-ahead
+  `ThinkingDelta` relay through the P3 hub, and `project_messages` echoing the verbatim signed thinking
+  block; one gated live hunt (`claude-sonnet-5`, thinking on, $0.0187) proved call two accepted with
+  the reconstructed signed-block turn, captured + offline-replayed (`tests/test_thinking_hunt_replay.py`).
+  *Later units:* extraction/strict mode, live-adapter daemon wiring.
 - **`P3` · Streaming hub — ✅ done.** Per-viewer broadcast queues + `Last-Event-ID` resume; the
   prototype poll is retired and `/events` streams from the real in-process hub. *Gate (green,
   `tests/test_stage3_gate.py`):* two viewers render byte-identical feeds; a viewer closed for a full
