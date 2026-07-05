@@ -165,8 +165,15 @@ block and the real API took it** (not a 400). Raw SSE streams captured as golden
 (`tests/fixtures/hunt_32975e98.../call_0{1,2}.json`, inv 6); `tests/test_thinking_hunt_replay.py`
 re-drives them offline to identical events (DoD #5). The daemon still drives the no-spend stub brain;
 daemon-lifespan live wiring is a later unit.
-**▶ Next: `P5` extraction/strict mode + live-adapter daemon wiring**, or the remaining pillar polish —
-the streaming `ThinkingDelta` render target (P3 hub) and the signed-block replay path are both closed.
+**▶ `P5` · Daemon live-wiring — IN PROGRESS · `W.1` (brain selection + daemon budget, offline).** Convert
+the harness-proven streaming/thinking brain into a daemon that streams reasoning to a real `/events` tab,
+bounded by a daemon-level (id-scoped) spend budget. Split: `W.1` brain selection + daemon budget (offline);
+`W.2` the `ThinkingSink` under the real lifespan (offline); `W.3` one gated live daemon hunt + browser smoke.
+The lifespan (`server.py`) hardcodes the stub brain and `select_brain_for`'s `live` path is non-streaming —
+both change here. The id-scoped ceiling (`DAEMON_SPEND_CEILING_USD`) is the seq-scoped per-run ceiling's
+analogue: a fold over ALL runs' `UsageEvent`s along the global `id` cursor (inv 5, no counter), consulted
+before each launch — Tiny Arms for money (inv 4). Scope guard: no ATS adapter (mock-gym only), no frontend,
+no new tools. *Then:* `P5` extraction/strict mode, or the remaining pillar polish.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
