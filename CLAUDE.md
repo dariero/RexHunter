@@ -165,15 +165,35 @@ block and the real API took it** (not a 400). Raw SSE streams captured as golden
 (`tests/fixtures/hunt_32975e98.../call_0{1,2}.json`, inv 6); `tests/test_thinking_hunt_replay.py`
 re-drives them offline to identical events (DoD #5). The daemon still drives the no-spend stub brain;
 daemon-lifespan live wiring is a later unit.
-**▶ `P5` · Daemon live-wiring — IN PROGRESS · `W.1` (brain selection + daemon budget, offline).** Convert
-the harness-proven streaming/thinking brain into a daemon that streams reasoning to a real `/events` tab,
-bounded by a daemon-level (id-scoped) spend budget. Split: `W.1` brain selection + daemon budget (offline);
-`W.2` the `ThinkingSink` under the real lifespan (offline); `W.3` one gated live daemon hunt + browser smoke.
-The lifespan (`server.py`) hardcodes the stub brain and `select_brain_for`'s `live` path is non-streaming —
-both change here. The id-scoped ceiling (`DAEMON_SPEND_CEILING_USD`) is the seq-scoped per-run ceiling's
-analogue: a fold over ALL runs' `UsageEvent`s along the global `id` cursor (inv 5, no counter), consulted
-before each launch — Tiny Arms for money (inv 4). Scope guard: no ATS adapter (mock-gym only), no frontend,
-no new tools. *Then:* `P5` extraction/strict mode, or the remaining pillar polish.
+**▶ `P5` · Daemon live-wiring — ✅ done.** The harness-proven streaming/thinking brain now runs in the
+daemon: the lifespan streams Rex's reasoning to a real `/events` tab, bounded by a daemon-level (id-scoped)
+spend budget. *`W.1` (brain selection + daemon budget, offline) — ✅ done:* the lifespan calls
+`select_brain_for` honoring `REXHUNTER_BRAIN` (was hardcoded stub); `live` now selects the STREAMING/THINKING
+adapter (`stream=True` + adaptive thinking, `HUNT_THINKING`/`HUNT_MAX_TOKENS` promoted to `brain.py`), not the
+non-streaming one; `select_brain_for(default=)` routes `daemon_config`'s brain through stub mode (the
+injectable lifespan seam) and the lifespan owns the paid client's close. The id-scoped ceiling
+`DAEMON_SPEND_CEILING_USD` is the seq-scoped per-run ceiling's analogue: `daemon_spend_usd = cost.fold_cost`
+over the whole log's `UsageEvent`s (`db.read_usage`, ALL runs along the global `id` cursor) — a fold over the
+log, NOT a counter (inv 5: a counter drifts on a crash between the usage commit and the increment, and races
+across concurrent hunts; the fold reconstructs spend exactly, one price table, two windows). `_bounded_hunt`
+consults it BEFORE `run_hunt` and refuses to launch when over budget (Tiny Arms for money, inv 4 — the daemon
+structurally cannot overspend; fail-closed whole-log window, rolling day-window deferred). `cost_ceiling_usd`
+threaded scheduler→run_hunt; env knobs `DAEMON_SPEND_CEILING_USD`/`COST_CEILING_USD`/`MAX_ITERATIONS`. *`W.2`
+(ThinkingSink under the real lifespan, offline) — ✅ done:* the loop-built sink closure (`conn`/`run_id`/hub
+`publish`) proven write-ahead under `server.app.router.lifespan_context` — a delta-emitting brain injected via
+`daemon_config`, viewer gated on a test `Event` to beat the delta race. Test-only (the plumbing was already
+correct). *`W.3` (one gated live daemon hunt + browser smoke) — ✅ done, replay-gated:* one live hunt through
+the real lifespan (`claude-sonnet-5`, thinking-on + streaming, `DAEMON_SPEND_CEILING_USD=0.005`, fresh
+`REXHUNTER_DB`) — **$0.0224, ONE run, budget gate refused further hunts** (`daemon_spend_usd` == the run's
+`fold_cost` == $0.0224). The browser tab rendered Rex's reasoning streaming live: `thinking_delta` frames
+committed DURING each brain call, interleaved with the verbatim-signed-block `tool_call`, `tool_result`,
+`usage`, and an id-less `: keep-alive`. This hunt ended `needs_help` (the model judged the mock board
+unworkable), so no `prey_captured` in THIS stream — that event's live streaming is covered by the free stub
+smoke. Canonical `/events` stream captured as a fixture (`tests/fixtures/daemon_hunt_4688398b….sse`, inv 6);
+`tests/test_daemon_stream_replay.py` re-drives it offline (monotonic ids, delta-before-tool_call, signed
+block, paired tool_use_ids, usage folds to the spend, id-less heartbeat). Scope guard held: mock-gym only, no
+ATS adapter, no frontend, no new tools. *Then next: `P5` extraction/strict mode + the live ATS (Greenhouse/
+Lever) adapter, or the remaining pillar polish.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill

@@ -1,0 +1,47 @@
+id: 1
+data: {"type":"thinking_delta","text":"I"}
+
+id: 2
+data: {"type":"thinking_delta","text":"'m realizing this is a mock environment without a real board adapter—just the"}
+
+id: 3
+data: {"type":"thinking_delta","text":" P5 one. The sniff tool description indicates it doesn't actually perform real searches; it simply echoes back the input"}
+
+id: 4
+data: {"type":"thinking_delta","text":" as a raw response that gets logged. Let me test calling"}
+
+id: 5
+data: {"type":"thinking_delta","text":" it to see what actually happens."}
+
+id: 6
+data: {"type":"usage","model":"claude-sonnet-5","input_tokens":1810,"output_tokens":168}
+
+id: 7
+data: {"type":"tool_call","tool":"sniff","raw_request":"eyJwcmV5IjoibW9jay1neW0ifQ==","tool_use_id":"toolu_01FKgdSu7UK3JqZHjHukEUWa","thinking":"eyJ0eXBlIjogInRoaW5raW5nIiwgInRoaW5raW5nIjogIkknbSByZWFsaXppbmcgdGhpcyBpcyBhIG1vY2sgZW52aXJvbm1lbnQgd2l0aG91dCBhIHJlYWwgYm9hcmQgYWRhcHRlclx1MjAxNGp1c3QgdGhlIFA1IG9uZS4gVGhlIHNuaWZmIHRvb2wgZGVzY3JpcHRpb24gaW5kaWNhdGVzIGl0IGRvZXNuJ3QgYWN0dWFsbHkgcGVyZm9ybSByZWFsIHNlYXJjaGVzOyBpdCBzaW1wbHkgZWNob2VzIGJhY2sgdGhlIGlucHV0IGFzIGEgcmF3IHJlc3BvbnNlIHRoYXQgZ2V0cyBsb2dnZWQuIExldCBtZSB0ZXN0IGNhbGxpbmcgaXQgdG8gc2VlIHdoYXQgYWN0dWFsbHkgaGFwcGVucy4iLCAic2lnbmF0dXJlIjogIkVxNEVDbU1JRHhnQ0trRG9nR0Z6YWRSL1grN2luNHRlMHB1Sk1lYkJTVFRQTTVkODlxQ0NGTkVpdWdsNGRmS3h5bmVVY3l4UmtmZXEwVEt4N2ZMOVpaL05jTG9KMmtOaHBlek1NZzlqYkdGMVpHVXRjMjl1Ym1WMExUVTRBRUlJZEdocGJtdHBibWNTRERwSVRleitWQUFQZFhKZ1Zob01RZytjenlENXJwZWZIZ2pnSWpCdGxZek90bllHZExXM051VlZBeS9KMFNmaUtSTnF1NG9TYlhUaUM5R2JWdTY1MTFlV3AwTm5hSVhPUnQvTU1uRXErQUlYTk5kUkhyRDNPK2hUdkczTVhMdnVpMlQ0c0ZTU2s3Y1FuUzhFU0dGS2ozaEpQWDUzbS8vMFo2WU0zRVJ1TklaaVE1YzA1R0h4SlhnSWtLVC9IMTNiRG8rd3pwUW00dkdYWHdjVU4yV08vaFhZQXFHV3RodWQyUDlxQXRLbjdDNEtoelRaUm01aERQRXA0UWJxblVWQVV0WWRFY0R4K0VCeTlZcUI2eHZZdUQzQUNQcFRKVEdJU01CUWxBelM1VVJvN3lLeGlHSnBEb0ErSDJsNEdWZkNtbGYwN2h3WWNKdVM5N085dUVwL2I2WXJLQmQ4OFkrRFR0MVBhaEZoWUpyaDVyRit3UDNidGxtaVp4dUpWbzkzbTBrMmJuanFyMW53MFlIRUlqaVI1V3g2R0RTNFlJTEtDcWVXVmRCRGYyU2dDYktaS2tYcFZORkVLeDZjeXF0WmlBRWZ0dEdXOGllSTVkY0hCU1BZZmhweG5MTWJXSUw0SDRSazhpM0EvSzhwMUFHYXdFWlJPTFJjM0JnbDRKbGpSZlpyUGprL3pzN0hJbDdNK3FnOVJIdlkxU3BIK0N2bHpSU3h5b3NUKy9sTmlqWHNSZkRpdTZzOWZRWTUrc3gyb1o1N2tSY05pRG05OEFyK3BrOVBpUDBUTWpKY21qSEZHQUU9In0="}
+
+id: 8
+data: {"type":"tool_result","tool":"sniff","raw_request":"eyJwcmV5IjoibW9jay1neW0ifQ==","raw_response":"InBvc3Rpbmc6bW9jay1neW0i","tool_use_id":"toolu_01FKgdSu7UK3JqZHjHukEUWa"}
+
+id: 9
+data: {"type":"thinking_delta","text":"The"}
+
+id: 10
+data: {"type":"thinking_delta","text":" sniff tool is just echoing back the scent string without actually connecting to any real job board—it's a mock environment"}
+
+id: 11
+data: {"type":"thinking_delta","text":" with only P5 as a genuine adapter. Since there's no real board to query, I can't find actual"}
+
+id: 12
+data: {"type":"thinking_delta","text":" postings, and the tool itself has no network access or cost. I'm considering whether"}
+
+id: 13
+data: {"type":"thinking_delta","text":" to recognize this as an unworkable scenario and call for help, or treat the echoed result"}
+
+id: 14
+data: {"type":"thinking_delta","text":" as a starting point."}
+
+id: 15
+data: {"type":"usage","model":"claude-sonnet-5","input_tokens":1994,"output_tokens":564}
+
+: keep-alive
+
