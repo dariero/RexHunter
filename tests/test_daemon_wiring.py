@@ -11,16 +11,21 @@ structurally cannot exceed its budget.
 W.2 (offline): the loop-built `ThinkingSink` closure, exercised under the REAL lifespan.
 """
 
+import asyncio
+import json
 from collections.abc import Callable
 from pathlib import Path
 
+import aiosqlite
 import httpx
 import pytest
 
-from rexhunter import brain, cost, db, scheduler, stub
+from rexhunter import brain, cost, db, scheduler, server, stub
 from rexhunter.events import UsageEvent
+from rexhunter.hub import Envelope
 from rexhunter.loop import Brain, Context, Decision, HuntComplete, ThinkingSink
 from rexhunter.tools import ToolRegistry
+from rexhunter.verdicts import Drafter
 
 pytestmark = pytest.mark.anyio
 
@@ -187,3 +192,84 @@ async def test_daemon_launches_under_the_ceiling(tmp_path: Path) -> None:
     run_id = await _run_one(db_path, flag, daemon_spend_ceiling_usd=1.0)
     assert run_id is not None  # a run_id — the hunt launched
     assert flag["launched"] is True
+
+
+# ── W.2 · the ThinkingSink closure under the REAL lifespan (offline, no spend) ─
+
+
+async def test_thinking_sink_is_write_ahead_under_the_lifespan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loop-built `ThinkingSink` (closed over the run's own conn/run_id + the shared hub
+    publish) exercised under the REAL daemon lifespan — the callable uvicorn invokes on startup.
+
+    An offline delta-emitting brain (no model, no spend) is injected via the `daemon_config` seam;
+    it holds on a test `asyncio.Event` so the viewer registers FIRST (deltas fire DURING the brain
+    call, before any tool — registering after the hunt starts would race and miss them). Once the
+    gate is set, each streamed delta must (a) reach the viewer via the shared `hub.publish`, (b)
+    land under THIS run's run_id (the sink threaded the run's own conn/run_id, not a test closure),
+    and (c) be write-ahead: a SEPARATE reader connection sees the committed row by the time the
+    envelope is on the queue (the `test_hub` / `test_thinking_relay` invariant-1 shape, now under
+    the daemon's task lifecycle).
+    """
+    db_path = tmp_path / "rex.db"
+    gate = asyncio.Event()
+    deltas = ["Rex is ", "sniffing the ", "territory…"]
+
+    reg = ToolRegistry()  # the brain ends with HuntComplete — no tool dispatch needed
+
+    def brain_for(_territory: str) -> Brain:
+        async def _brain(_ctx: Context, sink: ThinkingSink) -> Decision:
+            await gate.wait()  # hold until the viewer is registered (avoid the delta race)
+            for chunk in deltas:
+                await sink(chunk)  # the loop-built closure: append write-ahead, then hub broadcast
+            return HuntComplete()
+
+        return _brain
+
+    async def drafter(_conn: aiosqlite.Connection, _prey_id: str) -> str:
+        return "stub draft"  # the job worker idles alongside; no FEAST here
+
+    def fake_config() -> tuple[
+        dict[str, float], Callable[[str], Brain], ToolRegistry, int, Drafter
+    ]:
+        # a large interval → exactly one hunt fires within the test window.
+        return {"mock-gym": 3600.0}, brain_for, reg, 4, drafter
+
+    monkeypatch.delenv("REXHUNTER_BRAIN", raising=False)  # stub mode → the injected brain is used
+    monkeypatch.setattr(server, "DB_PATH", str(db_path))
+    monkeypatch.setattr(stub, "daemon_config", fake_config)
+
+    async with server.app.router.lifespan_context(server.app):
+        hub = server.app.state.hub
+        viewer_id, queue = hub.register()  # register BEFORE releasing the brain
+        gate.set()  # now the brain may stream its deltas to the registered viewer
+
+        collected: list[Envelope] = []
+        while len(collected) < len(deltas):
+            env = await asyncio.wait_for(queue.get(), timeout=5.0)
+            if env.id is not None and json.loads(env.data)["type"] == "thinking_delta":
+                collected.append(env)
+
+        # (a) each delta reached the viewer via the shared hub.publish — in order.
+        assert [json.loads(e.data)["text"] for e in collected] == deltas
+
+        reader = await db.connect(db_path)  # a DIFFERENT connection — sees only commits
+        try:
+            async with reader.execute("SELECT id FROM runs") as cur:
+                run_ids = [str(r[0]) for r in await cur.fetchall()]
+            assert len(run_ids) == 1  # the one hunt this lifespan fired
+            run_id = run_ids[0]
+            for env in collected:
+                async with reader.execute(
+                    "SELECT run_id, payload FROM trajectory_events "
+                    "WHERE id = ? AND type = 'thinking_delta'",
+                    (env.id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                assert row is not None  # (c) committed BEFORE the broadcast reached the queue
+                assert str(row[0]) == run_id  # (b) the sink threaded THIS run's own run_id
+                assert row[1] == env.data  # the envelope carries the exact stored payload
+        finally:
+            await reader.close()
+        hub.deregister(viewer_id)
