@@ -1,0 +1,48 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_01W73x76aU891snT3wSw5TNZ","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":1947,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"global"}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}         }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"This"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" tool is just echoing back mock data rather than returning"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" actual job postings, and since there's no real board adapter available, there's nothing substantive to work with here"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":". I should wrap this up by calling hunt_complete with an empty result"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Er8JCmMIDxgCKkCCnBV6mt/HvH/+Q6Du9w8lgBTT91fYwZX3CbRsG1q+pxCVOF5DTEa1BaVA0XEAoA+w6RbX8418sTO72xERrntcMg9jbGF1ZGUtc29ubmV0LTU4AEIIdGhpbmtpbmcSDJ63Aqtww+rvotRDUBoMmYxKb0zYbtPUDkRrIjDPEJt+NSSoJcfhCIjzLG0Pa07VXzmV+N3fxWfnBBD+R4dWosyqLUMrGYsARB8zp2MqiQg1zl8OyN59jURm7iv7F9JbjNngf/tnGk6FAOR6Kr8bcKHW3Xn/8SsrsMCt3k+KWXJJdvkG5+k0DCLUHntBCWnzDkHDyNJ865mW9jTNkXRmRa3YGS/gU6zFWUWXQ/05z0J2lqF35p3cX4t160cv2O1wiFfbcBdCgqpsa0IBVd6H1VNuoQ9bOs7TFPzpYjF6W/yvWtMDwuGGncKhviMU6NSTtnvk8JnK0z8thgQhLJ8EYBzLDDQ9tHRy0DJugOtSLdv4YYhyoZq1hmv8uGuFP2P38FFSUXr45rTeAeXWvKV63zZrzJtFThy6Ey/pyvtJ7NwdqbxgxkzgNFycRYcYIdHFp+IcmBN6KA1vPhBOl/tAQUCmg0MKyq/ZCLB+0I/5fUqMyUq7zr1R9fVt1dLhBI1kCbBIBEbQJjOnOOXWi+BEUO7TEn5Fdj6pvssmwYuT0pTMIA/O2QNNm8mKciMZ8npn/la5E4ERAqoiOFUHJGeCkH9nnD6zA2YGkt/SJCnaJKEB+ExxtLNC5Eb+/hf2WkhffGuRBXHiUJv5+cTxpnJpEFQzZpKZVFNJY88uVEN1nUQF6KVwz3KuKoCpMzvSFz3Hj0jLZCYw+4VyUktKLbEQZCM3hHFL5phqCPHZeiDgglolL2nIjNyq5prDGVWvco+gXLyZDQjSNUnBsc1dW1rIJWuWA4u/Astng76cOYzMunXA9VsG10V6vQiuzxuAc7wymBwsPrzjpSgJFzfueCt+93rcGz/gyC3nnFslXh3Qk8BhMrzFZLhUFRksTfdBBLyVm73yDgv4RIJdtGo9OTLe4r/c5OElcibSFhvM5aRj0oFbxNnwEn1AlBZrlKNWvgY8k5fXTvYwbVoXQnWaTqVWzku2110sg/qxe4D+awIDqcha+zJdlIsNNlgYN1DSKr1ZDj7qrP2RcijZS5loKcfxrbYgKWDi2uabE/A4NXPU/nf54Xo+js5DcjDiolWi8OafusR1qmT+ultViolaV3u2sfC/1F2+fNzmDJXAW10eu4OlWD/FnXsJpELWgCp9PzgUPNq0KO4mmd/wWmLXVv8xkSt5qCbo5HybdhWSSo5iC1aUPGfB1OiHrCVbYe6xKZwmrIfKefz42F7MVcxSNKQE0k+EdKLF5O8S3UZ8L6CBOELbm6wzQ5Wdpl7wP6jUM++93OMSZsqszlTI1cNFh3UAlhG82rDEhlJd0Zp7PMj9lxlYIwbj6o52smQiDyWjTe0uMQDBweW1h77gkQPey4Ce8CnfijC7t7cgar6fSlq+AjbUCPlaYLYiu6Vj0F8ol/DhcuWgP9rByfNpdUiSOxSS+n4tGpFcd9oFppolTkoVUb5QcQ5KmUIAA8yH6mKid726GB2zc9XxEtSGGAE="}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_0116rFL5gmhvMjLbbB6SEZt5","name":"hunt_complete","input":{},"caller":{"type":"direct"}}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"catch\": []}"}          }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1             }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":1947,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":374,"output_tokens_details":{"thinking_tokens":322}}              }
+
+event: message_stop
+data: {"type":"message_stop"     }
+
