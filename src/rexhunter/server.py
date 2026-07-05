@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from rexhunter import db, stub, verdicts
 from rexhunter.events import Verdict
+from rexhunter.hub import Hub
 from rexhunter.scheduler import run_scheduler
 
 DB_PATH = os.environ.get("REXHUNTER_DB", "rexhunter.db")
@@ -42,14 +43,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     finally:
         await sweep.close()
 
+    # The broadcast hub (ADR pillar 3): the scheduler publishes each committed event to it
+    # post-commit (write-ahead, invariant 1), and the heartbeat task keeps idle viewers alive.
+    # Stored on app.state so the SSE endpoint can register viewers against it. P3.1 wires it
+    # ALONGSIDE the prototype /events poll — that endpoint stays until P3.2 retires it.
+    hub = Hub()
+    app.state.hub = hub
+
     schedule, brain_for, registry, cap, drafter = stub.daemon_config()
     tasks = [
         asyncio.create_task(
             run_scheduler(
-                DB_PATH, schedule, brain_for=brain_for, registry=registry, max_concurrent=cap
+                DB_PATH,
+                schedule,
+                brain_for=brain_for,
+                registry=registry,
+                max_concurrent=cap,
+                publish=hub.publish,
             )
         ),
         asyncio.create_task(verdicts.run_job_worker(DB_PATH, drafter=drafter)),
+        asyncio.create_task(hub.run_heartbeats()),
     ]
     for task in tasks:
         task.add_done_callback(surface_crash)

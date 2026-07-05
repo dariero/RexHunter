@@ -134,6 +134,7 @@ async def _run_tool(
     *,
     timeout_s: float,
     retry_budget: int,
+    publish: db.PublishFn | None = None,
 ) -> bool:
     """Dispatch one ToolCallDecision. ``True`` = continue the hunt; ``False`` = abort (fatal).
 
@@ -158,6 +159,7 @@ async def _run_tool(
                 raw_request=json.dumps(args).encode(),
                 detail=repr(exc),
             ),
+            publish=publish,
         )
         return False
 
@@ -174,6 +176,7 @@ async def _run_tool(
                 raw_request=json.dumps(args).encode(),
                 detail=str(exc),
             ),
+            publish=publish,
         )
         return False
 
@@ -183,6 +186,7 @@ async def _run_tool(
         conn,
         run_id,
         events.ToolCallEvent(tool=tool_name, raw_request=raw_request, tool_use_id=tool_use_id),
+        publish=publish,
     )
 
     attempts = retry_budget + 1  # retry_budget is the number of RETRIES after the first try
@@ -201,6 +205,7 @@ async def _run_tool(
                     raw_request=raw_request,
                     detail=traceback.format_exc(),
                 ),
+                publish=publish,
             )
             if retryable and attempt < attempts - 1:
                 continue  # re-try within budget
@@ -215,6 +220,7 @@ async def _run_tool(
                     raw_response=raw_response,
                     tool_use_id=tool_use_id,
                 ),
+                publish=publish,
             )
             return True  # success -> continue the hunt
     return False  # defensive: range(attempts >= 1) always returns inside the loop
@@ -227,6 +233,7 @@ async def _call_brain(
     context: list[events.TrajectoryEvent],
     *,
     retry_budget: int,
+    publish: db.PublishFn | None = None,
 ) -> Decision | None:
     """One brain call, retrying the brain's HTTP transport failures; ``None`` = abort.
 
@@ -255,6 +262,7 @@ async def _call_brain(
                     raw_response=raw_response,
                     detail=traceback.format_exc(),
                 ),
+                publish=publish,
             )
             if retryable and attempt < attempts - 1:
                 continue  # transient blip -> re-try within budget
@@ -273,6 +281,7 @@ async def _drive(
     retry_budget: int,
     max_iterations: int,
     cost_ceiling_usd: float,
+    publish: db.PublishFn | None = None,
 ) -> tuple[str, str | None]:
     """plan -> act -> observe until a terminal decision, a breaker, or a brain failure.
 
@@ -288,21 +297,32 @@ async def _drive(
         context = await db.read_events(conn, run_id)  # the window the brain projects into messages
         if cost.fold_cost(context) >= cost_ceiling_usd:
             return "aborted", "cost ceiling"
-        decision = await _call_brain(conn, run_id, brain, context, retry_budget=retry_budget)
+        decision = await _call_brain(
+            conn, run_id, brain, context, retry_budget=retry_budget, publish=publish
+        )
         if decision is None:
             return "aborted", "brain call failed"
         if decision.usage is not None:
-            await db.append_event(conn, run_id, decision.usage)  # per-call spend, folded next iter
+            # per-call spend, folded next iter
+            await db.append_event(conn, run_id, decision.usage, publish=publish)
         match decision:
             case ToolCallDecision():
                 ok = await _run_tool(
-                    conn, run_id, registry, decision, timeout_s=timeout_s, retry_budget=retry_budget
+                    conn,
+                    run_id,
+                    registry,
+                    decision,
+                    timeout_s=timeout_s,
+                    retry_budget=retry_budget,
+                    publish=publish,
                 )
                 if not ok:
                     return "aborted", "tool failure"
             case HuntComplete():
                 for posting in decision.catch:
-                    await verdicts.capture_prey(conn, run_id, territory=territory, posting=posting)
+                    await verdicts.capture_prey(
+                        conn, run_id, territory=territory, posting=posting, publish=publish
+                    )
                 return "completed", None
             case NeedsHelp():
                 return "needs_help", None
@@ -321,6 +341,7 @@ async def run_hunt(
     retry_budget: int = 2,
     max_iterations: int = 50,
     cost_ceiling_usd: float = COST_CEILING_USD,
+    publish: db.PublishFn | None = None,
 ) -> str:
     """Drive one hunt to a typed outcome; return its run_id (the durable handle).
 
@@ -342,6 +363,7 @@ async def run_hunt(
             retry_budget=retry_budget,
             max_iterations=max_iterations,
             cost_ceiling_usd=cost_ceiling_usd,
+            publish=publish,
         )
     except asyncio.CancelledError as cancel:
         # Graceful shutdown (P2.3) closes the run HERE, not via the boot crash-sweep - that
@@ -375,6 +397,7 @@ async def run_hunt(
                 raw_response=exc.raw,
                 detail=exc.detail,
             ),
+            publish=publish,
         )
         outcome, abort_reason = "aborted", "malformed provider response"
     except Exception as exc:
@@ -388,6 +411,7 @@ async def run_hunt(
                 raw_request=b"",
                 detail=traceback.format_exc(),
             ),
+            publish=publish,
         )
         outcome, abort_reason = "aborted", "unhandled exception in loop"
     await db.finish_run(conn, run_id, outcome=outcome, abort_reason=abort_reason)

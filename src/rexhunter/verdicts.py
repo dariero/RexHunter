@@ -54,7 +54,12 @@ def _utcnow() -> str:
 
 
 async def capture_prey(
-    conn: aiosqlite.Connection, run_id: str, *, territory: str, posting: str
+    conn: aiosqlite.Connection,
+    run_id: str,
+    *,
+    territory: str,
+    posting: str,
+    publish: db.PublishFn | None = None,
 ) -> str:
     """Capture one posting into the pen. Returns the new prey_id.
 
@@ -67,18 +72,25 @@ async def capture_prey(
     event = events.PreyCapturedEvent(
         prey_id=prey_id, territory=territory, raw_posting=posting.encode()
     )
+    payload = event.model_dump_json()
     # Reuse the log's append SQL but DON'T go through db.append_event — its per-call commit would
     # split this into two transactions. Both writes ride one commit below.
-    await conn.execute(
+    cursor = await conn.execute(
         db.APPEND_EVENT_SQL,
-        (run_id, event.type, event.model_dump_json(), now, run_id),
+        (run_id, event.type, payload, now, run_id),
     )
+    event_id = cursor.lastrowid
     await conn.execute(
         "INSERT INTO prey (id, run_id, territory, posting, status, captured_at)"
         " VALUES (?, ?, ?, ?, ?, ?)",
         (prey_id, run_id, territory, posting, AWAITING, now),
     )
     await conn.commit()
+    # Write-ahead (invariant 1), the SECOND trajectory writer: publish the PreyCapturedEvent post
+    # commit so a stub hunt's capture reaches the live stream, not just the log. lastrowid is the
+    # event's global id (the trajectory INSERT above; the prey INSERT is a different table).
+    if publish is not None and event_id is not None:
+        publish(event_id, payload)
     return prey_id
 
 

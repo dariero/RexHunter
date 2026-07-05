@@ -7,12 +7,20 @@ events append-only and immutable. `payload` is a typed trajectory event
 """
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
 
 from rexhunter import events
+
+# The write-ahead publish hook (ADR pillar 3): a committed event, offered to the broadcast hub.
+# `(global_id, stored_payload_string)` — the exact JSON in the `payload` column, so a live-spliced
+# viewer and a catch-up viewer render byte-identical feeds. Typed here (the lowest layer) and reused
+# by the trajectory writers; the hub supplies the concrete callback. db.py never imports the hub —
+# the callback is injected (inversion of control), keeping pillar 1 decoupled from pillar 3.
+type PublishFn = Callable[[int, str], None]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -114,19 +122,29 @@ APPEND_EVENT_SQL = (
 
 
 async def append_event(
-    conn: aiosqlite.Connection, run_id: str, event: events.TrajectoryEvent
+    conn: aiosqlite.Connection,
+    run_id: str,
+    event: events.TrajectoryEvent,
+    *,
+    publish: PublishFn | None = None,
 ) -> int:
     # The event is already typed (validated at construction) - serialising it OUT is not a
     # boundary crossing. model_dump_json() fills the payload column; event.type mirrors the
     # discriminator into the type column for SQL-side filtering.
+    payload = event.model_dump_json()
     cursor = await conn.execute(
         APPEND_EVENT_SQL,
-        (run_id, event.type, event.model_dump_json(), _utcnow(), run_id),
+        (run_id, event.type, payload, _utcnow(), run_id),
     )
     await conn.commit()
     event_id = cursor.lastrowid
     if event_id is None:  # pragma: no cover - an INSERT always sets a rowid
         raise RuntimeError("append_event: INSERT returned no rowid")
+    # Write-ahead (invariant 1): publish ONLY after the commit above returns the global id. The log
+    # is truth; this is the notification. A missed publish is recoverable from the log, so this
+    # never blocks — the hub drops a slow viewer rather than the writer awaiting it.
+    if publish is not None:
+        publish(event_id, payload)
     return event_id
 
 

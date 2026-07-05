@@ -43,6 +43,7 @@ async def _bounded_hunt(
     tool_timeout_s: float,
     retry_budget: int,
     max_iterations: int,
+    publish: db.PublishFn | None = None,
 ) -> str | None:
     """Run one hunt under the concurrency cap, on its own connection, fully isolated.
 
@@ -60,6 +61,7 @@ async def _bounded_hunt(
                 tool_timeout_s=tool_timeout_s,
                 retry_budget=retry_budget,
                 max_iterations=max_iterations,
+                publish=publish,
             )
         except Exception:  # defence in depth over run_hunt's own backstop — never expected
             logger.exception("hunt for %r escaped run_hunt's backstop", territory)
@@ -78,6 +80,7 @@ async def run_hunts(
     tool_timeout_s: float = 30.0,
     retry_budget: int = 2,
     max_iterations: int = 50,
+    publish: db.PublishFn | None = None,
 ) -> list[str | None]:
     """Run one hunt per territory in a bounded task group; return their run_ids in order.
 
@@ -99,6 +102,7 @@ async def run_hunts(
             tool_timeout_s=tool_timeout_s,
             retry_budget=retry_budget,
             max_iterations=max_iterations,
+            publish=publish,
         )
 
     async with asyncio.TaskGroup() as tg:
@@ -118,12 +122,14 @@ async def run_scheduler(
     tool_timeout_s: float = 30.0,
     retry_budget: int = 2,
     max_iterations: int = 50,
+    publish: db.PublishFn | None = None,
 ) -> None:
     """Run forever: each territory in `schedule` (territory -> interval seconds) hunts on its own
     deadline, all bounded by `max_concurrent`. Cancellation (daemon shutdown) tears down every
     per-territory loop and any in-flight hunt; each in-flight run closes itself (run_hunt's
     shielded cancel path). The deadline is DERIVED from the monotonic clock via `asyncio.sleep`
-    and never stored (invariant 5)."""
+    and never stored (invariant 5). `publish` (P3) feeds each committed event to the broadcast hub
+    post-commit; `None` keeps the loop a pure log-writer (the prototype endpoint still polls)."""
     boot = await db.connect(db_path)
     await boot.close()
 
@@ -140,6 +146,7 @@ async def run_scheduler(
                 tool_timeout_s=tool_timeout_s,
                 retry_budget=retry_budget,
                 max_iterations=max_iterations,
+                publish=publish,
             )
             await asyncio.sleep(interval)  # monotonic deadline; derived, never persisted
 
