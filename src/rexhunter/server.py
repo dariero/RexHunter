@@ -11,14 +11,25 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from rexhunter import db, stub, verdicts
+from rexhunter import brain, db, scheduler, stub, verdicts
 from rexhunter.events import Verdict
 from rexhunter.hub import Envelope, Hub
+from rexhunter.loop import COST_CEILING_USD
 from rexhunter.scheduler import run_scheduler
 
 DB_PATH = os.environ.get("REXHUNTER_DB", "rexhunter.db")
 
 logger = logging.getLogger("rexhunter")
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    return int(value) if value else default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    return float(value) if value else default
 
 
 def surface_crash(task: asyncio.Task[None]) -> None:
@@ -50,7 +61,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     hub = Hub()
     app.state.hub = hub
 
-    schedule, brain_for, registry, cap, drafter = stub.daemon_config()
+    schedule, stub_brain_for, registry, cap, drafter = stub.daemon_config()
+    # Select the daemon's brain by REXHUNTER_BRAIN (the autonomous-spender containment): the stub
+    # default routes daemon_config's brain through (the injectable seam the lifespan gate patches),
+    # while `live` swaps in the STREAMING/THINKING adapter (Unit 3) — Rex's reasoning relays to
+    # /events. `client` is the paid client's handle (None on stub); we own its close on shutdown.
+    brain_for, client = brain.select_brain_for(registry, default=stub_brain_for)
     tasks = [
         asyncio.create_task(
             run_scheduler(
@@ -59,6 +75,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 brain_for=brain_for,
                 registry=registry,
                 max_concurrent=cap,
+                max_iterations=_env_int("MAX_ITERATIONS", 50),
+                cost_ceiling_usd=_env_float("COST_CEILING_USD", COST_CEILING_USD),
+                daemon_spend_ceiling_usd=_env_float(
+                    "DAEMON_SPEND_CEILING_USD", scheduler.DAEMON_SPEND_CEILING_USD
+                ),
                 publish=hub.publish,
             )
         ),
@@ -79,6 +100,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         for task in tasks:
             with suppress(asyncio.CancelledError):
                 await task
+        # Close the paid client AFTER the scheduler has drained — it drove brain calls on this
+        # client, so an earlier close could abort an in-flight request. None on the stub path.
+        if client is not None:
+            await client.aclose()
 
 
 app = FastAPI(lifespan=lifespan)

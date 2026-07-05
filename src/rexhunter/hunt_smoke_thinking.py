@@ -34,10 +34,15 @@ from rexhunter.loop import run_hunt
 from rexhunter.tools import ToolRegistry
 
 TERRITORY = "mock-gym"
-HUNT_MAX_TOKENS = 4096  # thinking ON → thinking + tool_use share the output budget; 1024 truncates
+# One definition, no drift: the thinking-on shape lives in brain.py (the "one request shape"
+# discipline) — the daemon's `select_brain_for(live)` reads the SAME constants, so this gated
+# entrypoint and the daemon stream through the identical brain.
+HUNT_MAX_TOKENS = (
+    brain.HUNT_MAX_TOKENS
+)  # thinking + tool_use share the output budget; 1024 truncates
+THINKING: dict[str, Any] = brain.HUNT_THINKING  # adaptive, summarized
 COST_CEILING_USD = 0.20  # must clear TWO thinking-inflated calls (the gate is call-two-accepted)
 MAX_ITERATIONS = 3  # a few turns — enough to reach call two, the reconstructed-signed-block gate
-THINKING: dict[str, Any] = {"type": "adaptive", "display": "summarized"}
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 
 

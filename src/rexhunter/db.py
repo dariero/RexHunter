@@ -162,6 +162,19 @@ async def read_events(conn: aiosqlite.Connection, run_id: str) -> list[events.Tr
     return [events.decode_event(str(row[0])) for row in rows]
 
 
+async def read_usage(conn: aiosqlite.Connection) -> list[events.TrajectoryEvent]:
+    """The id-scoped usage sub-log: EVERY run's `UsageEvent`s, ordered by the global `id` cursor
+    (the SSE-stream cursor), each routed through the validation boundary (invariant 3). This is the
+    read half of the daemon spend ceiling — the seq-scoped per-run read (`read_events`) folds one
+    run; this folds them into a cumulative spend (inv 5, a projection of the log, not a counter).
+    """
+    async with conn.execute(
+        "SELECT payload FROM trajectory_events WHERE type = 'usage' ORDER BY id"
+    ) as cursor:
+        rows = await cursor.fetchall()
+    return [events.decode_event(str(row[0])) for row in rows]
+
+
 async def finish_run(
     conn: aiosqlite.Connection, run_id: str, *, outcome: str, abort_reason: str | None = None
 ) -> None:

@@ -88,6 +88,15 @@ HUNT_SYSTEM_PROMPT = (
 # 2b smoke omits it (unforced) and keeps its shape.
 HUNT_TOOL_CHOICE: dict[str, Any] = {"type": "auto", "disable_parallel_tool_use": True}
 
+# The thinking-on hunt shape (`P5` Unit 3, reused by the daemon live-wiring): adaptive thinking with
+# summarized display, streamed as SSE. Defined ONCE here (the "one request shape" discipline) — the
+# gated entrypoint (`hunt_smoke_thinking`) and the daemon `select_brain_for(live)` both read it, so
+# the daemon streams reasoning through the SAME brain the harness proved, no drift.
+HUNT_THINKING: dict[str, Any] = {"type": "adaptive", "display": "summarized"}
+# Thinking tokens AND the tool_use share `max_tokens`, so a tight 1024 truncates into
+# stop_reason=max_tokens (an incomplete tool_use the assembler can't finalize). 4096 clears both.
+HUNT_MAX_TOKENS = 4096
+
 
 class _ToolUseBlock(BaseModel):
     """The one content block we consume, validated strictly on the fields we read. Extra keys are
@@ -543,16 +552,22 @@ def adapter_brain_for(
 
 def select_brain_for(
     registry: ToolRegistry,
+    *,
+    default: Callable[[str], Brain] | None = None,
 ) -> tuple[Callable[[str], Brain], httpx.AsyncClient | None]:
     """The autonomous-spender containment (P5 Unit 2c): the daemon's `brain_for`, selected by the
-    `REXHUNTER_BRAIN` env var. Default `"stub"` returns the no-spend stub brain and no client — a
-    default start constructs nothing that could hit the network. `"live"` is the single opt-in that
-    arms spending: it builds the paid adapter over a real httpx client and RETURNS that client so
-    the caller (lifespan / the 2c.2 entrypoint) owns its close. Any other value is a hard error,
-    never a silent fall-through to spending.
+    `REXHUNTER_BRAIN` env var. Default `"stub"` returns a no-spend brain and no client — a default
+    start constructs nothing that could hit the network; `default` (the daemon's injectable stub
+    seam, `daemon_config`'s brain) is returned when given, else the module `stub_brain_for`.
+    `"live"` is the single opt-in that arms spending: it builds the STREAMING/THINKING adapter (`P5`
+    Unit 3 — `stream=True` + adaptive thinking, so Rex's reasoning relays through the hub) over a
+    real httpx client and RETURNS that client so the caller (lifespan / entrypoints) owns its close.
+    Any other value is a hard error, never a silent fall-through to spending.
     """
     mode = os.environ.get("REXHUNTER_BRAIN", "stub")
     if mode == "stub":
+        if default is not None:
+            return default, None
         from rexhunter import stub  # lazy: the stub path pulls in no adapter/client machinery
 
         return stub.stub_brain_for, None
@@ -562,7 +577,13 @@ def select_brain_for(
             raise RuntimeError("REXHUNTER_BRAIN=live requires ANTHROPIC_API_KEY to be set")
         client = httpx.AsyncClient(timeout=120.0)
         brain_for = adapter_brain_for(
-            client=client, api_key=api_key, model=SMOKE_MODEL, registry=registry
+            client=client,
+            api_key=api_key,
+            model=SMOKE_MODEL,
+            registry=registry,
+            max_tokens=HUNT_MAX_TOKENS,
+            thinking=HUNT_THINKING,
+            stream=True,  # the daemon streams reasoning to /events — the Unit-3 brain, not 2c's
         )
         return brain_for, client
     raise ValueError(f"unknown REXHUNTER_BRAIN={mode!r} (expected 'stub' or 'live')")
