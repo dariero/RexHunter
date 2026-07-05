@@ -25,7 +25,7 @@ accounting are later units.
 
 import json
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any, cast
 
 import httpx
@@ -163,6 +163,113 @@ def parse_decision(raw: bytes) -> Decision:
         decision = ToolCallDecision(tool=block.name, args=block.input, tool_use_id=block.id)
     decision.usage = usage  # every Decision carries the call's cost (None for a no-usage payload)
     return decision
+
+
+# ── The streaming transport (Unit 3a): hand-rolled SSE over httpx, no vendor SDK ───────────────
+# Sonnet 5 streams its response as SSE events. We assemble them into the SAME `_ProviderResponse`
+# shape parse_decision consumes — no vendor SDK (ADR §What point 1), and the raw signed thinking
+# block stays in hand (invariants 3 + 6), which the SDK's typed-delta layer would hide. P3's own
+# outbound SSE parser is this same protocol inbound; the system is an SSE relay end to end.
+
+
+def iter_sse_events(raw: bytes) -> Iterator[dict[str, Any]]:
+    """Parse an Anthropic SSE response body into its `data:` JSON events (offline, pure).
+
+    Frames are blank-line separated; the `event:` label is ignored (the payload's own `type` is
+    authoritative), and comment/keep-alive lines and trailing blank frames fold to nothing. LLM
+    output is untrusted (invariant 3): a `data:` line that is not valid JSON raises here, at the
+    boundary, never leaking downstream.
+    """
+    for frame in raw.split(b"\n\n"):
+        data = b"".join(
+            line.removeprefix(b"data:").strip()
+            for line in frame.splitlines()
+            if line.startswith(b"data:")
+        )
+        if data:
+            yield json.loads(data)
+
+
+class StreamAssembler:
+    """Fold the SSE event stream into an assembled Messages-API response (the `_ProviderResponse`
+    shape parse_decision consumes). Stateful + incremental so the live path can relay thinking
+    deltas as they arrive; pure and offline-testable by feeding fixture events.
+
+    Display streams, execution waits (ADR §What point 5): a `tool_use` block's `input` is parsed
+    from its accumulated `input_json_delta` only at `content_block_stop`, so a partial stream leaves
+    the block un-dispatchable (its start `input` — `{}` — stands until the block is complete).
+    """
+
+    def __init__(self) -> None:
+        self._blocks: dict[int, dict[str, Any]] = {}
+        self._json_buf: dict[int, str] = {}
+        self._model: str | None = None
+        self._stop_reason: str | None = None
+        self._usage: dict[str, Any] = {}
+        self.complete = False  # True once message_stop / a stop_reason has arrived
+
+    def feed(self, event: dict[str, Any]) -> str | None:
+        """Fold one SSE event. Returns the thinking-delta text to relay (the caller appends it
+        write-ahead then broadcasts, invariant 1), or None for every other event."""
+        etype = event.get("type")
+        if etype == "message_start":
+            message = event.get("message", {})
+            self._model = message.get("model")
+            self._usage.update(message.get("usage", {}))  # input_tokens (+ an initial output count)
+        elif etype == "content_block_start":
+            self._blocks[int(event["index"])] = dict(event["content_block"])
+        elif etype == "content_block_delta":
+            return self._apply_delta(int(event["index"]), event["delta"])
+        elif etype == "content_block_stop":
+            self._finalize(int(event["index"]))
+        elif etype == "message_delta":
+            delta = event.get("delta", {})
+            if delta.get("stop_reason") is not None:
+                self._stop_reason = delta["stop_reason"]
+                self.complete = True
+            self._usage.update(event.get("usage", {}))  # cumulative output_tokens
+        elif etype == "message_stop":
+            self.complete = True
+        return None
+
+    def _apply_delta(self, index: int, delta: dict[str, Any]) -> str | None:
+        block = self._blocks.get(index)
+        if (
+            block is None
+        ):  # a delta before its block start — defensive; never in a well-formed stream
+            return None
+        dtype = delta.get("type")
+        if dtype == "thinking_delta":
+            text = str(delta.get("thinking", ""))
+            block["thinking"] = str(block.get("thinking", "")) + text
+            return text  # the one event that feeds the live relay (Unit 3b)
+        if dtype == "signature_delta":  # opaque; concatenated verbatim, never interpreted (inv 3)
+            block["signature"] = str(block.get("signature", "")) + str(delta.get("signature", ""))
+        elif dtype == "text_delta":
+            block["text"] = str(block.get("text", "")) + str(delta.get("text", ""))
+        elif dtype == "input_json_delta":
+            self._json_buf[index] = self._json_buf.get(index, "") + str(
+                delta.get("partial_json", "")
+            )
+        return None
+
+    def _finalize(self, index: int) -> None:
+        block = self._blocks.get(index)
+        if block is not None and block.get("type") == _TOOL_USE:
+            buf = self._json_buf.get(index, "")
+            block["input"] = json.loads(buf) if buf else {}  # complete + validated only now
+
+    def assembled(self) -> dict[str, Any]:
+        """The assembled response in `_ProviderResponse` shape. Blocks in content-index order; an
+        unfinalized tool_use keeps its empty start `input` (execution waits)."""
+        return {
+            "type": "message",
+            "role": "assistant",
+            "model": self._model,
+            "stop_reason": self._stop_reason,
+            "content": [self._blocks[i] for i in sorted(self._blocks)],
+            "usage": self._usage,
+        }
 
 
 # ── The provider adapter (Unit 2a) + the shared request shape (Unit 2b): httpx, no vendor SDK ──
