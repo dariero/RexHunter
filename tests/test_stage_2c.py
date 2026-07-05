@@ -42,6 +42,10 @@ pytestmark = pytest.mark.anyio
 FIXTURE = Path(__file__).parent / "fixtures" / "smoke_sonnet5.json"
 
 
+async def _drop(_text: str) -> None:
+    """A no-op thinking sink for the non-streaming request-shape tests (never called there)."""
+
+
 async def sniff(prey: str) -> str:
     """Sniff a territory for postings."""
     return f"posting:{prey}"
@@ -156,7 +160,7 @@ async def test_adapter_sends_system_prompt_and_disables_thinking() -> None:
         brain_for = brain.adapter_brain_for(
             client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=_sniff_registry()
         )
-        await brain_for("mock-gym")([])
+        await brain_for("mock-gym")([], _drop)
 
     body = json.loads(captured["req"].content)
     assert body["system"] == brain.HUNT_SYSTEM_PROMPT
@@ -395,7 +399,7 @@ async def _capture_adapter_body(
         brain_for = brain.adapter_brain_for(
             client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=registry
         )
-        await brain_for(territory)([])
+        await brain_for(territory)([], _drop)
     return captured["body"]
 
 

@@ -17,7 +17,7 @@ import pytest
 
 from rexhunter import db
 from rexhunter.events import ErrorEvent, ToolCallEvent, ToolResultEvent, TrajectoryEvent
-from rexhunter.loop import Brain, Decision, ToolCallDecision, run_hunt
+from rexhunter.loop import Brain, Decision, ThinkingSink, ToolCallDecision, run_hunt
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
@@ -119,7 +119,7 @@ async def test_an_unforeseen_exception_is_caught_by_the_backstop(tmp_path: Path)
     # making the brain itself explode (a path the per-tool handling never reaches).
     reg = ToolRegistry()
 
-    async def exploding_brain(_context: list[TrajectoryEvent]) -> Decision:
+    async def exploding_brain(_context: list[TrajectoryEvent], _sink: ThinkingSink) -> Decision:
         raise RuntimeError("brain bug")
 
     conn = await db.connect(tmp_path / "rex.db")

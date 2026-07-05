@@ -89,6 +89,23 @@ class ErrorEvent(_Event):
     detail: str | None = None
 
 
+class ThinkingDelta(_Event):
+    """A streamed fragment of the model's reasoning (ADR pillar 5, `P5` Unit 3). The live
+    consciousness feed: appended write-ahead (invariant 1) as it arrives off the SSE stream, then
+    broadcast by the P3 hub — rendering Rex's chain of thought as the hunt runs.
+
+    Relay-only telemetry — NOT part of the messages projection (like UsageEvent, `project_messages`
+    skips it). A reconstructed assistant turn must echo the model's VERBATIM signed thinking block
+    (invariant 6), never a rebuild folded from these partial deltas: the signature is bound to the
+    exact block content, so a fold would drift the bytes and the API would 400 ("thinking blocks
+    cannot be modified"). The durable replay artifact is the signed block on ToolCallEvent (Unit
+    3c); these deltas are the live feed — a separate consumer of the same log (the two-cursor
+    design)."""
+
+    type: Literal["thinking_delta"] = "thinking_delta"
+    text: str
+
+
 class UsageEvent(_Event):
     """Per-brain-call token accounting (ADR pillar 5, `P5`). Run-scoped telemetry (invariant 7)
     the cost breaker folds into a running spend (invariant 5 — cost is DERIVED from these, never a
@@ -106,7 +123,13 @@ class UsageEvent(_Event):
 # payload straight to the model whose Literal tag matches, and an unknown/absent tag raises at
 # the boundary. Adding a member is one line here; the read crossing below never changes.
 type TrajectoryEvent = Annotated[
-    SniffEvent | ToolCallEvent | ToolResultEvent | ErrorEvent | PreyCapturedEvent | UsageEvent,
+    SniffEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | ErrorEvent
+    | PreyCapturedEvent
+    | UsageEvent
+    | ThinkingDelta,
     Field(discriminator="type"),
 ]
 

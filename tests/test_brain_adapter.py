@@ -30,6 +30,10 @@ from rexhunter.tools import ToolRegistry
 pytestmark = pytest.mark.anyio
 
 
+async def _drop(_text: str) -> None:
+    """A no-op thinking sink — this adapter unit drives the non-streaming path (never relays)."""
+
+
 async def sniff(prey: str) -> str:
     """Sniff a territory for postings."""
     return f"posting:{prey}"
@@ -70,7 +74,7 @@ async def _drive(transport: httpx.MockTransport, registry: ToolRegistry) -> obje
         brain_for = adapter_brain_for(
             client=client, api_key="sk-test", model=SMOKE_MODEL, registry=registry
         )
-        return await brain_for("acme")([])
+        return await brain_for("acme")([], _drop)
 
 
 # ── the brain wraps parse_decision over the injected transport ────────────────
@@ -133,7 +137,7 @@ async def test_adapter_sends_anthropic_headers_and_body() -> None:
         brain_for = adapter_brain_for(
             client=client, api_key="sk-test", model=SMOKE_MODEL, registry=_sniff_registry()
         )
-        await brain_for("acme")([])
+        await brain_for("acme")([], _drop)
 
     req = captured["req"]
     assert req.headers["x-api-key"] == "sk-test"

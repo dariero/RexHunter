@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 import pytest
 
 from rexhunter.events import TrajectoryEvent
-from rexhunter.loop import Brain, Decision
+from rexhunter.loop import Brain, Decision, ThinkingSink
 
 
 @pytest.fixture
@@ -22,7 +22,7 @@ def scripted_brain() -> Callable[[Sequence[Decision]], Brain]:
     def make(decisions: Sequence[Decision]) -> Brain:
         queue = iter(decisions)
 
-        async def brain(_context: list[TrajectoryEvent]) -> Decision:
+        async def brain(_context: list[TrajectoryEvent], _sink: ThinkingSink) -> Decision:
             try:
                 return next(queue)
             except StopIteration:

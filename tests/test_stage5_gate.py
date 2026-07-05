@@ -136,7 +136,7 @@ async def test_tool_use_id_correlates_call_and_result_events(tmp_path: Path) -> 
 
     known_id = "toolu_01CORRELATE"
 
-    async def brain(_context: list[object]) -> object:
+    async def brain(_context: list[object], _sink: object) -> object:
         brain.calls = getattr(brain, "calls", 0) + 1  # type: ignore[attr-defined]
         if brain.calls == 1:  # type: ignore[attr-defined]
             return ToolCallDecision(
@@ -164,7 +164,7 @@ async def test_tool_use_id_correlates_call_and_result_events(tmp_path: Path) -> 
 async def test_malformed_payload_becomes_an_error_event_carrying_raw(tmp_path: Path) -> None:
     reg = ToolRegistry()
 
-    async def brain(_context: list[object]) -> object:
+    async def brain(_context: list[object], _sink: object) -> object:
         # A stand-in for the (deferred) adapter: the provider handed back a malformed payload;
         # parse_decision rejects it at the boundary. run_hunt must catch this, not let it escape.
         return parse_decision(MALFORMED)

@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 
 import aiosqlite
 
-from rexhunter.loop import Brain, Context, Decision, HuntComplete, ToolCallDecision
+from rexhunter.loop import Brain, Context, Decision, HuntComplete, ThinkingSink, ToolCallDecision
 from rexhunter.tools import ToolRegistry
 from rexhunter.verdicts import Drafter
 
@@ -52,7 +52,8 @@ def stub_brain_for(territory: str) -> Brain:
     ]
     queue = iter(decisions)
 
-    async def brain(_context: Context) -> Decision:
+    async def brain(_context: Context, _sink: ThinkingSink) -> Decision:
+        # No LLM, no stream: the stub emits typed decisions directly and relays no thinking.
         try:
             return next(queue)
         except StopIteration:

@@ -120,7 +120,13 @@ class NeedsHelp(BaseModel):
 
 type Decision = ToolCallDecision | HuntComplete | NeedsHelp
 type Context = list[events.TrajectoryEvent]
-type Brain = Callable[[Context], Awaitable[Decision]]
+
+# The live-reasoning relay sink (`P5` Unit 3b): the brain calls it with each streamed thinking
+# delta; the loop's closure appends a ThinkingDelta write-ahead (inv 1) then the hub broadcasts it.
+# Threaded to `brain()` at CALL time (the loop owns conn/run_id/publish), so the scheduler and
+# `select_brain_for` are untouched. A non-streaming brain (stub/scripted) simply never calls it.
+type ThinkingSink = Callable[[str], Awaitable[None]]
+type Brain = Callable[[Context, ThinkingSink], Awaitable[Decision]]
 
 
 # ── The loop ─────────────────────────────────────────────────────────────────
@@ -244,10 +250,17 @@ async def _call_brain(
     (invariant 6, raw bytes preserved) and any genuinely unforeseen exception to run_hunt's `<loop>`
     backstop (DoD #2) - `_call_brain` narrows to httpx so it never swallows a brain bug.
     """
+
+    async def sink(text: str) -> None:
+        # The live relay (Unit 3b): each streamed thinking delta committed write-ahead (inv 1) then
+        # broadcast by the hub (publish) — Rex's reasoning as the live feed. Awaited inline in the
+        # owning task, never a spawned one, so the single-writer invariant (7) holds.
+        await db.append_event(conn, run_id, events.ThinkingDelta(text=text), publish=publish)
+
     attempts = retry_budget + 1
     for attempt in range(attempts):
         try:
-            return await brain(context)
+            return await brain(context, sink)
         except (httpx.HTTPStatusError, httpx.TransportError) as exc:
             retryable = classify(exc)
             raw_response = exc.response.content if isinstance(exc, httpx.HTTPStatusError) else None

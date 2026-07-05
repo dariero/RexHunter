@@ -39,7 +39,15 @@ from rexhunter.events import (
     TrajectoryEvent,
     UsageEvent,
 )
-from rexhunter.loop import Brain, Context, Decision, HuntComplete, NeedsHelp, ToolCallDecision
+from rexhunter.loop import (
+    Brain,
+    Context,
+    Decision,
+    HuntComplete,
+    NeedsHelp,
+    ThinkingSink,
+    ToolCallDecision,
+)
 from rexhunter.tools import ToolRegistry
 
 # Reserved tool names that map to terminal decisions rather than a registry dispatch. Unit 2a's
@@ -437,6 +445,31 @@ def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list
     return messages
 
 
+async def _drive_stream(response: httpx.Response, sink: ThinkingSink) -> bytes:
+    """Consume a streaming Messages response: relay each thinking delta via `sink` (write-ahead,
+    live — Unit 3b), assemble the blocks, and return the assembled response bytes for
+    `parse_decision`. A non-2xx body is the error JSON, not SSE, so `raise_for_status` first turns
+    it into an `HTTPStatusError` the loop classifies. The `data:` framing mirrors `iter_sse_events`
+    but over the live line iterator (`aiter_lines`) — the assembler (`feed`) is the shared logic."""
+    if response.status_code != 200:
+        await response.aread()  # a streaming body must be read before raise_for_status
+        response.raise_for_status()
+    assembler = StreamAssembler()
+    data_buf: list[str] = []
+    async for line in response.aiter_lines():
+        if line.startswith("data:"):
+            data_buf.append(line.removeprefix("data:").strip())
+        elif not line.strip():  # a blank line closes the frame
+            if data_buf:
+                text = assembler.feed(json.loads("".join(data_buf)))
+                data_buf = []
+                if text:
+                    await sink(text)  # inline await — single writer (inv 7), live (inv 1)
+    if data_buf:  # a final frame not terminated by a trailing blank line
+        assembler.feed(json.loads("".join(data_buf)))
+    return json.dumps(assembler.assembled()).encode()
+
+
 def adapter_brain_for(
     *,
     client: httpx.AsyncClient,
@@ -444,6 +477,8 @@ def adapter_brain_for(
     model: str,
     registry: ToolRegistry,
     max_tokens: int = _DEFAULT_MAX_TOKENS,
+    thinking: dict[str, Any] | None = None,
+    stream: bool = False,
 ) -> Callable[[str], Brain]:
     """A `brain_for` factory (the scheduler's seam, `scheduler.py`) backed by the Anthropic Messages
     API over the INJECTED httpx client. `brain()` never opens or closes the client — its lifecycle
@@ -451,29 +486,36 @@ def adapter_brain_for(
     tests), the same single-owner discipline the run connections follow.
 
     Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), thread the
-    `HUNT_SYSTEM_PROMPT`, send `thinking:{type:"disabled"}` — assistant thinking is not captured
-    until Unit 3, so replaying bare `tool_use` turns needs thinking off (Sonnet 5 accepts it).
+    `HUNT_SYSTEM_PROMPT`. `thinking` defaults to `{type:"disabled"}` (2c's bare tool_use replay);
+    `P5` Unit 3 passes `{type:"adaptive", display:"summarized"}` + `stream=True`. On the streaming
+    path (Unit 3b) the SSE deltas are relayed live via the `sink` and assembled before crossing the
+    single boundary at `parse_decision`; on the non-streaming path a plain POST does the same.
     `raise_for_status()` turns a non-2xx into an `httpx.HTTPStatusError` the loop's `classify` sorts
-    (429/5xx retryable, 4xx fatal); on 2xx the bytes cross the single boundary at `parse_decision`
-    (inv 3), whose `UsageEvent` rides onto the Decision for the loop's cost fold (invariant 5).
+    (429/5xx retryable, 4xx fatal); the parsed `UsageEvent` rides onto the Decision (invariant 5).
     """
     tools = build_tools(registry)  # derived once — stable across the run
     headers = request_headers(api_key)
+    thinking = {"type": "disabled"} if thinking is None else thinking
 
     def brain_for(territory: str) -> Brain:
-        async def brain(context: Context) -> Decision:
+        async def brain(context: Context, sink: ThinkingSink) -> Decision:
             body = build_request_body(
                 model=model,
                 max_tokens=max_tokens,
                 messages=project_messages(territory, context),
                 tools=tools,
                 system=HUNT_SYSTEM_PROMPT,
-                thinking={"type": "disabled"},
+                thinking=thinking,
                 tool_choice=HUNT_TOOL_CHOICE,
             )
-            response = await client.post(MESSAGES_URL, headers=headers, json=body)
-            response.raise_for_status()  # non-2xx -> HTTPStatusError, classified by the loop
-            return parse_decision(response.content)  # one boundary (invariant 3)
+            if not stream:
+                response = await client.post(MESSAGES_URL, headers=headers, json=body)
+                response.raise_for_status()  # non-2xx -> HTTPStatusError, classified by the loop
+                return parse_decision(response.content)  # one boundary (invariant 3)
+            body["stream"] = True
+            async with client.stream("POST", MESSAGES_URL, headers=headers, json=body) as response:
+                raw = await _drive_stream(response, sink)
+            return parse_decision(raw)  # the assembled stream crosses the one boundary (inv 3)
 
         return brain
 

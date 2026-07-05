@@ -20,6 +20,7 @@ from rexhunter.loop import (
     HuntComplete,
     NeedsHelp,
     RetryableToolError,
+    ThinkingSink,
     ToolCallDecision,
     run_hunt,
 )
@@ -145,7 +146,7 @@ async def test_max_iterations_breaker_aborts(tmp_path: Path) -> None:
     async def noop() -> str:
         return "tick"
 
-    async def always_call(_context: list[TrajectoryEvent]) -> Decision:
+    async def always_call(_context: list[TrajectoryEvent], _sink: ThinkingSink) -> Decision:
         return ToolCallDecision(tool=noop.__name__, args={})
 
     conn = await db.connect(tmp_path / "rex.db")
