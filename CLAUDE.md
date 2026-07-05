@@ -145,8 +145,18 @@ reconnects via `Last-Event-ID` with zero gaps / zero dups (catch-up + splice + d
 ≤-high-water drop); a full-queue viewer is dropped while the hunt completes unslowed. Verified
 end-to-end through the real uvicorn server (curl `/events` streamed a full hunt's
 `tool_call`/`tool_result`/`prey_captured` frames + heartbeats; `/snapshot` `latest_id` 0→3). Thinking stays
-`{type:"disabled"}` — P3 built its render target, does not consume it. **▶ Next: `P5` Unit 3** (streaming
-`ThinkingDelta` relay) — where the vendor-SDK frugality call and the now-built hub's broadcast path meet.
+`{type:"disabled"}` — P3 built its render target, does not consume it.
+**▶ Now: `P5` · Unit 3 — the `ThinkingDelta` relay — in progress (`3a` active).** Turning thinking back
+on and streaming Rex's reasoning through the P3 hub. Split: *`3a`* hand-rolled SSE stream transport
+(offline) — assemble a streamed response into content blocks (text, tool_use, **thinking + signature**);
+*`3b`* the write-ahead `ThinkingDelta` relay (offline) — the loop appends each delta (inv 1) then the P3
+hub broadcasts it, reusing `publish()` (no new fan-out); *`3c`* signed-block replay + the gate — Sonnet 5
+runs adaptive thinking by default, so each reconstructed assistant turn must lead with the model's
+**verbatim signed thinking block** (invariant 6) or the API 400s ("thinking blocks cannot be modified");
+`project_messages` echoes the block, never rebuilds it. The gate is 3c's replay correctness, not the UI
+stream. Streaming parse stays hand-rolled over httpx (no vendor SDK — invariants 3/6 need the raw
+signed-block bytes the SDK's typed-delta layer hides); the frugality call re-opens only if the parse
+exceeds ~150 lines (the user's call, not a silent import). Nothing spends until 3c, on explicit go.
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
