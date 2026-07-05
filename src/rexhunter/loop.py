@@ -96,6 +96,7 @@ class ToolCallDecision(BaseModel):
     args: dict[str, Any]
     tool_use_id: str = ""  # the provider's correlation key (P5); "" for the stub brain
     usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
+    thinking: bytes = b""  # the turn's VERBATIM signed thinking block (P5 Unit 3c); "" = none
 
 
 class HuntComplete(BaseModel):
@@ -191,7 +192,12 @@ async def _run_tool(
     await db.append_event(
         conn,
         run_id,
-        events.ToolCallEvent(tool=tool_name, raw_request=raw_request, tool_use_id=tool_use_id),
+        events.ToolCallEvent(
+            tool=tool_name,
+            raw_request=raw_request,
+            tool_use_id=tool_use_id,
+            thinking=decision.thinking,  # the turn's signed block, echoed verbatim on replay (3c)
+        ),
         publish=publish,
     )
 

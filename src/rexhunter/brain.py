@@ -394,19 +394,22 @@ def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list
     open_tool_use_id = ""  # the id of the tool_use awaiting its result (for id-less ErrorEvents)
     for event in context:
         if isinstance(event, ToolCallEvent):
-            messages.append(
+            content: list[dict[str, Any]] = []
+            if event.thinking:
+                # Lead with the model's VERBATIM signed thinking block (`P5` Unit 3c, invariant 6):
+                # echo the exact bytes captured off the stream — NEVER rebuild. The signature is
+                # bound to the block's content, so a re-serialised/normalised block would 400
+                # ("thinking blocks cannot be modified") and abort the reconstructed turn.
+                content.append(json.loads(event.thinking))
+            content.append(
                 {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": event.tool_use_id,
-                            "name": event.tool,
-                            "input": json.loads(event.raw_request),
-                        }
-                    ],
+                    "type": "tool_use",
+                    "id": event.tool_use_id,
+                    "name": event.tool,
+                    "input": json.loads(event.raw_request),
                 }
             )
+            messages.append({"role": "assistant", "content": content})
             open_tool_use_id = event.tool_use_id
         elif isinstance(event, ToolResultEvent):
             messages.append(
@@ -470,6 +473,17 @@ async def _drive_stream(response: httpx.Response, sink: ThinkingSink) -> bytes:
     return json.dumps(assembler.assembled()).encode()
 
 
+def _extract_thinking_block(raw: bytes) -> bytes:
+    """The turn's VERBATIM signed thinking block from an assembled response, for replay (inv 6):
+    its raw JSON bytes, or b"" if the turn carried no thinking. `project_messages` echoes these
+    bytes onto the reconstructed assistant turn — never rebuilds them: the signature is bound to the
+    exact block content (a rebuild would 400 "thinking blocks cannot be modified")."""
+    for block in json.loads(raw).get("content", []):
+        if block.get("type") == "thinking":
+            return json.dumps(block).encode()
+    return b""
+
+
 def adapter_brain_for(
     *,
     client: httpx.AsyncClient,
@@ -515,7 +529,12 @@ def adapter_brain_for(
             body["stream"] = True
             async with client.stream("POST", MESSAGES_URL, headers=headers, json=body) as response:
                 raw = await _drive_stream(response, sink)
-            return parse_decision(raw)  # the assembled stream crosses the one boundary (inv 3)
+            decision = parse_decision(raw)  # the assembled stream crosses the one boundary (inv 3)
+            if isinstance(decision, ToolCallDecision):
+                # Carry the turn's VERBATIM signed thinking block so the NEXT call's reconstructed
+                # assistant turn leads with it (Unit 3c, invariant 6) — echoed, never rebuilt.
+                decision.thinking = _extract_thinking_block(raw)
+            return decision
 
         return brain
 

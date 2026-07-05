@@ -47,6 +47,11 @@ class ToolCallEvent(_Event):
     tool: str
     raw_request: bytes  # the JSON-serialised validated args (invariant 6)
     tool_use_id: str = ""  # the provider's correlation key (P5); "" for stub/pre-P5 dispatches
+    thinking: bytes = b""  # the model's VERBATIM signed thinking block for THIS assistant turn
+    # (`P5` Unit 3, invariant 6): the raw JSON `{type:"thinking", thinking, signature}` assembled
+    # off the stream. project_messages leads the reconstructed turn with it — echoed, never rebuilt:
+    # the signature is bound to the exact block content, so a rebuild would 400 ("thinking blocks
+    # cannot be modified"). Empty for stub/scripted turns and every pre-Unit-3 event/fixture.
 
 
 class ToolResultEvent(_Event):
