@@ -18,7 +18,7 @@ jobs:
           python-version: "3.14"
       # NOTE: this list mirrors pyproject.toml [project.dependencies] + the dev tools by hand —
       # it drifts on every new dependency (httpx was added in P5 Unit 2a). Keep it in sync.
-      - run: pip install ruff pyright pytest fastapi uvicorn aiosqlite pydantic httpx
+      - run: pip install ruff pyright pytest hypothesis fastapi uvicorn aiosqlite pydantic httpx
       - run: ruff check .
       - run: ruff format --check .
       - run: pyright

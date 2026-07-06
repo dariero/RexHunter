@@ -16,6 +16,7 @@ dev = [
     "ruff>=0.15",
     "pyright>=1.1.410",
     "pytest>=9.1",
+    "hypothesis>=6.156.1",  # property-based DoD for the projection reducer (view.py)
     # Async tests via anyio's pytest plugin (ships with starlette); no extra dep.
 ]
 
