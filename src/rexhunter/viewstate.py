@@ -1,0 +1,68 @@
+"""The ViewState assembler (ADR invariant 2) — composes the pure trajectory-tier projection with the
+pen-events ⊕ tier into the full ViewState the frontend renders.
+
+This is the one layer that spans tiers. It reads the log (``read_log_rows``), runs the PURE reducer
+(``view.project`` — trajectory tier), then overlays each prey's verdict status by folding its
+``pen_events`` (``verdicts.fold`` — the ⊕ tier, OUTSIDE the pure reducer because a verdict is not a
+trajectory event of the closed run, invariant 7). ``view.py`` stays pure (never imports verdicts or
+db); ``db.py`` stays Pillar 1. The logs are truth; the maintained ``prey.status`` is a convenience
+the assembler agrees with (proven by the gate), never one it depends on.
+
+``read_log_rows`` is the two-cursor adapter (inv 2): no ``run_id`` → the global ``id`` cursor (the
+live feed, all runs); a ``run_id`` → the per-run ``seq`` cursor (the ghost replay). Within a run
+they are one sequence (single-writer append, inv 7).
+"""
+
+import dataclasses
+from datetime import datetime
+
+import aiosqlite
+
+from rexhunter import events, verdicts, view
+from rexhunter.view import LogRow, ViewState
+
+# The columns the payload union does not carry (the reducer needs id/seq/run_id/created_at alongside
+# the decoded event). One SELECT, two orderings — the two cursors below.
+_LOG_ROWS_SELECT = "SELECT id, seq, run_id, created_at, payload FROM trajectory_events"
+
+
+async def read_log_rows(conn: aiosqlite.Connection, *, run_id: str | None = None) -> list[LogRow]:
+    """Read the trajectory log into typed ``LogRow``s via one of the two cursors (invariant 2).
+
+    ``run_id is None`` → all runs, ``ORDER BY id`` (the live/catch-up global cursor, cf.
+    server.catch_up). A ``run_id`` → that run only, ``ORDER BY seq`` (the ghost-replay cursor, cf.
+    db.read_events). Each payload crosses the validation boundary (invariant 3) via decode_event.
+    """
+    if run_id is None:
+        sql, params = f"{_LOG_ROWS_SELECT} ORDER BY id", ()
+    else:
+        sql, params = f"{_LOG_ROWS_SELECT} WHERE run_id = ? ORDER BY seq", (run_id,)
+    async with conn.execute(sql, params) as cursor:
+        rows = await cursor.fetchall()
+    return [
+        LogRow(
+            id=int(row[0]),
+            seq=int(row[1]),
+            run_id=str(row[2]),
+            created_at=str(row[3]),
+            event=events.decode_event(str(row[4])),
+        )
+        for row in rows
+    ]
+
+
+async def build_viewstate(
+    conn: aiosqlite.Connection, clock: datetime, *, run_id: str | None = None
+) -> ViewState:
+    """Assemble the full ViewState: project the log (trajectory tier), then overlay each prey's ⊕
+    verdict status folded from its ``pen_events``. ``clock`` is injected (invariant 5); ``run_id``
+    selects the ghost cursor for a single-run replay (default: the live all-runs feed)."""
+    state = view.project(await read_log_rows(conn, run_id=run_id), clock)
+    if not state.pen:
+        return state
+    pen: list[view.PreyCard] = []
+    for card in state.pen:
+        pen_events = await verdicts.read_pen_events(conn, card.prey_id)
+        status, reason, provenance = verdicts.fold(pen_events)
+        pen.append(dataclasses.replace(card, status=status, reason=reason, provenance=provenance))
+    return dataclasses.replace(state, pen=tuple(pen))

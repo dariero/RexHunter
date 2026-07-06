@@ -45,6 +45,11 @@ from rexhunter.events import TrajectoryEvent
 _DAY_START_HOUR = 6
 _NIGHT_START_HOUR = 18
 
+# The capture-time prey status the trajectory tier knows (a PreyCapturedEvent implies it). The real
+# current status is the ⊕ pen_events tier, overlaid by the assembler; re-declared here (not imported
+# from verdicts) so view.py stays pure — it mirrors verdicts.AWAITING / the prey.status projection.
+_AWAITING_VERDICT = "awaiting_verdict"
+
 
 class LogRow(NamedTuple):
     """One stored event plus the columns the payload union does not carry (grep ``created_at``
@@ -68,11 +73,17 @@ class Phase(Enum):
 
 @dataclass(frozen=True)
 class PreyCard:
-    """One penned posting, the capture base (verdict STATUS is the ⊕ tier, composed elsewhere)."""
+    """One penned posting. ``status``/``reason``/``provenance`` are the capture-time base: the pure
+    tier sets ``awaiting_verdict`` (a PreyCapturedEvent implies it), and the assembler overlays the
+    real ⊕ pen_events status OUTSIDE this reducer (invariant 7 — a verdict is not a trajectory event
+    of the closed run)."""
 
     prey_id: str
     territory: str
     posting: str
+    status: str = _AWAITING_VERDICT
+    reason: str | None = None
+    provenance: str | None = None
 
 
 @dataclass(frozen=True)

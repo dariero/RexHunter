@@ -249,6 +249,9 @@ def test_projects_a_real_stub_hunt_trajectory() -> None:
     assert len(state.pen) == 1
     assert state.pen[0].territory == "mock-gym"
     assert state.pen[0].posting == "posting:mock-gym"
+    # The pure (trajectory) tier knows only the CAPTURE-time status; the real current status is the
+    # ⊕ pen_events tier, overlaid by the assembler OUTSIDE this reducer (viewstate.build_viewstate).
+    assert state.pen[0].status == "awaiting_verdict"
     (run,) = state.runs
     assert run.current_tool is None  # the tool_result closed the sniff call (run-scoped pairing)
     assert run.prey_count == 1
