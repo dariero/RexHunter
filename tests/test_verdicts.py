@@ -376,9 +376,13 @@ async def test_requeue_running_jobs_at_boot(tmp_path: Path) -> None:
 async def test_post_verdict_endpoint_delegates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from fastapi import HTTPException
+    from types import SimpleNamespace
+    from typing import cast
+
+    from fastapi import HTTPException, Request
 
     from rexhunter import server
+    from rexhunter.hub import Hub
     from rexhunter.server import VerdictRequest
 
     db_path = tmp_path / "rex.db"
@@ -388,7 +392,13 @@ async def test_post_verdict_endpoint_delegates(
     other_id = await _pen_one(seed, posting="other")
     await seed.close()
 
-    resp = await server.post_verdict(VerdictRequest(prey_id=prey_id, verdict=Verdict.FEAST))
+    # post_verdict now live-relays an applied verdict via the hub (slice C); the stand-in request
+    # carries a hub so the direct call exercises the notify path without the ASGI stack.
+    state = SimpleNamespace(hub=Hub())
+    request = cast(Request, SimpleNamespace(app=SimpleNamespace(state=state)))
+    resp = await server.post_verdict(
+        VerdictRequest(prey_id=prey_id, verdict=Verdict.FEAST), request
+    )
     assert resp == {"applied": True}
 
     check = await db.connect(db_path)
@@ -399,5 +409,7 @@ async def test_post_verdict_endpoint_delegates(
 
     # RELEASE without a reason is rejected at the boundary as a 400, not a 500.
     with pytest.raises(HTTPException) as exc:
-        await server.post_verdict(VerdictRequest(prey_id=other_id, verdict=Verdict.RELEASE))
+        await server.post_verdict(
+            VerdictRequest(prey_id=other_id, verdict=Verdict.RELEASE), request
+        )
     assert exc.value.status_code == 400

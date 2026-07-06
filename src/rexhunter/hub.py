@@ -43,9 +43,11 @@ class Envelope(NamedTuple):
 
     def sse(self) -> str:
         """Render to a Server-Sent-Events frame. A real event carries its ``id:`` (the resume
-        cursor); a heartbeat is a bare comment line the browser ignores but proxies do not."""
+        cursor). An id-less envelope with data is a NOTIFICATION — a bare ``data:`` frame that fires
+        the browser's onmessage but advances no cursor (slice C: live verdicts); an empty one
+        is a heartbeat comment the browser ignores but proxies do not."""
         if self.id is None:
-            return ": keep-alive\n\n"
+            return f"data: {self.data}\n\n" if self.data else ": keep-alive\n\n"
         return f"id: {self.id}\ndata: {self.data}\n\n"
 
 
@@ -97,6 +99,15 @@ class Hub:
         commit (write-ahead, invariant 1) — this is the ``publish`` callback they thread down.
         Non-blocking by construction: a full queue is dropped, never awaited."""
         self._offer(Envelope(event_id, payload))
+
+    def notify(self, payload: str) -> None:
+        """Fan out an id-less NOTIFICATION to every viewer (slice C): a pen verdict that must reach
+        open boards live but lives OUTSIDE the trajectory log (``pen_events`` has its own id
+        sequence). Carrying no id, it fires the browser's onmessage (→ board re-fetch) without
+        advancing Last-Event-ID or colliding with the trajectory resume cursor. The caller notifies
+        AFTER its commit (write-ahead, inv 1); the durable truth is in ``pen_events``, so a
+        reconnecting viewer recovers status from ``/snapshot`` — this frame is never replayed."""
+        self._offer(Envelope(None, payload))
 
     def _beat(self) -> None:
         # One keep-alive to every queue, via the same lossy offer path.

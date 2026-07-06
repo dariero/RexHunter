@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from rexhunter import brain, db, render, scheduler, stub, verdicts, viewstate
-from rexhunter.events import Verdict
+from rexhunter.events import Verdict, VerdictEvent
 from rexhunter.hub import Envelope, Hub
 from rexhunter.loop import COST_CEILING_USD
 from rexhunter.scheduler import run_scheduler
@@ -229,7 +229,7 @@ class VerdictRequest(BaseModel):
 
 
 @app.post("/verdict")
-async def post_verdict(req: VerdictRequest) -> dict[str, bool]:
+async def post_verdict(req: VerdictRequest, request: Request) -> dict[str, bool]:
     """Apply a human verdict (Feast/Release/Amber) as a guarded, idempotent DB transition. There is
     no apply/send/submit tool anywhere in Rex — this POST IS the only path the state can move
     (invariant 4, Tiny Arms). Returns {"applied": False} on a no-op (replay / already-resolved)."""
@@ -242,6 +242,15 @@ async def post_verdict(req: VerdictRequest) -> dict[str, bool]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         await conn.close()
+    if applied:
+        # Live-relay the verdict (slice C) so EVERY open board refreshes to the new pen status, not
+        # just the acting tab. Post-commit (write-ahead, inv 1); id-less (hub.notify), so the
+        # trajectory-id resume cursor is untouched; a reconnecting viewer reads it from /snapshot.
+        hub: Hub = request.app.state.hub
+        event = VerdictEvent(
+            prey_id=req.prey_id, verdict=req.verdict, reason=req.reason, provenance=req.provenance
+        )
+        hub.notify(event.model_dump_json())
     return {"applied": applied}
 
 

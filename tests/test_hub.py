@@ -207,3 +207,27 @@ def test_envelope_sse_framing() -> None:
         'id: 7\ndata: {"type":"sniff","prey":"x"}\n\n'
     )
     assert Envelope(id=None, data="").sse() == ": keep-alive\n\n"
+
+
+def test_envelope_notification_framing() -> None:
+    """An id-less envelope WITH data is a NOTIFICATION (slice C): a `data:` frame that fires the
+    browser's onmessage (→ board refresh) but carries no `id:`, so it never advances Last-Event-ID
+    or collides with the trajectory-id stream (pen_events has its own id sequence). An id-less EMPTY
+    envelope stays a heartbeat comment (which does NOT fire onmessage)."""
+    assert Envelope(id=None, data='{"type":"verdict"}').sse() == 'data: {"type":"verdict"}\n\n'
+    assert Envelope(id=None, data="").sse() == ": keep-alive\n\n"
+
+
+def test_notify_fans_an_idless_frame_to_every_viewer() -> None:
+    """hub.notify broadcasts an id-less notification to every viewer — the same lossy
+    fan-out as publish, but carrying no id so the trajectory resume cursor is untouched. Post-commit
+    at the call site keeps write-ahead (inv 1) intact."""
+    hub = Hub(maxsize=8)
+    viewers = [hub.register() for _ in range(3)]
+    hub.notify('{"type":"verdict","verdict":"feast"}')
+    for _vid, q in viewers:
+        env = q.get_nowait()
+        assert env.id is None
+        assert env.data == '{"type":"verdict","verdict":"feast"}'
+        assert env.sse().startswith("data:")  # a real message frame, not a keep-alive comment
+        assert q.empty()  # exactly one, no duplication
