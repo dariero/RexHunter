@@ -5,13 +5,14 @@ import logging
 import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 
 import aiosqlite
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
-from rexhunter import brain, db, scheduler, stub, verdicts
+from rexhunter import brain, db, render, scheduler, stub, verdicts, viewstate
 from rexhunter.events import Verdict
 from rexhunter.hub import Envelope, Hub
 from rexhunter.loop import COST_CEILING_USD
@@ -277,17 +278,75 @@ async def stream(request: Request) -> StreamingResponse:
     return StreamingResponse(feed(), media_type="text/event-stream")
 
 
+@app.get("/viewstate")
+async def get_viewstate() -> HTMLResponse:
+    """The server-rendered game board (ADR invariant 2): build_viewstate folds the log into a
+    ViewState, render draws it. The browser re-fetches this on each SSE tick — a dumb painter, never
+    re-running the reducer. now() is injected HERE, the live clock (inv 5), never inside project."""
+    conn = await db.connect(DB_PATH)
+    try:
+        state = await viewstate.build_viewstate(conn, datetime.now(UTC))
+    finally:
+        await conn.close()
+    return HTMLResponse(render.render(state))
+
+
+# The page shell (CSS + fetch/tick JS). A raw string: the ``\n`` in the JS stays literal for the
+# browser, not a Python newline. It renders the server board and re-fetches it on each SSE tick
+# (the projection stays server-side, invariant 2 — no reducer in the browser).
+_SHELL = r"""<!doctype html>
+<title>RexHunter 🦖</title>
+<style>
+  body{background:#0b0f0a;color:#7dd87d;font-family:'Courier New',monospace;margin:0;padding:1rem}
+  .board{display:flex;flex-direction:column;gap:.75rem}
+  .hud{display:flex;justify-content:space-between;font-size:1.2rem;
+    border-bottom:1px solid #2f4f2f;padding-bottom:.4rem}
+  .runs{display:flex;flex-wrap:wrap;gap:.5rem}
+  .run{border:1px solid #2f4f2f;padding:.5rem;min-width:12rem;background:#0f150e}
+  .run h3{margin:.1rem 0;color:#9effa0;font-size:.9rem}
+  .thinking{color:#5a8a5a;font-size:.75rem;max-height:3rem;overflow:auto;white-space:pre-wrap}
+  .pen h2{color:#9effa0;border-bottom:1px solid #2f4f2f}
+  .prey{display:flex;gap:.6rem;align-items:center;padding:.3rem .5rem;
+    border-left:3px solid #666;margin:.2rem 0;background:#0f150e}
+  .prey .posting{flex:1;color:#cceeff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .badge{font-size:.7rem;padding:.1rem .4rem;border-radius:.2rem;color:#000}
+  .status-awaiting_verdict{border-left-color:#e0a020}
+  .status-awaiting_verdict .badge{background:#e0a020}
+  .status-feasted{border-left-color:#3caa3c}
+  .status-feasted .badge{background:#3caa3c}
+  .status-released{border-left-color:#777}
+  .status-released .badge{background:#777}
+  .status-ambered{border-left-color:#c8862a}
+  .status-ambered .badge{background:#c8862a}
+  .empty{color:#4a6a4a;font-style:italic}
+  #feed{margin-top:1rem;background:#000;color:#4a7a4a;font-size:.7rem;max-height:12rem;
+    overflow:auto;padding:.5rem;border-top:1px solid #2f4f2f;white-space:pre-wrap}
+  [data-phase="night"]{filter:brightness(.75) hue-rotate(200deg)}
+</style>
+<div id="board"><p class="empty">loading…</p></div>
+<pre id="feed"></pre>
+<script>
+  async function refresh(){
+    document.getElementById('board').innerHTML = await (await fetch('/viewstate')).text();
+  }
+  (async () => {
+    await refresh();
+    const snap = await (await fetch('/snapshot')).json();
+    const feed = document.getElementById('feed');
+    const es = new EventSource('/events?since=' + snap.latest_id);
+    es.onmessage = (e) => {
+      feed.textContent += e.data + '\n';
+      feed.scrollTop = feed.scrollHeight;
+      refresh();
+    };
+  })();
+</script>
+"""
+
+
 @app.get("/")
 async def page() -> HTMLResponse:
-    # Snapshot + catch-up + live splice (ADR pillar 3): render the snapshot, then stream from
-    # latest_id so the first connect resumes at the log head instead of replaying everything.
-    return HTMLResponse("""
-        <pre id="log"></pre>
-        <script>
-          fetch("/snapshot").then(r => r.json()).then(snap => {
-            log.textContent = JSON.stringify(snap, null, 2) + "\\n--- live ---\\n";
-            new EventSource("/events?since=" + snap.latest_id).onmessage =
-              e => log.textContent += e.data + "\\n";
-          });
-        </script>
-    """)
+    """The terrarium shell: render the server-drawn board (/viewstate), then open the live SSE feed
+    from the log head (?since=latest_id). Each event ticks a board re-fetch (projection stays
+    server-side, invariant 2 — no reducer in the browser) and appends to the raw feed."""
+    return HTMLResponse(_SHELL)
