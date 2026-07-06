@@ -318,6 +318,12 @@ _SHELL = r"""<!doctype html>
   .status-released .badge{background:#777}
   .status-ambered{border-left-color:#c8862a}
   .status-ambered .badge{background:#c8862a}
+  .actions{display:flex;gap:.3rem;align-items:center}
+  .actions button{background:#1b3a1b;color:#9effa0;border:1px solid #2f4f2f;
+    font-family:inherit;font-size:.7rem;padding:.15rem .5rem;cursor:pointer}
+  .actions button:hover{background:#2f5f2f}
+  .reason{background:#000;color:#9effa0;border:1px solid #2f4f2f;font-family:inherit;
+    font-size:.7rem;padding:.15rem .3rem;width:8rem}
   .empty{color:#4a6a4a;font-style:italic}
   #feed{margin-top:1rem;background:#000;color:#4a7a4a;font-size:.7rem;max-height:12rem;
     overflow:auto;padding:.5rem;border-top:1px solid #2f4f2f;white-space:pre-wrap}
@@ -326,9 +332,22 @@ _SHELL = r"""<!doctype html>
 <div id="board"><p class="empty">loading…</p></div>
 <pre id="feed"></pre>
 <script>
-  async function refresh(){
-    document.getElementById('board').innerHTML = await (await fetch('/viewstate')).text();
-  }
+  const board = document.getElementById('board');
+  async function refresh(){ board.innerHTML = await (await fetch('/viewstate')).text(); }
+  board.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('button[data-verdict]');
+    if(!btn) return;
+    const verdict = btn.dataset.verdict;
+    const rEl = btn.closest('.prey').querySelector('.reason');
+    const note = rEl ? rEl.value.trim() : '';
+    if(verdict === 'release' && !note){ rEl.focus(); return; }
+    const body = {prey_id: btn.dataset.preyId, verdict};
+    if(verdict === 'release') body.reason = note;
+    if(verdict === 'amber' && note) body.provenance = note;
+    await fetch('/verdict', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)});
+    refresh();
+  });
   (async () => {
     await refresh();
     const snap = await (await fetch('/snapshot')).json();

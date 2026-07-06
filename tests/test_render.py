@@ -84,6 +84,40 @@ def test_render_escapes_untrusted_thinking() -> None:
     assert "&lt;img" in html
 
 
+# ── B2: verdict-action buttons, conditional on the state machine ──────────────────────────────────
+
+_AWAITING = PreyCard(prey_id="pa", territory="mock-gym", posting="job-a", status="awaiting_verdict")
+_AMBERED = PreyCard(prey_id="pb", territory="mock-gym", posting="job-b", status="ambered")
+
+
+def _pen(*prey: PreyCard) -> ViewState:
+    return ViewState(high_water=1, runs=(), pen=prey, spent_usd=0.0, phase=Phase.DAY)
+
+
+def test_render_awaiting_prey_offers_the_three_verdict_buttons() -> None:
+    """An awaiting row exposes the awaiting→{feast,release,amber} transitions (verdicts.py:45-47),
+    each carrying its prey_id, plus the reason/provenance note input."""
+    html = render.render(_pen(_AWAITING))
+    for verdict in ("feast", "release", "amber"):
+        assert f'data-verdict="{verdict}"' in html
+    assert 'data-prey-id="pa"' in html
+    assert 'class="reason"' in html
+
+
+def test_render_gives_a_terminal_prey_no_verdict_buttons() -> None:
+    """feasted/released are terminal (no outgoing transition) — a resolved row is not re-votable, so
+    it renders no action button. _A_PREY is feasted."""
+    assert "data-verdict" not in render.render(_pen(_A_PREY))
+
+
+def test_render_offers_only_reenter_on_an_ambered_prey() -> None:
+    """ambered's one transition is REENTER→awaiting (verdicts.py:48): a Reenter button and none of
+    the awaiting-only verdicts."""
+    html = render.render(_pen(_AMBERED))
+    assert 'data-verdict="reenter"' in html
+    assert 'data-verdict="feast"' not in html
+
+
 @pytest.mark.anyio
 async def test_viewstate_endpoint_renders_the_board(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

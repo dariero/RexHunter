@@ -34,13 +34,33 @@ def _run_card(run: RunView) -> str:
     )
 
 
+# The verdict actions each status offers, matching the transition map (verdicts.py:44-48): awaiting
+# accepts feast/release/amber; ambered re-enters; feasted/released are terminal (no button). The
+# verdict strings are the events.Verdict wire values the shell POSTs to /verdict.
+def _button(prey_id: str, verdict: str, label: str) -> str:
+    return f'<button data-prey-id="{_esc(prey_id)}" data-verdict="{verdict}">{label}</button>'
+
+
+def _actions(card: PreyCard) -> str:
+    if card.status == "awaiting_verdict":
+        return (
+            '<span class="actions"><input class="reason" placeholder="reason…">'
+            f"{_button(card.prey_id, 'feast', 'Feast')}"
+            f"{_button(card.prey_id, 'release', 'Release')}"
+            f"{_button(card.prey_id, 'amber', 'Amber')}</span>"
+        )
+    if card.status == "ambered":
+        return f'<span class="actions">{_button(card.prey_id, "reenter", "Reenter")}</span>'
+    return ""  # feasted / released: terminal, not re-votable
+
+
 def _prey_row(card: PreyCard) -> str:
     badge = _esc(card.status.replace("_", " ").upper())
     return (
         f'<article class="prey status-{_esc(card.status)}">'
         f'<span class="territory">{_esc(card.territory)}</span>'
         f'<span class="posting">{_esc(card.posting)}</span>'
-        f'<span class="badge">{badge}</span></article>'
+        f'<span class="badge">{badge}</span>{_actions(card)}</article>'
     )
 
 
