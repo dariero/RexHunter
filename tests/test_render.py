@@ -191,9 +191,8 @@ def test_render_tile_state_maps_outcome() -> None:
     """latest_outcome → data-tile: completed reads fresh-kill; every attention-demanding closure
     (crashed / needs_help / aborted — and, fail-visible, an UNKNOWN outcome, keeping render total)
     reads cracked-earth (the documented ADR proxy until park-and-persist lands
-    awaiting_intervention); None = the latest run is still open → hunting. 'dormant' (a territory
-    with NO runs) is deliberately absent — unrepresentable until the schedule's territory list is
-    injected into the assembler (rides the Step-4 config injection; plan Flag A)."""
+    awaiting_intervention); None with a real last_started_at = the latest run is still open →
+    hunting. 'dormant' (the None/None pairing — 4b) is covered by test_render_dormant_tile."""
     cases = [
         ("completed", "fresh-kill"),
         ("crashed", "cracked-earth"),
@@ -224,6 +223,98 @@ def test_render_territory_name_is_escaped() -> None:
     html = render.render(_board(territories=(_tile("<script>alert(1)</script>", "completed"),)))
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
+
+
+# ── Step 5: HP/stamina bars, the sprite-state hook, the dormant tile ─────────────────────────────
+
+
+def _armed_run(
+    *,
+    spent: float = 0.0,
+    ceiling: float | None = None,
+    turns: int = 0,
+    max_iters: int | None = None,
+    tool: str | None = "sniff",
+) -> RunView:
+    """An open run with the 4a-recorded caps set (or unset — the pre-4a shape)."""
+    return RunView(
+        run_id="run-armed",
+        current_tool=tool,
+        thinking="",
+        spent_usd=spent,
+        prey_count=0,
+        error_count=0,
+        turns=turns,
+        territory="mock-gym",
+        outcome=None,
+        cost_ceiling_usd=ceiling,
+        max_iterations=max_iters,
+    )
+
+
+def test_render_run_hp_bar_depletes_with_spend() -> None:
+    """The ADR's 'budget guards visible as HP mechanics' (Pillar 5 §6): a quarter of the ceiling
+    spent leaves a 75%-full depleting HP bar on the run card."""
+    html = render.render(_board(runs=(_armed_run(spent=0.25, ceiling=1.0),)))
+    assert 'class="bar hp"' in html
+    assert "width:75%" in html
+
+
+def test_render_run_stamina_bar_depletes_with_turns() -> None:
+    """Stamina = remaining turns: 4 of 10 spent → 60% full."""
+    html = render.render(_board(runs=(_armed_run(turns=4, max_iters=10),)))
+    assert 'class="bar stamina"' in html
+    assert "width:60%" in html
+
+
+def test_render_bars_clamp_at_zero() -> None:
+    """The last brain call can overshoot the ceiling (the breaker checks BEFORE a call) — both
+    bars floor at 0%, never a negative width."""
+    html = render.render(_board(runs=(_armed_run(spent=1.5, ceiling=1.0, turns=12, max_iters=10),)))
+    assert html.count("width:0%") == 2
+    assert "width:-" not in html
+
+
+def test_render_run_without_ceilings_draws_no_bars() -> None:
+    """A pre-4a run (None ceilings) draws no bar at all — the card renders intact (total),
+    exactly as before Step 5."""
+    html = render.render(_board(runs=(_armed_run(),)))
+    assert 'class="bar' not in html
+    assert "run-armed" in html
+
+
+def test_render_hud_daemon_hp_bar() -> None:
+    """The daemon-level HP bar in the HUD: global spend against the injected daemon ceiling
+    (4b); no ceiling → no bar, the dollar figure alone as before."""
+    armed = ViewState(
+        high_water=1,
+        runs=(),
+        pen=(),
+        spent_usd=0.5,
+        phase=Phase.DAY,
+        daemon_spend_ceiling_usd=2.0,
+    )
+    html = render.render(armed)
+    assert 'class="bar hp"' in html
+    assert "width:75%" in html
+    assert 'class="bar' not in render.render(_board())  # uninjected: no bar anywhere
+
+
+def test_render_sprite_state_attribute() -> None:
+    """The Step-7 sprite hook: an open tool → data-rex="hunting"; no open tool → "idle". A state
+    attribute the CSS keyframes will bind to — no art here."""
+    assert 'data-rex="hunting"' in render.render(_board(runs=(_armed_run(tool="sniff"),)))
+    assert 'data-rex="idle"' in render.render(_board(runs=(_armed_run(tool=None),)))
+
+
+def test_render_dormant_tile() -> None:
+    """The 4b None/None pairing drawn: latest_outcome None with NO last_started_at = never
+    hunted → dormant; None WITH a timestamp stays hunting (an open run). The 2b deferral closes."""
+    dormant = TerritoryView(territory="fresh-lands", latest_outcome=None, last_started_at=None)
+    html = render.render(_board(territories=(dormant,)))
+    assert 'data-tile="dormant"' in html
+    hunting = render.render(_board(territories=(_tile(latest_outcome=None),)))
+    assert 'data-tile="hunting"' in hunting
 
 
 @pytest.mark.anyio

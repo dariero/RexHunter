@@ -23,29 +23,51 @@ def _esc(value: str) -> str:
     return html.escape(value)
 
 
+def _remaining(spent: float, ceiling: float | None) -> float | None:
+    """The depleting-bar fraction (ADR Pillar 5 §6 — budget guards as HP/stamina mechanics).
+    None = no denominator recorded (a pre-4a row, or a nonpositive ceiling): draw no bar.
+    Otherwise clamp01(1 - spent/ceiling): the last brain call can overshoot the ceiling (the
+    breaker checks BEFORE a call), so the floor is 0, never a negative width."""
+    if ceiling is None or ceiling <= 0:
+        return None
+    return max(0.0, min(1.0, 1.0 - spent / ceiling))
+
+
+def _bar(kind: str, remaining: float) -> str:
+    # kind is one of our own literals ("hp"/"stamina") and the width a computed number — nothing
+    # untrusted crosses into this markup.
+    return f'<div class="bar {kind}"><div class="fill" style="width:{remaining:.0%}"></div></div>'
+
+
 def _run_card(run: RunView) -> str:
     tool = _esc(run.current_tool) if run.current_tool is not None else "idle"
+    rex = "hunting" if run.current_tool is not None else "idle"  # the Step-7 sprite hook
+    hp = _remaining(run.spent_usd, run.cost_ceiling_usd)
+    stamina = _remaining(run.turns, run.max_iterations)
+    bars = (_bar("hp", hp) if hp is not None else "") + (
+        _bar("stamina", stamina) if stamina is not None else ""
+    )
     return (
-        f'<article class="run"><h3>{_esc(run.run_id)}</h3>'
+        f'<article class="run" data-rex="{rex}"><h3>{_esc(run.run_id)}</h3>'
         f'<div class="tool">🔧 {tool}</div>'
         f'<div class="thinking">{_esc(run.thinking)}</div>'
+        f"{bars}"
         f'<div class="stats">🎯 {run.prey_count} · ⚠️ {run.error_count} '
         f"· ${run.spent_usd:.4f}</div></article>"
     )
 
 
-def _tile_state(latest_outcome: str | None) -> str:
-    """TerritoryView.latest_outcome → the tile's scene state. None = the latest run is still open
-    (Rex hunts there NOW — and the one-hunt-per-territory scheduler makes None mean exactly that);
-    "completed" is a fresh kill. Everything else — crashed / needs_help / aborted, and any unknown
-    future outcome — is cracked earth: the attention-demanding tile (a PROXY from runs.outcome
-    until park-and-persist lands awaiting_intervention, per the ADR), doubling as the fail-visible
-    fallback that keeps this total (an unrecognized closure demands attention, never hides).
-    "dormant" (a territory with no runs yet) is unrepresentable until the schedule's territory
-    list is injected into the assembler — it lands with the Step-4 config injection."""
-    if latest_outcome is None:
-        return "hunting"
-    if latest_outcome == "completed":
+def _tile_state(tile: TerritoryView) -> str:
+    """TerritoryView → the tile's scene state. latest_outcome None splits on the 4b None/None
+    pairing: a real last_started_at means the latest run is OPEN (Rex hunts there NOW —
+    "hunting"); None means never hunted — "dormant" (the 2b deferral, closed). "completed" is a
+    fresh kill. Everything else — crashed / needs_help / aborted, and any unknown future
+    outcome — is cracked earth: the attention-demanding tile (a PROXY from runs.outcome until
+    park-and-persist lands awaiting_intervention, per the ADR), doubling as the fail-visible
+    fallback that keeps this total (an unrecognized closure demands attention, never hides)."""
+    if tile.latest_outcome is None:
+        return "hunting" if tile.last_started_at is not None else "dormant"
+    if tile.latest_outcome == "completed":
         return "fresh-kill"
     return "cracked-earth"
 
@@ -54,7 +76,7 @@ def _territory_tile(tile: TerritoryView) -> str:
     # The state rides a data-tile attribute the CSS paints (sprite art is a later step); the
     # territory name is config/scrape-adjacent input and crosses _esc like everything else (inv 3).
     return (
-        f'<article class="tile" data-tile="{_tile_state(tile.latest_outcome)}">'
+        f'<article class="tile" data-tile="{_tile_state(tile)}">'
         f'<span class="territory">{_esc(tile.territory)}</span></article>'
     )
 
@@ -100,10 +122,14 @@ def render(state: ViewState) -> str:
     )
     tiles = "".join(_territory_tile(tile) for tile in state.territories)
     pen = "".join(_prey_row(card) for card in state.pen) or '<p class="empty">pen empty</p>'
+    # The daemon-level HP bar (4b's injected ceiling vs the global spend fold) — the terrarium's
+    # whole-wallet health; no ceiling injected → the dollar figure alone, as ever.
+    daemon_hp = _remaining(state.spent_usd, state.daemon_spend_ceiling_usd)
+    hud_bar = _bar("hp", daemon_hp) if daemon_hp is not None else ""
     return (
         f'<div class="board" data-phase="{state.phase.value}">'
         f'<header class="hud"><span class="phase">{icon} {state.phase.value.upper()}</span>'
-        f'<span class="spend">${state.spent_usd:.4f}</span></header>'
+        f'{hud_bar}<span class="spend">${state.spent_usd:.4f}</span></header>'
         f'<section class="territories">{tiles}</section>'
         f'<section class="runs">{runs}</section>'
         f'<section class="pen"><h2>Prey Pen</h2>{pen}</section>'
