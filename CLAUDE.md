@@ -192,8 +192,11 @@ unworkable), so no `prey_captured` in THIS stream — that event's live streamin
 smoke. Canonical `/events` stream captured as a fixture (`tests/fixtures/daemon_hunt_4688398b….sse`, inv 6);
 `tests/test_daemon_stream_replay.py` re-drives it offline (monotonic ids, delta-before-tool_call, signed
 block, paired tool_use_ids, usage folds to the spend, id-less heartbeat). Scope guard held: mock-gym only, no
-ATS adapter, no frontend, no new tools. *Then next: `P5` extraction/strict mode + the live ATS (Greenhouse/
-Lever) adapter, or the remaining pillar polish.*
+ATS adapter, no frontend, no new tools. **Since `W.3`, the projection spine has shipped**
+(`view`/`viewstate`/`render` – the pure `project(log)→ViewState` reducer, the ⊕ assembler, and the
+retro-game renderer + verdict buttons + live verdict streaming; property-locked, commits
+`0ceb1b3`→`0b40e20`). *Then next: the frontend aesthetic skin (retro dino-game); then `P5`
+extraction/strict mode + the live ATS (Greenhouse/Lever) adapter; then eval tiers 2–3.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -249,7 +252,7 @@ Lever) adapter, or the remaining pillar polish.*
   `ThinkingDelta` relay through the P3 hub, and `project_messages` echoing the verbatim signed thinking
   block; one gated live hunt (`claude-sonnet-5`, thinking on, $0.0187) proved call two accepted with
   the reconstructed signed-block turn, captured + offline-replayed (`tests/test_thinking_hunt_replay.py`).
-  *Later units:* extraction/strict mode, live-adapter daemon wiring.
+  *Later units:* extraction/strict mode, the live ATS (Greenhouse/Lever) adapter.
 - **`P3` · Streaming hub — ✅ done.** Per-viewer broadcast queues + `Last-Event-ID` resume; the
   prototype poll is retired and `/events` streams from the real in-process hub. *Gate (green,
   `tests/test_stage3_gate.py`):* two viewers render byte-identical feeds; a viewer closed for a full

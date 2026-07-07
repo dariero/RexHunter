@@ -8,11 +8,16 @@ promising postings into a pen for a human verdict. State is event-sourced – a 
 log is the single source of truth – and the frontend is a retro-game projection of that log:
 the agent's actual trajectory replayed as a creature moving through its world.
 
-> **Status: build-in-public, early.** Persistence (`P1`), the typed event model + validation
+> **Status: build-in-public.** Persistence (`P1`), the typed event model + validation
 > boundary (`P2.1`), the hand-rolled agent loop + `@rex_tool` harness (`P2.2`), the concurrent
-> hunt scheduler (`P2.3`), and durable pause & HITL — the prey pen + Feast/Release/Amber verdict
-> machine (`P4`) — are done and gate-tested, all driven by a no-spend stub brain until the real
-> `brain()` lands. The brain socket (`P5`) is next. Slice IDs, order, and gates live in the
+> hunt scheduler (`P2.3`), durable pause & HITL – the prey pen + Feast/Release/Amber verdict
+> machine (`P4`) – and the streaming hub (`P3`) are done and gate-tested. The brain socket
+> (`P5`) is done through its streaming `ThinkingDelta` relay and live daemon wiring (W.1–W.3):
+> the real streaming/thinking `brain()` now runs in the daemon (opt-in via `REXHUNTER_BRAIN=live`;
+> the no-spend stub still drives by default), with extraction/strict mode and the live ATS
+> (Greenhouse/Lever) adapter the remaining P5 runway. The projection spine – reducer, assembler,
+> and retro-game renderer (`view`/`viewstate`/`render`, property-tested) – has shipped; the
+> current frontier is its aesthetic skin. Slice IDs, order, and gates live in the
 > [ADR](rexhunter-adr.md#build-sequence-canonical).
 
 ## Core constraints
@@ -79,8 +84,11 @@ ADR owns the order and gates; this table tracks only status. Slices are named by
 | `P2.2` | **Loop & tool harness** – `@rex_tool` registry, validate → execute → append, error taxonomy | 2 | **Done** |
 | `P2.3` | Hunt scheduler – bounded concurrent-hunt task group + per-territory deadlines, wired into the daemon lifespan | 2 | **Done** |
 | `P4` | Durable pause & HITL – prey pen + Feast / Release / Amber verdict machine (`verdicts.py`) | 4 | **Done** |
-| `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | **In progress** – Units 1–2c (brain-in-loop, first paid calls) + Unit 3 (streaming `ThinkingDelta` relay + signed-block replay, one gated thinking-on live hunt) done; extraction/strict + live-adapter daemon wiring remain |
+| `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | **In progress** – Units 1–2c (brain-in-loop, first paid calls), Unit 3 (streaming `ThinkingDelta` relay + signed-block replay, one gated thinking-on live hunt), and daemon live-wiring (W.1–W.3, streaming/thinking brain in the real lifespan) done; extraction/strict mode + the live ATS (Greenhouse/Lever) adapter remain |
+| `P5·W.1–W.3` | Daemon live-wiring – brain selection + id-scoped daemon spend ceiling; streaming/thinking brain wired into the lifespan | 5 | **Done** – streaming/thinking brain runs in the real lifespan |
 | `P3` | Streaming hub – per-viewer broadcast queues, snapshot + catch-up + `Last-Event-ID` resume | 3 | **Done** – prototype poll retired; `/events` streams from the real in-process hub |
+| Frontend spine | view/viewstate/render – pure projection reducer + assembler + renderer, property-locked | – | **Done** |
+| Aesthetic skin | Retro dino-game visual skin over the projection spine | – | **Not started** – current frontier |
 
 Gates are test-first and defined in the ADR. `P1`'s gate (`tests/test_stage1_gate.py`): a real
 hunt subprocess is `kill -9`ed mid-append; every confirmed event must survive the restart and the
