@@ -15,7 +15,7 @@ the fetch/tick JS) lives in server.py and injects it.
 
 import html
 
-from rexhunter.view import Phase, PreyCard, RunView, ViewState
+from rexhunter.view import Phase, PreyCard, RunView, TerritoryView, ViewState
 
 
 def _esc(value: str) -> str:
@@ -31,6 +31,31 @@ def _run_card(run: RunView) -> str:
         f'<div class="thinking">{_esc(run.thinking)}</div>'
         f'<div class="stats">🎯 {run.prey_count} · ⚠️ {run.error_count} '
         f"· ${run.spent_usd:.4f}</div></article>"
+    )
+
+
+def _tile_state(latest_outcome: str | None) -> str:
+    """TerritoryView.latest_outcome → the tile's scene state. None = the latest run is still open
+    (Rex hunts there NOW — and the one-hunt-per-territory scheduler makes None mean exactly that);
+    "completed" is a fresh kill. Everything else — crashed / needs_help / aborted, and any unknown
+    future outcome — is cracked earth: the attention-demanding tile (a PROXY from runs.outcome
+    until park-and-persist lands awaiting_intervention, per the ADR), doubling as the fail-visible
+    fallback that keeps this total (an unrecognized closure demands attention, never hides).
+    "dormant" (a territory with no runs yet) is unrepresentable until the schedule's territory
+    list is injected into the assembler — it lands with the Step-4 config injection."""
+    if latest_outcome is None:
+        return "hunting"
+    if latest_outcome == "completed":
+        return "fresh-kill"
+    return "cracked-earth"
+
+
+def _territory_tile(tile: TerritoryView) -> str:
+    # The state rides a data-tile attribute the CSS paints (sprite art is a later step); the
+    # territory name is config/scrape-adjacent input and crosses _esc like everything else (inv 3).
+    return (
+        f'<article class="tile" data-tile="{_tile_state(tile.latest_outcome)}">'
+        f'<span class="territory">{_esc(tile.territory)}</span></article>'
     )
 
 
@@ -66,14 +91,20 @@ def _prey_row(card: PreyCard) -> str:
 
 def render(state: ViewState) -> str:
     """Draw the ViewState as an HTML board fragment. Pure, total, deterministic — the same input
-    always yields the same markup (the render analogue of the reducer's determinism law)."""
+    always yields the same markup (the render analogue of the reducer's determinism law). Cards
+    are LIVE runs only (outcome is None, the runs ⊕ overlay); a closed run's story is its
+    territory's tile — the 2b card→tile handoff, ticked live by the run-finished pulse (2a)."""
     icon = "☀️" if state.phase is Phase.DAY else "🌙"
-    runs = "".join(_run_card(run) for run in state.runs) or '<p class="empty">no active hunts</p>'
+    runs = "".join(_run_card(run) for run in state.runs if run.outcome is None) or (
+        '<p class="empty">no active hunts</p>'
+    )
+    tiles = "".join(_territory_tile(tile) for tile in state.territories)
     pen = "".join(_prey_row(card) for card in state.pen) or '<p class="empty">pen empty</p>'
     return (
         f'<div class="board" data-phase="{state.phase.value}">'
         f'<header class="hud"><span class="phase">{icon} {state.phase.value.upper()}</span>'
         f'<span class="spend">${state.spent_usd:.4f}</span></header>'
+        f'<section class="territories">{tiles}</section>'
         f'<section class="runs">{runs}</section>'
         f'<section class="pen"><h2>Prey Pen</h2>{pen}</section>'
         f"</div>"

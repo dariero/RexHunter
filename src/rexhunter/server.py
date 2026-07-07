@@ -311,6 +311,12 @@ _SHELL = r"""<!doctype html>
   .board{display:flex;flex-direction:column;gap:.75rem}
   .hud{display:flex;justify-content:space-between;font-size:1.2rem;
     border-bottom:1px solid #2f4f2f;padding-bottom:.4rem}
+  .territories{display:flex;flex-wrap:wrap;gap:.5rem}
+  .tile{border:1px solid #2f4f2f;background:#0f150e;padding:.35rem .8rem;min-width:7rem;
+    text-align:center;font-size:.8rem}
+  .tile[data-tile="hunting"]{border-color:#e0d020;color:#e0d020;background:#17160b}
+  .tile[data-tile="fresh-kill"]{border-color:#3caa3c;color:#9effa0;background:#0e1a0e}
+  .tile[data-tile="cracked-earth"]{border-color:#aa5533;color:#d08050;background:#1a120e}
   .runs{display:flex;flex-wrap:wrap;gap:.5rem}
   .run{border:1px solid #2f4f2f;padding:.5rem;min-width:12rem;background:#0f150e}
   .run h3{margin:.1rem 0;color:#9effa0;font-size:.9rem}

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from rexhunter import db, events, render, server, verdicts
-from rexhunter.view import Phase, PreyCard, RunView, ViewState
+from rexhunter.view import Phase, PreyCard, RunView, TerritoryView, ViewState
 
 _A_RUN = RunView(
     run_id="run-1",
@@ -116,6 +116,114 @@ def test_render_offers_only_reenter_on_an_ambered_prey() -> None:
     html = render.render(_pen(_AMBERED))
     assert 'data-verdict="reenter"' in html
     assert 'data-verdict="feast"' not in html
+
+
+# ── 2b: closed-run cards prune into the territory tile row ───────────────────────────────────────
+
+_OPEN_RUN = RunView(
+    run_id="run-open",
+    current_tool="sniff",
+    thinking="",
+    spent_usd=0.0,
+    prey_count=0,
+    error_count=0,
+    territory="mock-gym",
+    outcome=None,
+)
+_CLOSED_RUN = RunView(
+    run_id="run-closed",
+    current_tool=None,
+    thinking="",
+    spent_usd=0.0,
+    prey_count=1,
+    error_count=0,
+    territory="mock-gym",
+    outcome="completed",
+)
+
+
+def _board(
+    runs: tuple[RunView, ...] = (), territories: tuple[TerritoryView, ...] = ()
+) -> ViewState:
+    return ViewState(
+        high_water=1, runs=runs, pen=(), spent_usd=0.0, phase=Phase.DAY, territories=territories
+    )
+
+
+def _tile(territory: str = "mock-gym", latest_outcome: str | None = "completed") -> TerritoryView:
+    return TerritoryView(
+        territory=territory,
+        latest_outcome=latest_outcome,
+        last_started_at="2026-07-01T00:00:00+00:00",
+    )
+
+
+def test_render_shows_only_open_runs_as_cards() -> None:
+    """A closed run (outcome set) leaves the card list — its story lives in its territory's tile
+    (the 2b card→tile handoff). Exactly the open run renders as a card."""
+    html = render.render(_board(runs=(_OPEN_RUN, _CLOSED_RUN)))
+    assert html.count('<article class="run"') == 1
+    assert "run-open" in html
+    assert "run-closed" not in html
+
+
+def test_render_closed_runs_do_not_render_cards() -> None:
+    """All-closed → zero run cards and the 'no active hunts' placeholder — an empty section,
+    never a crash (render stays total)."""
+    html = render.render(_board(runs=(_CLOSED_RUN,)))
+    assert '<article class="run"' not in html
+    assert "no active hunts" in html
+
+
+def test_render_draws_a_territory_tile_per_territory() -> None:
+    """N TerritoryViews → N tiles inside <section class="territories">, each naming its
+    territory."""
+    html = render.render(
+        _board(territories=(_tile("greenhouse", "completed"), _tile("mock-gym", None)))
+    )
+    assert 'class="territories"' in html
+    assert html.count('<article class="tile"') == 2
+    assert "greenhouse" in html
+    assert "mock-gym" in html
+
+
+def test_render_tile_state_maps_outcome() -> None:
+    """latest_outcome → data-tile: completed reads fresh-kill; every attention-demanding closure
+    (crashed / needs_help / aborted — and, fail-visible, an UNKNOWN outcome, keeping render total)
+    reads cracked-earth (the documented ADR proxy until park-and-persist lands
+    awaiting_intervention); None = the latest run is still open → hunting. 'dormant' (a territory
+    with NO runs) is deliberately absent — unrepresentable until the schedule's territory list is
+    injected into the assembler (rides the Step-4 config injection; plan Flag A)."""
+    cases = [
+        ("completed", "fresh-kill"),
+        ("crashed", "cracked-earth"),
+        ("needs_help", "cracked-earth"),
+        ("aborted", "cracked-earth"),
+        ("some-future-outcome", "cracked-earth"),  # unknown: fail-visible, never invisible
+        (None, "hunting"),
+    ]
+    for outcome, tile_state in cases:
+        html = render.render(_board(territories=(_tile(latest_outcome=outcome),)))
+        assert f'data-tile="{tile_state}"' in html, f"{outcome!r} should map to {tile_state!r}"
+
+
+def test_render_open_run_and_its_tile_coexist() -> None:
+    """A pure-render contract (plan Flag B): a live card and its territory's tile NEVER suppress
+    each other — no tile-vs-card deduping in the renderer. (Live-assembler note: an in-flight hunt
+    IS the territory's latest run, so the live tile reads 'hunting' during a hunt; the closed
+    outcome returns on the 2a finish pulse. This hand-built state pins only the renderer.)"""
+    html = render.render(_board(runs=(_OPEN_RUN,), territories=(_tile("mock-gym", "completed"),)))
+    assert html.count('<article class="run"') == 1
+    assert "run-open" in html
+    assert 'data-tile="fresh-kill"' in html
+
+
+def test_render_territory_name_is_escaped() -> None:
+    """Invariant 3 extends to the new markup: a hostile territory name renders inert in the tile —
+    the escape wall grows with the board, it doesn't just survive it."""
+    html = render.render(_board(territories=(_tile("<script>alert(1)</script>", "completed"),)))
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
 
 
 @pytest.mark.anyio
