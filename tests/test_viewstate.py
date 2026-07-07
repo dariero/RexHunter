@@ -123,3 +123,85 @@ async def test_build_viewstate_on_an_empty_log_is_empty(tmp_path: Path) -> None:
         assert state.runs == ()
     finally:
         await conn.close()
+
+
+# ── Step 1 · the runs ⊕ overlay tier: run outcome/territory + territories, from `runs` ───────────
+
+
+async def test_overlay_fills_run_territory_and_outcome(tmp_path: Path) -> None:
+    """The runs ⊕ tier: a closed run's RunView carries its territory and outcome, overlaid from the
+    `runs` table (invariant 2's "tables transactionally maintained alongside" clause) — NO
+    trajectory event carries either (terminal decisions emit no event, the settled ADR Pillar 2/4
+    reconciliation), so this is assembler work, never the pure fold's."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        run_id, _ = await _seed_stub_hunt(conn)
+        await db.finish_run(conn, run_id, outcome="completed")
+        state = await viewstate.build_viewstate(conn, _CLOCK)
+        (run,) = state.runs
+        assert run.run_id == run_id
+        assert run.territory == "mock-gym"
+        assert run.outcome == "completed"
+    finally:
+        await conn.close()
+
+
+async def test_open_run_overlays_none_outcome(tmp_path: Path) -> None:
+    """A run never closed is still live: the overlay stamps outcome None (runs.outcome IS NULL),
+    while territory — not liveness-dependent — is filled."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        await _seed_stub_hunt(conn)
+        state = await viewstate.build_viewstate(conn, _CLOCK)
+        (run,) = state.runs
+        assert run.outcome is None
+        assert run.territory == "mock-gym"
+    finally:
+        await conn.close()
+
+
+async def test_territories_tier_reflects_latest_run_per_territory(tmp_path: Path) -> None:
+    """ViewState.territories shows each territory's LATEST run (MAX(started_at)) — the scene-tile
+    source, the same GROUP BY /snapshot derives (server.snapshot_state). started_at is pinned by
+    explicit UPDATEs so the MAX winner is deterministic, never a wall-clock microsecond race. The
+    three runs carry no trajectory events: the tier is runs-table-driven by construction."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        old = await db.start_run(conn, territory="mock-gym")
+        new = await db.start_run(conn, territory="mock-gym")
+        other = await db.start_run(conn, territory="greenhouse")
+        await db.finish_run(conn, old, outcome="completed")
+        await db.finish_run(conn, new, outcome="needs_help")
+        await db.finish_run(conn, other, outcome="completed")
+        for run_id, started_at in [
+            (old, "2026-07-01T00:00:00+00:00"),
+            (new, "2026-07-02T00:00:00+00:00"),
+            (other, "2026-07-03T00:00:00+00:00"),
+        ]:
+            await conn.execute("UPDATE runs SET started_at = ? WHERE id = ?", (started_at, run_id))
+        await conn.commit()
+        state = await viewstate.build_viewstate(conn, _CLOCK)
+        assert [(t.territory, t.latest_outcome, t.last_started_at) for t in state.territories] == [
+            ("greenhouse", "completed", "2026-07-03T00:00:00+00:00"),
+            ("mock-gym", "needs_help", "2026-07-02T00:00:00+00:00"),
+        ]
+    finally:
+        await conn.close()
+
+
+async def test_ghost_cursor_stamps_current_outcome_is_a_documented_deferral(
+    tmp_path: Path,
+) -> None:
+    """PINS a documented deferral, not an ideal: the ghost (per-run seq) cursor overlays the run's
+    CURRENT outcome — a replay of a completed run shows "completed" at every scrub position,
+    because outcome lives on `runs` (one row, no history), not in the trajectory. Revisit when
+    ghost replay gets a UI (outcome-as-of-position needs a position-aware overlay)."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        run_id, _ = await _seed_stub_hunt(conn)
+        await db.finish_run(conn, run_id, outcome="completed")
+        state = await viewstate.build_viewstate(conn, _CLOCK, run_id=run_id)
+        (run,) = state.runs
+        assert run.outcome == "completed"
+    finally:
+        await conn.close()

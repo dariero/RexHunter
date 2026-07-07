@@ -2,11 +2,16 @@
 pen-events ⊕ tier into the full ViewState the frontend renders.
 
 This is the one layer that spans tiers. It reads the log (``read_log_rows``), runs the PURE reducer
-(``view.project`` — trajectory tier), then overlays each prey's verdict status by folding its
-``pen_events`` (``verdicts.fold`` — the ⊕ tier, OUTSIDE the pure reducer because a verdict is not a
-trajectory event of the closed run, invariant 7). ``view.py`` stays pure (never imports verdicts or
-db); ``db.py`` stays Pillar 1. The logs are truth; the maintained ``prey.status`` is a convenience
-the assembler agrees with (proven by the gate), never one it depends on.
+(``view.project`` — trajectory tier), overlays each run's territory/outcome and the per-territory
+tier from the ``runs`` table (the runs ⊕ tier — terminal decisions emit no trajectory event, the
+settled ADR Pillar 2/4 reconciliation, so these are facts of a table transactionally maintained
+alongside the log, invariant 2), then overlays each prey's verdict status by folding its
+``pen_events`` (``verdicts.fold`` — the pen ⊕ tier, OUTSIDE the pure reducer because a verdict is
+not a trajectory event of the closed run, invariant 7). ``view.py`` stays pure (never imports
+verdicts or db); ``db.py`` stays Pillar 1. The logs are truth; the maintained ``prey.status`` is a
+convenience the assembler agrees with (proven by the gate), never one it depends on. Both ⊕ tiers
+apply on BOTH cursors — the ghost cursor thus stamps a run's CURRENT outcome, a documented deferral
+(pinned by test) to revisit when ghost replay gets a UI.
 
 ``read_log_rows`` is the two-cursor adapter (inv 2): no ``run_id`` → the global ``id`` cursor (the
 live feed, all runs); a ``run_id`` → the per-run ``seq`` cursor (the ghost replay). Within a run
@@ -19,7 +24,7 @@ from datetime import datetime
 import aiosqlite
 
 from rexhunter import events, verdicts, view
-from rexhunter.view import LogRow, ViewState
+from rexhunter.view import LogRow, TerritoryView, ViewState
 
 # The columns the payload union does not carry (the reducer needs id/seq/run_id/created_at alongside
 # the decoded event). One SELECT, two orderings — the two cursors below.
@@ -54,10 +59,41 @@ async def read_log_rows(conn: aiosqlite.Connection, *, run_id: str | None = None
 async def build_viewstate(
     conn: aiosqlite.Connection, clock: datetime, *, run_id: str | None = None
 ) -> ViewState:
-    """Assemble the full ViewState: project the log (trajectory tier), then overlay each prey's ⊕
-    verdict status folded from its ``pen_events``. ``clock`` is injected (invariant 5); ``run_id``
-    selects the ghost cursor for a single-run replay (default: the live all-runs feed)."""
+    """Assemble the full ViewState: project the log (trajectory tier), overlay each run's
+    territory/outcome + the territory tier from ``runs`` (the runs ⊕ tier), then overlay each
+    prey's verdict status folded from its ``pen_events`` (the pen ⊕ tier). ``clock`` is injected
+    (invariant 5); ``run_id`` selects the ghost cursor for a single-run replay (default: the live
+    all-runs feed)."""
     state = view.project(await read_log_rows(conn, run_id=run_id), clock)
+
+    # The runs ⊕ tier: territory/outcome are runs-table facts (no trajectory event carries them).
+    # `.get` keeps the overlay total over a RunView with no runs row (can't happen live — the FK
+    # forbids it — but a defensive default beats a KeyError, cf. verdicts.fold's guard).
+    async with conn.execute("SELECT id, territory, outcome FROM runs") as cursor:
+        run_rows = await cursor.fetchall()
+    facts = {str(r[0]): (str(r[1]), None if r[2] is None else str(r[2])) for r in run_rows}
+    runs: list[view.RunView] = []
+    for rv in state.runs:
+        territory, outcome = facts.get(rv.run_id, (rv.territory, rv.outcome))
+        runs.append(dataclasses.replace(rv, territory=territory, outcome=outcome))
+
+    # The territory tier: each territory's latest run. The bare `outcome` column pairs with the row
+    # achieving MAX(started_at) — SQLite's documented bare-column-with-MAX behaviour, the same
+    # /snapshot already relies on (server.snapshot_state).
+    async with conn.execute(
+        "SELECT territory, outcome, MAX(started_at) FROM runs GROUP BY territory ORDER BY territory"
+    ) as cursor:
+        latest = await cursor.fetchall()
+    territories = tuple(
+        TerritoryView(
+            territory=str(r[0]),
+            latest_outcome=None if r[1] is None else str(r[1]),
+            last_started_at=str(r[2]),
+        )
+        for r in latest
+    )
+    state = dataclasses.replace(state, runs=tuple(runs), territories=territories)
+
     if not state.pen:
         return state
     pen: list[view.PreyCard] = []

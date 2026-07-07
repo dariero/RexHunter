@@ -66,6 +66,8 @@ Operational settings, applied once at startup: `PRAGMA journal_mode=WAL` (reader
 
 Derived stores (the found-jobs table, dedupe hashes, prey pen status) live in adjacent tables maintained transactionally with their originating events. They are queryable conveniences; the log remains the source of truth, and any derived table can be rebuilt by replaying the log.
 
+> **Reconciliation note (logged in the frontend spine): the runs ⊕ overlay tier.** The frontend assembler (`viewstate.build_viewstate`) overlays each run's `territory`/`outcome` — and a per-territory tier (the latest run per territory) — from the `runs` table onto the pure trajectory projection, exactly as the pen tier overlays verdict status from `pen_events`. This is invariant 2's "tables transactionally maintained alongside it" clause applied, **not** a new event: terminal decisions still emit no trajectory event (the Pillar 2/4 reconciliation notes stand), and the pure reducer (`view.py`) never reads a table — the overlay lives in the assembler only. One deferral, pinned by test (`test_ghost_cursor_stamps_current_outcome_is_a_documented_deferral`): the ghost (per-run `seq`) cursor stamps the run's *current* outcome, not the outcome as of the scrubbed position — revisit when ghost replay gets a UI.
+
 ### The Justification (The Why)
 
 One data structure serves four consumers identified during design: the live UI feed, reconnect resynchronisation, the agent's own working-memory context, and the ghost-run audit trail. Event sourcing is not adopted as fashion – it is the minimal structure that serves all four without duplication.

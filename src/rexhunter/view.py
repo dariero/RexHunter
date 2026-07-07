@@ -24,9 +24,11 @@ never a wall-clock read — the live renderer passes the current instant, the gh
 the scrubbed event's time. The fold is clock-free (so the two laws above are clock-independent);
 the clock enters only in ``finalize``.
 
-Scope (this slice): the TRAJECTORY tier only. Run outcome / liveness (``runs.outcome``) is NOT an
-event — terminal decisions close a run through the ``runs`` table with no trajectory event (ADR
-Pillar 2 reconciliation), so it is out of reach here and deliberately absent from ViewState. Verdict
+Scope: the TRAJECTORY tier only. Run outcome / liveness (``runs.outcome``) and a run's territory
+are NOT events — terminal decisions close a run through the ``runs`` table with no trajectory event
+(ADR Pillar 2 reconciliation) — so the pure fold NEVER sets them: ``RunView.territory``/``outcome``
+and ``ViewState.territories`` default empty here and are overlaid by the assembler from ``runs``
+(the runs ⊕ tier — invariant 2's "tables transactionally maintained alongside it" clause). Verdict
 STATUS is the ``pen_events`` tier (verdicts.fold), composed OUTSIDE this pure reducer (invariant 7 —
 a verdict is not a trajectory event of the closed run); the pen here is the capture base only.
 """
@@ -88,10 +90,13 @@ class PreyCard:
 
 @dataclass(frozen=True)
 class RunView:
-    """The trajectory-derivable state of one run. NO outcome/liveness — those are ``runs.outcome``
-    facts with no trajectory event (out of scope this slice). ``current_tool`` is the tool of the
-    last ToolCallEvent not yet closed by a result (or a matching error) — paired by run-scoped
-    position, not ``tool_use_id`` (which is "" on the stub, loop.py:198,233)."""
+    """The trajectory-derivable state of one run, plus the runs ⊕ overlay base.
+    ``territory``/``outcome`` are ``runs``-table facts with no trajectory event (terminal decisions
+    emit none — the settled ADR Pillar 2/4 reconciliation): the pure fold NEVER sets them (defaults
+    only); the assembler overlays them from ``runs``, like the pen's verdict status. ``outcome``
+    None = still live (or not overlaid). ``current_tool`` is the tool of the last ToolCallEvent not
+    yet closed by a result (or a matching error) — paired by run-scoped position, not
+    ``tool_use_id`` (which is "" on the stub, loop.py:198,233)."""
 
     run_id: str
     current_tool: str | None
@@ -99,18 +104,35 @@ class RunView:
     spent_usd: float
     prey_count: int
     error_count: int
+    territory: str | None = None
+    outcome: str | None = None
+
+
+@dataclass(frozen=True)
+class TerritoryView:
+    """One territory's scene state: its latest run (by ``started_at``), a ``runs``-table derivation
+    mirroring the /snapshot territory dict's SHAPE (server.snapshot_state — its JSON key is
+    ``last_outcome``; the name is deliberately not copied). The pure tier always emits the empty
+    ``ViewState.territories`` default; the assembler fills it (the runs ⊕ tier).
+    ``latest_outcome`` None = that latest run is still live."""
+
+    territory: str
+    latest_outcome: str | None
+    last_started_at: str
 
 
 @dataclass(frozen=True)
 class ViewState:
     """The immutable snapshot a dumb renderer draws. A value type (frozen) so equality is structural
-    and deterministic — the basis of the determinism law."""
+    and deterministic — the basis of the determinism law. ``territories`` is the runs ⊕ tier's
+    per-territory face — always () from the pure fold, filled by the assembler."""
 
     high_water: int
     runs: tuple[RunView, ...]
     pen: tuple[PreyCard, ...]
     spent_usd: float
     phase: Phase
+    territories: tuple[TerritoryView, ...] = ()
 
 
 @dataclass
