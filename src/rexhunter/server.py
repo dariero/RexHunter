@@ -82,6 +82,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     "DAEMON_SPEND_CEILING_USD", scheduler.DAEMON_SPEND_CEILING_USD
                 ),
                 publish=hub.publish,
+                notify=hub.notify,
             )
         ),
         asyncio.create_task(verdicts.run_job_worker(DB_PATH, drafter=drafter)),

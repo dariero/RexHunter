@@ -129,6 +129,12 @@ type Context = list[events.TrajectoryEvent]
 type ThinkingSink = Callable[[str], Awaitable[None]]
 type Brain = Callable[[Context, ThinkingSink], Awaitable[Decision]]
 
+# The run-finished pulse hook (frontend Step 2a): an id-less NOTIFICATION of the already-committed
+# runs.outcome, fanned to live viewers post-commit (inv 1) — hub.notify's shape, never publish (no
+# id: the trajectory resume cursor must not move). NOT a trajectory event — terminal decisions emit
+# none (the settled ADR reconciliation); this relays a runs-table fact, as slice C relays verdicts.
+type NotifyFn = Callable[[str], None]
+
 
 # ── The loop ─────────────────────────────────────────────────────────────────
 
@@ -361,6 +367,7 @@ async def run_hunt(
     max_iterations: int = 50,
     cost_ceiling_usd: float = COST_CEILING_USD,
     publish: db.PublishFn | None = None,
+    notify: NotifyFn | None = None,
 ) -> str:
     """Drive one hunt to a typed outcome; return its run_id (the durable handle).
 
@@ -369,6 +376,8 @@ async def run_hunt(
     catches only the genuinely unforeseen, records it as a loop-level ErrorEvent, and aborts.
     Cancellation is BaseException (not Exception), so it still propagates - the daemon's
     shutdown path closes the run (P2.3), exactly as the prototype sniff loop does today.
+    `notify` (Step 2a) fires one id-less run-finished pulse after the closing commit — LIVE
+    closures only (the cancel path re-raises before the pulse; boot's sweep never sees it).
     """
     run_id = await db.start_run(conn, territory=territory)
     try:
@@ -434,4 +443,10 @@ async def run_hunt(
         )
         outcome, abort_reason = "aborted", "unhandled exception in loop"
     await db.finish_run(conn, run_id, outcome=outcome, abort_reason=abort_reason)
+    if notify is not None:
+        # The live-completion pulse (Step 2a): strictly post-commit (inv 1 — runs.outcome is truth
+        # before any viewer hears of it), id-less (never publish — the resume cursor must not
+        # move), and it appends nothing (inv 7). The CancelledError clause above re-raises before
+        # reaching this line, so a shutdown-abort never pulses (its viewers are tearing down too).
+        notify(json.dumps({"type": "run_finished", "run_id": run_id, "outcome": outcome}))
     return run_id

@@ -101,12 +101,14 @@ class Hub:
         self._offer(Envelope(event_id, payload))
 
     def notify(self, payload: str) -> None:
-        """Fan out an id-less NOTIFICATION to every viewer (slice C): a pen verdict that must reach
-        open boards live but lives OUTSIDE the trajectory log (``pen_events`` has its own id
-        sequence). Carrying no id, it fires the browser's onmessage (→ board re-fetch) without
-        advancing Last-Event-ID or colliding with the trajectory resume cursor. The caller notifies
-        AFTER its commit (write-ahead, inv 1); the durable truth is in ``pen_events``, so a
-        reconnecting viewer recovers status from ``/snapshot`` — this frame is never replayed."""
+        """Fan out an id-less NOTIFICATION to every viewer: a committed fact that must reach open
+        boards live but lives OUTSIDE the trajectory log — a pen verdict (slice C; ``pen_events``
+        has its own id sequence) or a run-finished pulse (Step 2a; ``runs.outcome`` is a table
+        fact, no trajectory event). Carrying no id, it fires the browser's onmessage (→ board
+        re-fetch) without advancing Last-Event-ID or colliding with the trajectory resume cursor.
+        The caller notifies AFTER its commit (write-ahead, inv 1); the durable truth is in the
+        caller's table, so a reconnecting viewer recovers state from ``/snapshot``/``/viewstate``
+        — this frame is never replayed."""
         self._offer(Envelope(None, payload))
 
     def _beat(self) -> None:

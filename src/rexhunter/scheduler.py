@@ -29,7 +29,7 @@ from pathlib import Path
 import aiosqlite
 
 from rexhunter import cost, db
-from rexhunter.loop import COST_CEILING_USD, Brain, run_hunt
+from rexhunter.loop import COST_CEILING_USD, Brain, NotifyFn, run_hunt
 from rexhunter.tools import ToolRegistry
 
 logger = logging.getLogger("rexhunter")
@@ -65,6 +65,7 @@ async def _bounded_hunt(
     cost_ceiling_usd: float = COST_CEILING_USD,
     daemon_spend_ceiling_usd: float | None = None,
     publish: db.PublishFn | None = None,
+    notify: NotifyFn | None = None,
 ) -> str | None:
     """Run one hunt under the concurrency cap, on its own connection, fully isolated.
 
@@ -99,6 +100,7 @@ async def _bounded_hunt(
                 max_iterations=max_iterations,
                 cost_ceiling_usd=cost_ceiling_usd,
                 publish=publish,
+                notify=notify,
             )
         except Exception:  # defence in depth over run_hunt's own backstop — never expected
             logger.exception("hunt for %r escaped run_hunt's backstop", territory)
@@ -120,6 +122,7 @@ async def run_hunts(
     cost_ceiling_usd: float = COST_CEILING_USD,
     daemon_spend_ceiling_usd: float | None = None,
     publish: db.PublishFn | None = None,
+    notify: NotifyFn | None = None,
 ) -> list[str | None]:
     """Run one hunt per territory in a bounded task group; return their run_ids in order (`None` for
     a territory the daemon budget refused).
@@ -147,6 +150,7 @@ async def run_hunts(
             cost_ceiling_usd=cost_ceiling_usd,
             daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
             publish=publish,
+            notify=notify,
         )
 
     async with asyncio.TaskGroup() as tg:
@@ -169,6 +173,7 @@ async def run_scheduler(
     cost_ceiling_usd: float = COST_CEILING_USD,
     daemon_spend_ceiling_usd: float | None = DAEMON_SPEND_CEILING_USD,
     publish: db.PublishFn | None = None,
+    notify: NotifyFn | None = None,
 ) -> None:
     """Run forever: each territory in `schedule` (territory -> interval seconds) hunts on its own
     deadline, all bounded by `max_concurrent`. Cancellation (daemon shutdown) tears down every
@@ -176,6 +181,8 @@ async def run_scheduler(
     shielded cancel path). The deadline is DERIVED from the monotonic clock via `asyncio.sleep`
     and never stored (invariant 5). `publish` (P3) feeds each committed event to the broadcast hub
     post-commit; `None` keeps the loop a pure log-writer (the prototype endpoint still polls).
+    `notify` (frontend Step 2a) mirrors it for the id-less run-finished pulse — the board's live
+    tick when a run closes; `None` skips the pulse.
 
     Budget guards: `cost_ceiling_usd` bounds ONE hunt (per-run, seq-scoped);
     `daemon_spend_ceiling_usd` bounds the daemon's cumulative spend across ALL hunts (id-scoped,
@@ -201,6 +208,7 @@ async def run_scheduler(
                 cost_ceiling_usd=cost_ceiling_usd,
                 daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
                 publish=publish,
+                notify=notify,
             )
             await asyncio.sleep(interval)  # monotonic deadline; derived, never persisted
 
