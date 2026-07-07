@@ -6,10 +6,12 @@ import os
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
+from pathlib import Path
 
 import aiosqlite
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from rexhunter import brain, db, render, scheduler, stub, verdicts, viewstate
@@ -114,6 +116,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
 
 app = FastAPI(lifespan=lifespan)
+
+# The board's CSS/JS live as plain files (7b): SERVED byte-for-byte by Starlette's StaticFiles
+# (inside FastAPI — no new dependency), never built/bundled — the no-build rule holds; the split
+# only buys real editor/formatter support for the growing skin.
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
 # ── SSE stream plumbing (ADR pillar 3): snapshot + catch-up + live splice ──────────────────────
@@ -315,86 +322,15 @@ async def get_viewstate() -> HTMLResponse:
     return HTMLResponse(render.render(state))
 
 
-# The page shell (CSS + fetch/tick JS). A raw string: the ``\n`` in the JS stays literal for the
-# browser, not a Python newline. It renders the server board and re-fetches it on each SSE tick
-# (the projection stays server-side, invariant 2 — no reducer in the browser).
-_SHELL = r"""<!doctype html>
+# The page shell: a skeleton only (7b) — the CSS/JS live in /static/board.{css,js} as plain
+# files. It renders the server board and re-fetches it on each SSE tick (the projection stays
+# server-side, invariant 2 — no reducer in the browser).
+_SHELL = """<!doctype html>
 <title>RexHunter 🦖</title>
-<style>
-  body{background:#0b0f0a;color:#7dd87d;font-family:'Courier New',monospace;margin:0;padding:1rem}
-  .board{display:flex;flex-direction:column;gap:.75rem}
-  .hud{display:flex;justify-content:space-between;font-size:1.2rem;
-    border-bottom:1px solid #2f4f2f;padding-bottom:.4rem}
-  .territories{display:flex;flex-wrap:wrap;gap:.5rem}
-  .tile{border:1px solid #2f4f2f;background:#0f150e;padding:.35rem .8rem;min-width:7rem;
-    text-align:center;font-size:.8rem}
-  .tile[data-tile="hunting"]{border-color:#e0d020;color:#e0d020;background:#17160b}
-  .tile[data-tile="fresh-kill"]{border-color:#3caa3c;color:#9effa0;background:#0e1a0e}
-  .tile[data-tile="cracked-earth"]{border-color:#aa5533;color:#d08050;background:#1a120e}
-  .tile[data-tile="dormant"]{border-color:#555;color:#8a8a8a;background:#101010}
-  .bar{height:.4rem;background:#122012;border:1px solid #2f4f2f;margin:.25rem 0;min-width:6rem}
-  .bar .fill{height:100%;background:#3caa3c}
-  .bar.stamina .fill{background:#e0d020}
-  .hud .bar{width:12rem;align-self:center;margin:0 .8rem}
-  .runs{display:flex;flex-wrap:wrap;gap:.5rem}
-  .run{border:1px solid #2f4f2f;padding:.5rem;min-width:12rem;background:#0f150e}
-  .run h3{margin:.1rem 0;color:#9effa0;font-size:.9rem}
-  .thinking{color:#5a8a5a;font-size:.75rem;max-height:3rem;overflow:auto;white-space:pre-wrap}
-  .pen h2{color:#9effa0;border-bottom:1px solid #2f4f2f}
-  .prey{display:flex;gap:.6rem;align-items:center;padding:.3rem .5rem;
-    border-left:3px solid #666;margin:.2rem 0;background:#0f150e}
-  .prey .posting{flex:1;color:#cceeff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .badge{font-size:.7rem;padding:.1rem .4rem;border-radius:.2rem;color:#000}
-  .status-awaiting_verdict{border-left-color:#e0a020}
-  .status-awaiting_verdict .badge{background:#e0a020}
-  .status-feasted{border-left-color:#3caa3c}
-  .status-feasted .badge{background:#3caa3c}
-  .status-released{border-left-color:#777}
-  .status-released .badge{background:#777}
-  .status-ambered{border-left-color:#c8862a}
-  .status-ambered .badge{background:#c8862a}
-  .actions{display:flex;gap:.3rem;align-items:center}
-  .actions button{background:#1b3a1b;color:#9effa0;border:1px solid #2f4f2f;
-    font-family:inherit;font-size:.7rem;padding:.15rem .5rem;cursor:pointer}
-  .actions button:hover{background:#2f5f2f}
-  .reason{background:#000;color:#9effa0;border:1px solid #2f4f2f;font-family:inherit;
-    font-size:.7rem;padding:.15rem .3rem;width:8rem}
-  .empty{color:#4a6a4a;font-style:italic}
-  #feed{margin-top:1rem;background:#000;color:#4a7a4a;font-size:.7rem;max-height:12rem;
-    overflow:auto;padding:.5rem;border-top:1px solid #2f4f2f;white-space:pre-wrap}
-  [data-phase="night"]{filter:brightness(.75) hue-rotate(200deg)}
-</style>
+<link rel="stylesheet" href="/static/board.css">
 <div id="board"><p class="empty">loading…</p></div>
 <pre id="feed"></pre>
-<script>
-  const board = document.getElementById('board');
-  async function refresh(){ board.innerHTML = await (await fetch('/viewstate')).text(); }
-  board.addEventListener('click', async (ev) => {
-    const btn = ev.target.closest('button[data-verdict]');
-    if(!btn) return;
-    const verdict = btn.dataset.verdict;
-    const rEl = btn.closest('.prey').querySelector('.reason');
-    const note = rEl ? rEl.value.trim() : '';
-    if(verdict === 'release' && !note){ rEl.focus(); return; }
-    const body = {prey_id: btn.dataset.preyId, verdict};
-    if(verdict === 'release') body.reason = note;
-    if(verdict === 'amber' && note) body.provenance = note;
-    await fetch('/verdict', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(body)});
-    refresh();
-  });
-  (async () => {
-    await refresh();
-    const snap = await (await fetch('/snapshot')).json();
-    const feed = document.getElementById('feed');
-    const es = new EventSource('/events?since=' + snap.latest_id);
-    es.onmessage = (e) => {
-      feed.textContent += e.data + '\n';
-      feed.scrollTop = feed.scrollHeight;
-      refresh();
-    };
-  })();
-</script>
+<script src="/static/board.js"></script>
 """
 
 
