@@ -119,20 +119,24 @@ class RunView:
 class TerritoryView:
     """One territory's scene state: its latest run (by ``started_at``), a ``runs``-table derivation
     mirroring the /snapshot territory dict's SHAPE (server.snapshot_state — its JSON key is
-    ``last_outcome``; the name is deliberately not copied). The pure tier always emits the empty
-    ``ViewState.territories`` default; the assembler fills it (the runs ⊕ tier).
-    ``latest_outcome`` None = that latest run is still live."""
+    ``last_outcome``; the name is deliberately not copied). The pure tier emits the DORMANT base
+    for the injected schedule (4b) — ``latest_outcome=None`` AND ``last_started_at=None`` = never
+    hunted; the assembler overlays runs-derived tiles over it (the schedule/runs-seen union).
+    ``latest_outcome`` None with a real ``last_started_at`` = that latest run is still live — the
+    None/None pairing is what lets Step 5 tell a dormant tile from an open hunt."""
 
     territory: str
     latest_outcome: str | None
-    last_started_at: str
+    last_started_at: str | None
 
 
 @dataclass(frozen=True)
 class ViewState:
     """The immutable snapshot a dumb renderer draws. A value type (frozen) so equality is structural
-    and deterministic — the basis of the determinism law. ``territories`` is the runs ⊕ tier's
-    per-territory face — always () from the pure fold, filled by the assembler."""
+    and deterministic — the basis of the determinism law. ``territories`` is the per-territory
+    scene tier: the pure fold emits the injected schedule's dormant base (or () uninjected); the
+    assembler overlays runs-derived tiles. ``daemon_spend_ceiling_usd`` is an injected input
+    (inv 5, the clock's category) — the daemon HP denominator, never folded, never stored."""
 
     high_water: int
     runs: tuple[RunView, ...]
@@ -140,6 +144,7 @@ class ViewState:
     spent_usd: float
     phase: Phase
     territories: tuple[TerritoryView, ...] = ()
+    daemon_spend_ceiling_usd: float | None = None
 
 
 @dataclass
@@ -235,10 +240,21 @@ def _phase(clock: datetime) -> Phase:
     return Phase.DAY if _DAY_START_HOUR <= clock.hour < _NIGHT_START_HOUR else Phase.NIGHT
 
 
-def finalize(acc: Accumulator, clock: datetime) -> ViewState:
+def finalize(
+    acc: Accumulator,
+    clock: datetime,
+    *,
+    daemon_spend_ceiling_usd: float | None = None,
+    schedule: tuple[str, ...] = (),
+) -> ViewState:
     """Render the accumulator into the immutable ViewState, applying day/night ONCE from the
     injected clock (invariant 5). Spend is ``cost.fold_cost`` over the usage sub-log — a fold, not a
-    stored counter. Collections build in deterministic first-seen order (the determinism law)."""
+    stored counter. Collections build in deterministic first-seen order (the determinism law).
+
+    ``daemon_spend_ceiling_usd``/``schedule`` are INJECTED inputs (4b) — invariant 5's never-stored
+    category, exactly like the clock: the ceiling passes through uninterpreted (the daemon HP
+    denominator), and the schedule emits the dormant territory BASE (one never-hunted TerritoryView
+    per scheduled territory, name-sorted) that the assembler overlays with runs-derived tiles."""
     runs = tuple(
         RunView(
             run_id=run_id,
@@ -258,11 +274,25 @@ def finalize(acc: Accumulator, clock: datetime) -> ViewState:
         pen=tuple(acc.pen),
         spent_usd=cost.fold_cost(all_usage),
         phase=_phase(clock),
+        territories=tuple(
+            TerritoryView(territory=t, latest_outcome=None, last_started_at=None)
+            for t in sorted(schedule)
+        ),
+        daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
     )
 
 
-def project(rows: Sequence[LogRow], clock: datetime) -> ViewState:
-    """The whole projection: ``finalize(fold(rows), clock)``. Pure and total — same (rows, clock)
-    always yields the same ViewState (the determinism law). Feed it the global-id cursor for the
-    live feed or a run's seq cursor for the ghost replay; within a run they are one sequence."""
-    return finalize(fold(rows), clock)
+def project(
+    rows: Sequence[LogRow],
+    clock: datetime,
+    *,
+    daemon_spend_ceiling_usd: float | None = None,
+    schedule: tuple[str, ...] = (),
+) -> ViewState:
+    """The whole projection: ``finalize(fold(rows), clock, ...)``. Pure and total — same
+    (rows, clock, injected config) always yields the same ViewState (the determinism law). Feed it
+    the global-id cursor for the live feed or a run's seq cursor for the ghost replay; within a
+    run they are one sequence."""
+    return finalize(
+        fold(rows), clock, daemon_spend_ceiling_usd=daemon_spend_ceiling_usd, schedule=schedule
+    )

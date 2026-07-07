@@ -57,14 +57,25 @@ async def read_log_rows(conn: aiosqlite.Connection, *, run_id: str | None = None
 
 
 async def build_viewstate(
-    conn: aiosqlite.Connection, clock: datetime, *, run_id: str | None = None
+    conn: aiosqlite.Connection,
+    clock: datetime,
+    *,
+    run_id: str | None = None,
+    daemon_spend_ceiling_usd: float | None = None,
+    schedule: tuple[str, ...] = (),
 ) -> ViewState:
     """Assemble the full ViewState: project the log (trajectory tier), overlay each run's
-    territory/outcome + the territory tier from ``runs`` (the runs ⊕ tier), then overlay each
-    prey's verdict status folded from its ``pen_events`` (the pen ⊕ tier). ``clock`` is injected
-    (invariant 5); ``run_id`` selects the ghost cursor for a single-run replay (default: the live
-    all-runs feed)."""
-    state = view.project(await read_log_rows(conn, run_id=run_id), clock)
+    territory/outcome/ceilings + the territory tier from ``runs`` (the runs ⊕ tier), then overlay
+    each prey's verdict status folded from its ``pen_events`` (the pen ⊕ tier). ``clock``,
+    ``daemon_spend_ceiling_usd`` and ``schedule`` are injected (invariant 5's never-stored
+    category) and pass through to ``view.project`` uninterpreted; ``run_id`` selects the ghost
+    cursor for a single-run replay (default: the live all-runs feed)."""
+    state = view.project(
+        await read_log_rows(conn, run_id=run_id),
+        clock,
+        daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+        schedule=schedule,
+    )
 
     # The runs ⊕ tier: territory/outcome/ceilings are runs-table facts (no trajectory event
     # carries them; the ceilings are recorded write-once at start_run — 4a). `.get` keeps the
@@ -98,21 +109,24 @@ async def build_viewstate(
             )
         )
 
-    # The territory tier: each territory's latest run. The bare `outcome` column pairs with the row
-    # achieving MAX(started_at) — SQLite's documented bare-column-with-MAX behaviour, the same
-    # /snapshot already relies on (server.snapshot_state).
+    # The territory tier: the schedule/runs-seen UNION (4b). The pure tier emitted the base from
+    # the injected schedule; each runs-derived tile REPLACES its dormant twin or JOINS the set
+    # (union — a retired territory keeps its history), then the whole set sorts by name (the
+    # determinism the ORDER BY alone used to provide). The bare `outcome` column pairs with the
+    # row achieving MAX(started_at) — SQLite's documented bare-column-with-MAX behaviour, the
+    # same /snapshot already relies on (server.snapshot_state).
     async with conn.execute(
         "SELECT territory, outcome, MAX(started_at) FROM runs GROUP BY territory ORDER BY territory"
     ) as cursor:
         latest = await cursor.fetchall()
-    territories = tuple(
-        TerritoryView(
+    merged = {tile.territory: tile for tile in state.territories}  # the dormant base
+    for r in latest:
+        merged[str(r[0])] = TerritoryView(
             territory=str(r[0]),
             latest_outcome=None if r[1] is None else str(r[1]),
             last_started_at=str(r[2]),
         )
-        for r in latest
-    )
+    territories = tuple(sorted(merged.values(), key=lambda tile: tile.territory))
     state = dataclasses.replace(state, runs=tuple(runs), territories=territories)
 
     if not state.pen:

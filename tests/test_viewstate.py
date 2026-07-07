@@ -283,6 +283,62 @@ async def test_connect_migrates_a_pre_4a_runs_table(tmp_path: Path) -> None:
         await conn.close()
 
 
+# ── Step 4b · injected daemon ceiling + schedule: the territory union ─────────────────────────────
+
+
+async def test_build_viewstate_threads_daemon_ceiling_and_schedule(tmp_path: Path) -> None:
+    """The assembler passes the injected values through uninterpreted: the ceiling lands on
+    ViewState, and a scheduled-but-never-hunted territory finally EXISTS — a dormant tile
+    (latest_outcome None AND last_started_at None; an open run would carry a started_at)."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        state = await viewstate.build_viewstate(
+            conn, _CLOCK, daemon_spend_ceiling_usd=0.75, schedule=("never-hunted",)
+        )
+        assert state.daemon_spend_ceiling_usd == 0.75
+        (tile,) = state.territories
+        assert tile.territory == "never-hunted"
+        assert tile.latest_outcome is None
+        assert tile.last_started_at is None  # dormant: never hunted, not an open run
+    finally:
+        await conn.close()
+
+
+async def test_scheduled_and_hunted_territory_keeps_its_outcome(tmp_path: Path) -> None:
+    """Union with overlay-wins: a territory in BOTH schedule and runs shows its run-derived
+    outcome (the dormant base never clobbers a real tile); its scheduled sibling stays dormant."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        run_id = await db.start_run(conn, territory="mock-gym")
+        await db.finish_run(conn, run_id, outcome="completed")
+        state = await viewstate.build_viewstate(conn, _CLOCK, schedule=("greenhouse", "mock-gym"))
+        summary = [
+            (t.territory, t.latest_outcome, t.last_started_at is None) for t in state.territories
+        ]
+        assert summary == [
+            ("greenhouse", None, True),  # dormant: scheduled, never hunted
+            ("mock-gym", "completed", False),  # the runs overlay won over the dormant base
+        ]
+    finally:
+        await conn.close()
+
+
+async def test_hunted_but_unscheduled_territory_still_shows(tmp_path: Path) -> None:
+    """Union, not intersection: a retired territory (runs exist, no longer scheduled) keeps its
+    history on the board alongside the scheduled dormant one."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        run_id = await db.start_run(conn, territory="mock-gym")
+        await db.finish_run(conn, run_id, outcome="completed")
+        state = await viewstate.build_viewstate(conn, _CLOCK, schedule=("greenhouse",))
+        assert [(t.territory, t.latest_outcome) for t in state.territories] == [
+            ("greenhouse", None),
+            ("mock-gym", "completed"),
+        ]
+    finally:
+        await conn.close()
+
+
 async def test_ghost_cursor_stamps_current_outcome_is_a_documented_deferral(
     tmp_path: Path,
 ) -> None:

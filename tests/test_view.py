@@ -21,6 +21,7 @@ purity itself is asserted below (``test_view_imports_only_events_and_cost``).
 """
 
 import ast
+import dataclasses
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -298,6 +299,37 @@ def test_turns_ignore_unknown_tool_iterations() -> None:
     (run,) = state.runs
     assert run.turns == 0
     assert run.error_count == 1
+
+
+# ── 4b: injected config — the daemon ceiling + the schedule (the clock's category, inv 5) ────────
+
+
+@settings(deadline=None)
+@given(rows=_monotonic_log())
+def test_daemon_ceiling_passes_through_uninterpreted(rows: list[LogRow]) -> None:
+    """The daemon spend ceiling enters finalize INJECTED, like the clock (inv 5): ViewState
+    carries it verbatim, the fold never reads it (the injection changes ONLY the carried field),
+    and determinism holds with a fixed value."""
+    with_ceiling = view.project(rows, _CLOCK, daemon_spend_ceiling_usd=1.5)
+    plain = view.project(rows, _CLOCK)
+    assert with_ceiling.daemon_spend_ceiling_usd == 1.5
+    assert plain.daemon_spend_ceiling_usd is None  # default: uninjected
+    # uninterpreted: strip the injected field and the two projections are identical
+    assert dataclasses.replace(with_ceiling, daemon_spend_ceiling_usd=None) == plain
+    assert with_ceiling == view.project(rows, _CLOCK, daemon_spend_ceiling_usd=1.5)  # determinism
+
+
+def test_injected_schedule_emits_dormant_territories() -> None:
+    """The schedule enters injected; the PURE tier emits the dormant BASE — one TerritoryView per
+    scheduled territory (never hunted: latest_outcome None AND last_started_at None), sorted by
+    name. The assembler overlays runs-derived tiles over this base (the PreyCard base/overlay
+    pattern's dual); dormant vs open-run disambiguates on last_started_at None."""
+    state = view.project([], _CLOCK, schedule=("mock-gym", "greenhouse"))
+    assert state.territories == (
+        view.TerritoryView(territory="greenhouse", latest_outcome=None, last_started_at=None),
+        view.TerritoryView(territory="mock-gym", latest_outcome=None, last_started_at=None),
+    )
+    assert view.project([], _CLOCK).territories == ()  # default: as ever
 
 
 # ── purity DoD: view.py imports ONLY events + cost (no db/hub/server/verdicts/loop/scheduler) ─────

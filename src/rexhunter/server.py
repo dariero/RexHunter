@@ -33,6 +33,13 @@ def _env_float(name: str, default: float) -> float:
     return float(value) if value else default
 
 
+def _daemon_spend_ceiling_usd() -> float:
+    # ONE source for the daemon ceiling: the lifespan's scheduler gate and the board's injected
+    # HP denominator (get_viewstate) both read this, so the enforced cap and the displayed cap
+    # can never drift.
+    return _env_float("DAEMON_SPEND_CEILING_USD", scheduler.DAEMON_SPEND_CEILING_USD)
+
+
 def surface_crash(task: asyncio.Task[None]) -> None:
     # A daemon task that dies must die loudly, not leave the server serving a dead stream.
     if not task.cancelled():
@@ -78,9 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 max_concurrent=cap,
                 max_iterations=_env_int("MAX_ITERATIONS", 50),
                 cost_ceiling_usd=_env_float("COST_CEILING_USD", COST_CEILING_USD),
-                daemon_spend_ceiling_usd=_env_float(
-                    "DAEMON_SPEND_CEILING_USD", scheduler.DAEMON_SPEND_CEILING_USD
-                ),
+                daemon_spend_ceiling_usd=_daemon_spend_ceiling_usd(),
                 publish=hub.publish,
                 notify=hub.notify,
             )
@@ -292,10 +297,19 @@ async def stream(request: Request) -> StreamingResponse:
 async def get_viewstate() -> HTMLResponse:
     """The server-rendered game board (ADR invariant 2): build_viewstate folds the log into a
     ViewState, render draws it. The browser re-fetches this on each SSE tick — a dumb painter, never
-    re-running the reducer. now() is injected HERE, the live clock (inv 5), never inside project."""
+    re-running the reducer. The injected inputs (inv 5) enter HERE: the live clock, the daemon
+    ceiling (the SAME env read the lifespan enforces), and the schedule's territory list (read via
+    stub.daemon_config — the lifespan's monkeypatch seam, so a patched config flows to the board
+    too). Never inside project."""
+    schedule, _, _, _, _ = stub.daemon_config()
     conn = await db.connect(DB_PATH)
     try:
-        state = await viewstate.build_viewstate(conn, datetime.now(UTC))
+        state = await viewstate.build_viewstate(
+            conn,
+            datetime.now(UTC),
+            daemon_spend_ceiling_usd=_daemon_spend_ceiling_usd(),
+            schedule=tuple(schedule),
+        )
     finally:
         await conn.close()
     return HTMLResponse(render.render(state))
