@@ -29,7 +29,12 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at   TEXT NOT NULL,
     ended_at     TEXT,
     outcome      TEXT,
-    abort_reason TEXT
+    abort_reason TEXT,
+    -- The caps this run RAN UNDER, recorded once at start (write-once: finish_run never touches
+    -- them) — input facts like territory/started_at, and the per-run HP/stamina denominators the
+    -- frontend overlays onto RunView. Nullable: pre-4a rows read None.
+    cost_ceiling_usd REAL,
+    max_iterations   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS trajectory_events (
@@ -95,15 +100,35 @@ async def connect(path: str | Path) -> aiosqlite.Connection:
     await conn.execute("PRAGMA busy_timeout=5000")
     await conn.execute("PRAGMA foreign_keys=ON")
     await conn.executescript(_SCHEMA)
+    # Idempotent column-ensure for pre-4a files: CREATE TABLE IF NOT EXISTS skips an existing
+    # `runs`, so a database created before the ceiling columns would die on start_run's INSERT
+    # ("no such column") while every fresh-DB gate stayed green. A nullable ADD COLUMN is O(1)
+    # in SQLite (no table rewrite); this fires only when a column is genuinely missing — an
+    # upgrade never strands an existing log (DoD #1's spirit).
+    async with conn.execute("PRAGMA table_info(runs)") as cursor:
+        columns = {str(row[1]) for row in await cursor.fetchall()}
+    for name, decl in (("cost_ceiling_usd", "REAL"), ("max_iterations", "INTEGER")):
+        if name not in columns:
+            await conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {decl}")
     await conn.commit()
     return conn
 
 
-async def start_run(conn: aiosqlite.Connection, *, territory: str) -> str:
+async def start_run(
+    conn: aiosqlite.Connection,
+    *,
+    territory: str,
+    cost_ceiling_usd: float | None = None,
+    max_iterations: int | None = None,
+) -> str:
+    """Open a run, recording the caps it runs under — write-once at start (finish_run never
+    touches them; single writer, invariant 7). Recorded facts, not injected config: a ghost
+    replays under the ceilings it actually ran under, whatever today's env says."""
     run_id = str(uuid.uuid4())
     await conn.execute(
-        "INSERT INTO runs (id, territory, started_at) VALUES (?, ?, ?)",
-        (run_id, territory, _utcnow()),
+        "INSERT INTO runs (id, territory, started_at, cost_ceiling_usd, max_iterations)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (run_id, territory, _utcnow(), cost_ceiling_usd, max_iterations),
     )
     await conn.commit()
     return run_id

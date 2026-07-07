@@ -189,6 +189,100 @@ async def test_territories_tier_reflects_latest_run_per_territory(tmp_path: Path
         await conn.close()
 
 
+# ── Step 4a · budget ceilings: recorded at start, served via the runs ⊕ overlay ──────────────────
+
+
+async def test_overlay_fills_run_budget_ceilings(tmp_path: Path) -> None:
+    """The per-run denominators (Step 5's HP/stamina bars): ceilings recorded on the runs row at
+    start_run are overlaid onto the RunView by the same runs ⊕ tier that fills
+    territory/outcome — a RECORDED input fact, not injected config (a ghost replays under the
+    caps it actually ran under)."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        run_id = await db.start_run(
+            conn, territory="mock-gym", cost_ceiling_usd=0.05, max_iterations=3
+        )
+        await db.append_event(conn, run_id, events.ToolCallEvent(tool="sniff", raw_request=b"{}"))
+        state = await viewstate.build_viewstate(conn, _CLOCK)
+        (run,) = state.runs
+        assert run.cost_ceiling_usd == 0.05
+        assert run.max_iterations == 3
+    finally:
+        await conn.close()
+
+
+async def test_pre_4a_run_overlays_none_ceilings(tmp_path: Path) -> None:
+    """A run started without ceilings (NULL columns — every pre-4a row's shape) overlays None on
+    both: backward-compatible and total. Step 5 draws no bar for such a run."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        await _seed_stub_hunt(conn)  # plain start_run: NULL ceiling columns
+        state = await viewstate.build_viewstate(conn, _CLOCK)
+        (run,) = state.runs
+        assert run.cost_ceiling_usd is None
+        assert run.max_iterations is None
+    finally:
+        await conn.close()
+
+
+async def test_recorded_ceiling_is_immutable_across_reads(tmp_path: Path) -> None:
+    """Write-once/no-drift (inv 5): the ceilings are an input fact recorded at start — like
+    territory/started_at — never re-derived or re-written. Pinned against the ONE post-start
+    UPDATE a runs row ever receives (finish_run): closing the run moves outcome, not the caps."""
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        run_id = await db.start_run(
+            conn, territory="mock-gym", cost_ceiling_usd=0.2, max_iterations=7
+        )
+        await db.append_event(conn, run_id, events.ToolCallEvent(tool="sniff", raw_request=b"{}"))
+        (before,) = (await viewstate.build_viewstate(conn, _CLOCK)).runs
+        await db.finish_run(conn, run_id, outcome="completed")
+        (after,) = (await viewstate.build_viewstate(conn, _CLOCK)).runs
+        assert (before.cost_ceiling_usd, before.max_iterations) == (0.2, 7)
+        assert (after.cost_ceiling_usd, after.max_iterations) == (0.2, 7)
+        assert after.outcome == "completed"  # finish_run wrote outcome; the ceilings didn't move
+    finally:
+        await conn.close()
+
+
+async def test_connect_migrates_a_pre_4a_runs_table(tmp_path: Path) -> None:
+    """The upgrade pin (DoD #1's spirit: an upgrade never strands an existing log). CREATE TABLE
+    IF NOT EXISTS skips an existing `runs`, so a pre-4a database file lacks the ceiling COLUMNS
+    entirely — db.connect must ALTER them in (idempotent, nullable, O(1)) or the next boot's
+    start_run dies on 'no such column' while every fresh-DB gate stays green."""
+    db_path = tmp_path / "rex.db"
+    old = await aiosqlite.connect(db_path)
+    try:
+        await old.execute(
+            "CREATE TABLE runs (id TEXT PRIMARY KEY, territory TEXT NOT NULL,"
+            " started_at TEXT NOT NULL, ended_at TEXT, outcome TEXT, abort_reason TEXT)"
+        )
+        await old.execute(
+            "INSERT INTO runs (id, territory, started_at)"
+            " VALUES ('old-run', 'mock-gym', '2026-06-01T00:00:00+00:00')"
+        )
+        await old.commit()
+    finally:
+        await old.close()
+
+    conn = await db.connect(db_path)  # the reopen that must migrate
+    try:
+        run_id = await db.start_run(
+            conn, territory="mock-gym", cost_ceiling_usd=0.05, max_iterations=3
+        )
+        await db.append_event(conn, run_id, events.ToolCallEvent(tool="sniff", raw_request=b"{}"))
+        await db.append_event(
+            conn, "old-run", events.ToolCallEvent(tool="sniff", raw_request=b"{}")
+        )
+        state = await viewstate.build_viewstate(conn, _CLOCK)
+        new_view = next(rv for rv in state.runs if rv.run_id == run_id)
+        old_view = next(rv for rv in state.runs if rv.run_id == "old-run")
+        assert (new_view.cost_ceiling_usd, new_view.max_iterations) == (0.05, 3)
+        assert (old_view.cost_ceiling_usd, old_view.max_iterations) == (None, None)
+    finally:
+        await conn.close()
+
+
 async def test_ghost_cursor_stamps_current_outcome_is_a_documented_deferral(
     tmp_path: Path,
 ) -> None:

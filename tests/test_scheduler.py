@@ -356,8 +356,21 @@ async def test_scheduler_persists_no_shadow_schedule(
 
         async with reader.execute("SELECT name FROM pragma_table_info('runs')") as cur:
             cols = sorted(str(r[0]) for r in await cur.fetchall())
+        # cost_ceiling_usd/max_iterations joined in 4a: write-once INPUT facts recorded at
+        # start_run (like territory/started_at), pinned immutable by
+        # test_recorded_ceiling_is_immutable_across_reads — not timing/derived state, so the
+        # shadow-schedule guard this exact-match exists for is untouched.
         assert cols == sorted(
-            ["id", "territory", "started_at", "ended_at", "outcome", "abort_reason"]
+            [
+                "id",
+                "territory",
+                "started_at",
+                "ended_at",
+                "outcome",
+                "abort_reason",
+                "cost_ceiling_usd",
+                "max_iterations",
+            ]
         )
     finally:
         await reader.close()

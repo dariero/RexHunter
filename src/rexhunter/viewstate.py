@@ -66,16 +66,37 @@ async def build_viewstate(
     all-runs feed)."""
     state = view.project(await read_log_rows(conn, run_id=run_id), clock)
 
-    # The runs ⊕ tier: territory/outcome are runs-table facts (no trajectory event carries them).
-    # `.get` keeps the overlay total over a RunView with no runs row (can't happen live — the FK
-    # forbids it — but a defensive default beats a KeyError, cf. verdicts.fold's guard).
-    async with conn.execute("SELECT id, territory, outcome FROM runs") as cursor:
+    # The runs ⊕ tier: territory/outcome/ceilings are runs-table facts (no trajectory event
+    # carries them; the ceilings are recorded write-once at start_run — 4a). `.get` keeps the
+    # overlay total over a RunView with no runs row (can't happen live — the FK forbids it — but
+    # a defensive default beats a KeyError, cf. verdicts.fold's guard).
+    async with conn.execute(
+        "SELECT id, territory, outcome, cost_ceiling_usd, max_iterations FROM runs"
+    ) as cursor:
         run_rows = await cursor.fetchall()
-    facts = {str(r[0]): (str(r[1]), None if r[2] is None else str(r[2])) for r in run_rows}
+    facts = {
+        str(r[0]): (
+            str(r[1]),
+            None if r[2] is None else str(r[2]),
+            None if r[3] is None else float(r[3]),
+            None if r[4] is None else int(r[4]),
+        )
+        for r in run_rows
+    }
     runs: list[view.RunView] = []
     for rv in state.runs:
-        territory, outcome = facts.get(rv.run_id, (rv.territory, rv.outcome))
-        runs.append(dataclasses.replace(rv, territory=territory, outcome=outcome))
+        territory, outcome, ceiling_usd, max_iters = facts.get(
+            rv.run_id, (rv.territory, rv.outcome, rv.cost_ceiling_usd, rv.max_iterations)
+        )
+        runs.append(
+            dataclasses.replace(
+                rv,
+                territory=territory,
+                outcome=outcome,
+                cost_ceiling_usd=ceiling_usd,
+                max_iterations=max_iters,
+            )
+        )
 
     # The territory tier: each territory's latest run. The bare `outcome` column pairs with the row
     # achieving MAX(started_at) — SQLite's documented bare-column-with-MAX behaviour, the same

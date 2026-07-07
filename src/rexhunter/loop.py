@@ -379,7 +379,14 @@ async def run_hunt(
     `notify` (Step 2a) fires one id-less run-finished pulse after the closing commit — LIVE
     closures only (the cancel path re-raises before the pulse; boot's sweep never sees it).
     """
-    run_id = await db.start_run(conn, territory=territory)
+    # Record the caps this run runs under (4a): the same two values _drive enforces, snapshotted
+    # write-once onto the runs row — the frontend's per-run HP/stamina denominators.
+    run_id = await db.start_run(
+        conn,
+        territory=territory,
+        cost_ceiling_usd=cost_ceiling_usd,
+        max_iterations=max_iterations,
+    )
     try:
         outcome, abort_reason = await _drive(
             conn,

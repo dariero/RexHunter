@@ -96,9 +96,11 @@ class RunView:
     only); the assembler overlays them from ``runs``, like the pen's verdict status. ``outcome``
     None = still live (or not overlaid). ``turns`` is the stamina numerator: turns Rex ACTED —
     one per ToolCallEvent (an unknown-tool/invalid-args iteration appends only an ErrorEvent and
-    costs no turn). ``current_tool`` is the tool of the last ToolCallEvent not yet closed by a
-    result (or a matching error) — paired by run-scoped position, not ``tool_use_id`` (which is
-    "" on the stub, loop.py:198,233)."""
+    costs no turn). ``cost_ceiling_usd``/``max_iterations`` are the caps this run RAN UNDER,
+    recorded write-once on its runs row at start and overlaid here (never set by the fold) —
+    Step 5's HP/stamina denominators; None = a pre-4a row (no bar). ``current_tool`` is the tool
+    of the last ToolCallEvent not yet closed by a result (or a matching error) — paired by
+    run-scoped position, not ``tool_use_id`` (which is "" on the stub, loop.py:198,233)."""
 
     run_id: str
     current_tool: str | None
@@ -109,6 +111,8 @@ class RunView:
     turns: int = 0
     territory: str | None = None
     outcome: str | None = None
+    cost_ceiling_usd: float | None = None
+    max_iterations: int | None = None
 
 
 @dataclass(frozen=True)
