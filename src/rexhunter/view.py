@@ -94,9 +94,11 @@ class RunView:
     ``territory``/``outcome`` are ``runs``-table facts with no trajectory event (terminal decisions
     emit none — the settled ADR Pillar 2/4 reconciliation): the pure fold NEVER sets them (defaults
     only); the assembler overlays them from ``runs``, like the pen's verdict status. ``outcome``
-    None = still live (or not overlaid). ``current_tool`` is the tool of the last ToolCallEvent not
-    yet closed by a result (or a matching error) — paired by run-scoped position, not
-    ``tool_use_id`` (which is "" on the stub, loop.py:198,233)."""
+    None = still live (or not overlaid). ``turns`` is the stamina numerator: turns Rex ACTED —
+    one per ToolCallEvent (an unknown-tool/invalid-args iteration appends only an ErrorEvent and
+    costs no turn). ``current_tool`` is the tool of the last ToolCallEvent not yet closed by a
+    result (or a matching error) — paired by run-scoped position, not ``tool_use_id`` (which is
+    "" on the stub, loop.py:198,233)."""
 
     run_id: str
     current_tool: str | None
@@ -104,6 +106,7 @@ class RunView:
     spent_usd: float
     prey_count: int
     error_count: int
+    turns: int = 0
     territory: str | None = None
     outcome: str | None = None
 
@@ -144,6 +147,7 @@ class _RunAcc:
     thinking: str = ""
     prey_count: int = 0
     error_count: int = 0
+    turns: int = 0
     usage: list[events.UsageEvent] = field(default_factory=list[events.UsageEvent])
 
 
@@ -168,6 +172,7 @@ def _apply(acc: Accumulator, row: LogRow) -> None:
     match event:
         case events.ToolCallEvent():
             run.open_tool = event.tool  # a call opens; the last unclosed one is `current_tool`
+            run.turns += 1  # one dispatch = one turn Rex acted (the stamina numerator)
         case events.ToolResultEvent():
             run.open_tool = None  # a result closes the outstanding call (loop runs one tool/iter)
         case events.ErrorEvent():
@@ -238,6 +243,7 @@ def finalize(acc: Accumulator, clock: datetime) -> ViewState:
             spent_usd=cost.fold_cost(run.usage),
             prey_count=run.prey_count,
             error_count=run.error_count,
+            turns=run.turns,
         )
         for run_id, run in acc.runs.items()
     )

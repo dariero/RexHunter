@@ -255,6 +255,49 @@ def test_projects_a_real_stub_hunt_trajectory() -> None:
     (run,) = state.runs
     assert run.current_tool is None  # the tool_result closed the sniff call (run-scoped pairing)
     assert run.prey_count == 1
+    assert run.turns == 1  # the single sniff ToolCallEvent — one turn Rex acted
+
+
+# ── turns: the stamina numerator (Step 3) ─────────────────────────────────────────────────────────
+
+
+@settings(deadline=None)
+@given(rows=_monotonic_log())
+def test_turns_equals_tool_call_count(rows: list[LogRow]) -> None:
+    """RunView.turns == the run's ToolCallEvent count, over the same generated space as the three
+    laws. A turn is a turn Rex ACTED: each dispatching loop iteration appends exactly one
+    ToolCallEvent (loop.py _run_tool, the append before the attempt loop); an unknown-tool /
+    invalid-args iteration appends only an ErrorEvent and returns before it, so it doesn't count."""
+    state = view.project(rows, _CLOCK)
+    for rid in {r.run_id for r in rows}:
+        expected = sum(
+            1 for r in rows if r.run_id == rid and isinstance(r.event, events.ToolCallEvent)
+        )
+        run = _run_view(state, rid)
+        assert run is not None
+        assert run.turns == expected
+
+
+def test_turns_ignore_unknown_tool_iterations() -> None:
+    """The 'Rex acted' semantics pinned against the ErrorEvent path: an unknown-tool /
+    invalid-args iteration appends ONLY an ErrorEvent (loop.py _run_tool's early returns — no
+    ToolCallEvent), so it damages (error_count) without spending a turn (stamina)."""
+    row = LogRow(
+        id=1,
+        seq=0,
+        run_id="r",
+        created_at=_CREATED_AT,
+        event=events.ErrorEvent(
+            tool="ghost_tool",
+            retryable=False,
+            error="unknown tool: 'ghost_tool'",
+            raw_request=b"{}",
+        ),
+    )
+    state = view.project([row], _CLOCK)
+    (run,) = state.runs
+    assert run.turns == 0
+    assert run.error_count == 1
 
 
 # ── purity DoD: view.py imports ONLY events + cost (no db/hub/server/verdicts/loop/scheduler) ─────

@@ -448,5 +448,10 @@ async def run_hunt(
         # before any viewer hears of it), id-less (never publish — the resume cursor must not
         # move), and it appends nothing (inv 7). The CancelledError clause above re-raises before
         # reaching this line, so a shutdown-abort never pulses (its viewers are tearing down too).
-        notify(json.dumps({"type": "run_finished", "run_id": run_id, "outcome": outcome}))
+        notify(
+            json.dumps(
+                {"type": "run_finished", "run_id": run_id, "outcome": outcome},
+                separators=(",", ":"),  # compact, byte-consistent with the Pydantic frames
+            )
+        )
     return run_id
