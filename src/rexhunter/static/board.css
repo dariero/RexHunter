@@ -1,42 +1,116 @@
-body{background:#0b0f0a;color:#7dd87d;font-family:'Courier New',monospace;margin:0;padding:1rem}
+/* RexHunter board skin (Step 7) — green-phosphor terminal meets chunky pixel dino.
+   Vanilla on purpose: no framework, no build step, no external assets (the ADR frugality
+   inversion). The markup contract is render.py's data-* hooks; this file only paints them. */
+
+:root{
+  --bg:#0b0f0a; --ink:#7dd87d; --bright:#9effa0; --dim:#4a6a4a; --line:#2f4f2f;
+  --panel:#0f150e; --amber:#e0d020; --green:#3caa3c; --rust:#aa5533;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:'Courier New',monospace;margin:0;
+  padding:1rem;image-rendering:pixelated;text-shadow:0 0 2px rgba(125,216,125,.3)}
+/* CRT overlay: scanlines + vignette; inert to clicks */
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px),
+    radial-gradient(ellipse at center,transparent 62%,rgba(0,0,0,.42) 100%)}
+
 .board{display:flex;flex-direction:column;gap:.75rem}
-.hud{display:flex;justify-content:space-between;font-size:1.2rem;
-  border-bottom:1px solid #2f4f2f;padding-bottom:.4rem}
-.territories{display:flex;flex-wrap:wrap;gap:.5rem}
-.tile{border:1px solid #2f4f2f;background:#0f150e;padding:.35rem .8rem;min-width:7rem;
+
+/* The HUD is the SKY — a scene keyed off data-phase, not a filter. Night also cools the whole
+   palette by re-scoping the custom properties (children pick them up by inheritance). */
+.hud{display:flex;justify-content:space-between;align-items:center;font-size:1.1rem;
+  border:2px solid var(--line);padding:.5rem .8rem}
+.board[data-phase="day"] .hud{background:linear-gradient(#1d3a20,#0e1a0e)}
+.board[data-phase="night"] .hud{background:linear-gradient(#060a14,#0b0f14)}
+.board[data-phase="night"]{--panel:#0d1013;--line:#28324a;--ink:#8fa7c9;--bright:#b8ccf0}
+.board[data-phase="night"] .hud .phase{color:#aebfe8;text-shadow:0 0 6px #7f96d8}
+.board[data-phase="night"] .hud::before{content:"";width:2px;height:2px;background:#fff;
+  box-shadow:60px 4px #fff,140px -3px #cfd8ff,220px 6px #fff,320px -5px #cfd8ff,420px 2px #fff;
+  margin-right:1rem}
+
+/* territory tiles ride a dirt ground strip */
+.territories{display:flex;flex-wrap:wrap;gap:.5rem;padding:.45rem;border:2px solid var(--line);
+  background:repeating-linear-gradient(90deg,#141a10 0 14px,#0f1409 14px 28px)}
+.tile{border:2px solid var(--line);background:var(--panel);padding:.35rem .8rem;min-width:7rem;
   text-align:center;font-size:.8rem}
-.tile[data-tile="hunting"]{border-color:#e0d020;color:#e0d020;background:#17160b}
-.tile[data-tile="fresh-kill"]{border-color:#3caa3c;color:#9effa0;background:#0e1a0e}
-.tile[data-tile="cracked-earth"]{border-color:#aa5533;color:#d08050;background:#1a120e}
+.tile[data-tile="hunting"]{border-color:var(--amber);color:var(--amber);background:#17160b;
+  animation:tile-blink 1.2s steps(2) infinite}
+.tile[data-tile="fresh-kill"]{border-color:var(--green);color:var(--bright);background:#0e1a0e}
+.tile[data-tile="fresh-kill"]::after{content:" 🍖"}
+.tile[data-tile="cracked-earth"]{border-color:var(--rust);color:#d08050;background:#1a120e;
+  border-style:dashed}
+.tile[data-tile="cracked-earth"]::after{content:" ⚠"}
 .tile[data-tile="dormant"]{border-color:#555;color:#8a8a8a;background:#101010}
-.bar{height:.4rem;background:#122012;border:1px solid #2f4f2f;margin:.25rem 0;min-width:6rem}
-.bar .fill{height:100%;background:#3caa3c}
-.bar.stamina .fill{background:#e0d020}
+@keyframes tile-blink{50%{border-color:#8a8210}}
+
+/* bars: chunky, notched, depleting (render computes the width; CSS only paints) */
+.bar{height:.5rem;background:#122012;border:2px solid var(--line);margin:.3rem 0;min-width:6rem}
+.bar .fill{height:100%;background-color:var(--green);
+  background-image:repeating-linear-gradient(90deg,transparent 0 6px,rgba(0,0,0,.25) 6px 8px)}
+.bar.stamina .fill{background-color:var(--amber)}
 .hud .bar{width:12rem;align-self:center;margin:0 .8rem}
+
+/* run cards: Rex lives here */
 .runs{display:flex;flex-wrap:wrap;gap:.5rem}
-.run{border:1px solid #2f4f2f;padding:.5rem;min-width:12rem;background:#0f150e}
-.run h3{margin:.1rem 0;color:#9effa0;font-size:.9rem}
-.thinking{color:#5a8a5a;font-size:.75rem;max-height:3rem;overflow:auto;white-space:pre-wrap}
-.pen h2{color:#9effa0;border-bottom:1px solid #2f4f2f}
+.run{border:2px solid var(--line);padding:.5rem .5rem .5rem 3.4rem;min-width:16rem;
+  background:var(--panel);position:relative;
+  /* the sprite raster: box-shadow pixel art on a 3px cell (colour = `color`, no assets).
+     13x12 grid, right-facing; legs swap between two frames for the run cycle. */
+  --rex-body:24px 0,27px 0,30px 0,33px 0,36px 0,24px 3px,30px 3px,33px 3px,36px 3px,
+    24px 6px,27px 6px,30px 6px,33px 6px,36px 6px,24px 9px,27px 9px,30px 9px,
+    0 12px,18px 12px,21px 12px,24px 12px,27px 12px,
+    0 15px,3px 15px,15px 15px,18px 15px,21px 15px,24px 15px,27px 15px,
+    3px 18px,6px 18px,9px 18px,12px 18px,15px 18px,18px 18px,21px 18px,24px 18px,27px 18px,
+    6px 21px,9px 21px,12px 21px,15px 21px,18px 21px,21px 21px,24px 21px,27px 21px,
+    9px 24px,12px 24px,15px 24px,18px 24px,21px 24px,
+    9px 27px,12px 27px,15px 27px,18px 27px;
+  --rex-legs-a:9px 30px,9px 33px,12px 33px,18px 30px;
+  --rex-legs-b:18px 30px,18px 33px,21px 33px,9px 30px}
+.run h3{margin:.1rem 0;color:var(--bright);font-size:.8rem}
+.run::before{content:"";position:absolute;left:8px;top:2.4rem;width:3px;height:3px;
+  color:var(--bright);background:transparent;box-shadow:var(--rex-body),var(--rex-legs-a)}
+.run[data-rex="hunting"]::before{animation:rex-run .5s steps(1) infinite}
+.run[data-rex="idle"]::before{animation:rex-bob 2.4s ease-in-out infinite}
+@keyframes rex-run{0%,100%{box-shadow:var(--rex-body),var(--rex-legs-a)}
+  50%{box-shadow:var(--rex-body),var(--rex-legs-b)}}
+@keyframes rex-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(2px)}}
+
+/* the consciousness bubble */
+.thinking{position:relative;background:#0c130b;border:2px solid var(--line);
+  padding:.35rem .5rem;color:#5a8a5a;font-size:.72rem;max-height:3.4rem;overflow:auto;
+  white-space:pre-wrap;margin:.3rem 0}
+.thinking::after{content:"";position:absolute;left:-10px;top:8px;
+  border:5px solid transparent;border-right-color:var(--line)}
+.thinking:empty{display:none}
+
+/* the prey pen */
+.pen h2{color:var(--bright);border-bottom:2px solid var(--line)}
 .prey{display:flex;gap:.6rem;align-items:center;padding:.3rem .5rem;
-  border-left:3px solid #666;margin:.2rem 0;background:#0f150e}
+  border-left:4px solid #666;margin:.2rem 0;background:var(--panel)}
 .prey .posting{flex:1;color:#cceeff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.badge{font-size:.7rem;padding:.1rem .4rem;border-radius:.2rem;color:#000}
+.badge{font-size:.7rem;padding:.1rem .4rem;color:#000}
 .status-awaiting_verdict{border-left-color:#e0a020}
 .status-awaiting_verdict .badge{background:#e0a020}
-.status-feasted{border-left-color:#3caa3c}
-.status-feasted .badge{background:#3caa3c}
+.status-feasted{border-left-color:var(--green)}
+.status-feasted .badge{background:var(--green)}
 .status-released{border-left-color:#777}
 .status-released .badge{background:#777}
 .status-ambered{border-left-color:#c8862a}
 .status-ambered .badge{background:#c8862a}
 .actions{display:flex;gap:.3rem;align-items:center}
-.actions button{background:#1b3a1b;color:#9effa0;border:1px solid #2f4f2f;
+.actions button{background:#1b3a1b;color:var(--bright);border:2px solid var(--line);
   font-family:inherit;font-size:.7rem;padding:.15rem .5rem;cursor:pointer}
 .actions button:hover{background:#2f5f2f}
-.reason{background:#000;color:#9effa0;border:1px solid #2f4f2f;font-family:inherit;
+.actions button:active{transform:translateY(1px)}
+.reason{background:#000;color:var(--bright);border:2px solid var(--line);font-family:inherit;
   font-size:.7rem;padding:.15rem .3rem;width:8rem}
-.empty{color:#4a6a4a;font-style:italic}
+.empty{color:var(--dim);font-style:italic}
 #feed{margin-top:1rem;background:#000;color:#4a7a4a;font-size:.7rem;max-height:12rem;
-  overflow:auto;padding:.5rem;border-top:1px solid #2f4f2f;white-space:pre-wrap}
-[data-phase="night"]{filter:brightness(.75) hue-rotate(200deg)}
+  overflow:auto;padding:.5rem;border-top:2px solid var(--line);white-space:pre-wrap}
+
+/* transient cues — board.js flicks these classes; durable state is the re-fetched board */
+#board.damage{animation:damage-shake .35s steps(2) 1}
+#board.pulse{animation:kill-pulse .5s ease-out 1}
+@keyframes damage-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}
+  75%{transform:translateX(5px)}}
+@keyframes kill-pulse{0%{filter:brightness(1.7)}100%{filter:brightness(1)}}

@@ -307,6 +307,26 @@ def test_render_sprite_state_attribute() -> None:
     assert 'data-rex="idle"' in render.render(_board(runs=(_armed_run(tool=None),)))
 
 
+def test_render_thinking_shows_only_the_tail() -> None:
+    """The consciousness bubble is a live ticker, not an archive: render slices the RAW thinking
+    string to its tail and THEN escapes (slicing after escaping could split an `&lt;`-style
+    entity), keeping the reducer lossless for ghost scrubbing — presentation truncation only."""
+    prefix = "PREFIX-" + "x" * 400
+    tail = "the live tail of Rex's reasoning <b>escaped</b>"
+    run = RunView(
+        run_id="r",
+        current_tool=None,
+        thinking=prefix + tail,
+        spent_usd=0.0,
+        prey_count=0,
+        error_count=0,
+    )
+    html = render.render(_board(runs=(run,)))
+    assert "escaped" in html
+    assert "&lt;b&gt;" in html  # the tail still crosses _esc (inv 3)
+    assert "PREFIX-" not in html  # the archive stays in the log, not the bubble
+
+
 def test_render_dormant_tile() -> None:
     """The 4b None/None pairing drawn: latest_outcome None with NO last_started_at = never
     hunted → dormant; None WITH a timestamp stays hunting (an open run). The 2b deferral closes."""

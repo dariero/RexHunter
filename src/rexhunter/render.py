@@ -23,6 +23,12 @@ def _esc(value: str) -> str:
     return html.escape(value)
 
 
+# The consciousness bubble shows a live ticker, not an archive: the RAW thinking is sliced to
+# this tail and THEN escaped (slicing an escaped string could split an entity). The reducer stays
+# lossless — the full stream is in the log for the ghost scrubber; this is presentation only.
+_THINKING_TAIL_CHARS = 280
+
+
 def _remaining(spent: float, ceiling: float | None) -> float | None:
     """The depleting-bar fraction (ADR Pillar 5 §6 — budget guards as HP/stamina mechanics).
     None = no denominator recorded (a pre-4a row, or a nonpositive ceiling): draw no bar.
@@ -50,7 +56,7 @@ def _run_card(run: RunView) -> str:
     return (
         f'<article class="run" data-rex="{rex}"><h3>{_esc(run.run_id)}</h3>'
         f'<div class="tool">🔧 {tool}</div>'
-        f'<div class="thinking">{_esc(run.thinking)}</div>'
+        f'<div class="thinking">{_esc(run.thinking[-_THINKING_TAIL_CHARS:])}</div>'
         f"{bars}"
         f'<div class="stats">🎯 {run.prey_count} · ⚠️ {run.error_count} '
         f"· ${run.spent_usd:.4f}</div></article>"
