@@ -16,9 +16,12 @@ the agent's actual trajectory replayed as a creature moving through its world.
 > the real streaming/thinking `brain()` now runs in the daemon (opt-in via `REXHUNTER_BRAIN=live`;
 > the no-spend stub still drives by default), with extraction/strict mode and the live ATS
 > (Greenhouse/Lever) adapter the remaining P5 runway. The projection spine – reducer, assembler,
-> and retro-game renderer (`view`/`viewstate`/`render`, property-tested) – has shipped; the
-> current frontier is its aesthetic skin. Slice IDs, order, and gates live in the
-> [ADR](rexhunter-adr.md#build-sequence-canonical).
+> and retro-game renderer (`view`/`viewstate`/`render`, property-tested) – has shipped, and the
+> game-state layer on top of it is done and browser-verified: run/territory overlays with
+> recorded budget ceilings, live run-finished pulses, per-territory scene tiles
+> (fresh-kill/cracked-earth/hunting/dormant), and depleting HP/stamina bars. The current
+> frontier is the aesthetic skin (pixel/CRT, sprite keyframes, day/night scene). Slice IDs,
+> order, and gates live in the [ADR](rexhunter-adr.md#build-sequence-canonical).
 
 ## Core constraints
 
@@ -88,7 +91,8 @@ ADR owns the order and gates; this table tracks only status. Slices are named by
 | `P5·W.1–W.3` | Daemon live-wiring – brain selection + id-scoped daemon spend ceiling; streaming/thinking brain wired into the lifespan | 5 | **Done** – streaming/thinking brain runs in the real lifespan |
 | `P3` | Streaming hub – per-viewer broadcast queues, snapshot + catch-up + `Last-Event-ID` resume | 3 | **Done** – prototype poll retired; `/events` streams from the real in-process hub |
 | Frontend spine | view/viewstate/render – pure projection reducer + assembler + renderer, property-locked | – | **Done** |
-| Aesthetic skin | Retro dino-game visual skin over the projection spine | – | **Not started** – current frontier |
+| Frontend game state | runs ⊕ overlay + recorded budget ceilings + run-finished pulse + territory tiles (incl. dormant/cracked-earth) + HP/stamina bars + sprite-state hooks | – | **Done** – browser-verified; ADR Pillar 5 §6 (budget guards as HP/stamina mechanics) closed |
+| Aesthetic skin | Retro dino-game visual skin: pixel/CRT CSS, sprite keyframes on the data-rex hooks, day/night scene, damage/feast cues | – | **Not started** – current frontier |
 
 Gates are test-first and defined in the ADR. `P1`'s gate (`tests/test_stage1_gate.py`): a real
 hunt subprocess is `kill -9`ed mid-append; every confirmed event must survive the restart and the

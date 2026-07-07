@@ -195,8 +195,22 @@ block, paired tool_use_ids, usage folds to the spend, id-less heartbeat). Scope 
 ATS adapter, no frontend, no new tools. **Since `W.3`, the projection spine has shipped**
 (`view`/`viewstate`/`render` – the pure `project(log)→ViewState` reducer, the ⊕ assembler, and the
 retro-game renderer + verdict buttons + live verdict streaming; property-locked, commits
-`0ceb1b3`→`0b40e20`). *Then next: the frontend aesthetic skin (retro dino-game); then `P5`
-extraction/strict mode + the live ATS (Greenhouse/Lever) adapter; then eval tiers 2–3.*
+`0ceb1b3`→`0b40e20`) **and, on top of it, the game-state layer (`506ec2d`→`2d40d0d`, 2026-07-07,
+all test-first + browser-verified):** the runs ⊕ overlay tier (run outcome/territory served from
+the `runs` table — NO terminal event, the settled reconciliation stands; ghost cursor stamps the
+CURRENT outcome, a pinned deferral); per-run budget ceilings recorded write-once at `start_run`
+(4a — recorded input facts, not injected config; `db.connect` ALTERs the columns into pre-4a
+files, so an upgrade never strands an existing log); the daemon ceiling + schedule INJECTED into
+`finalize` the clock's way (4b — dormant territories representable via the
+`last_started_at=None` pairing); the id-less `run_finished` pulse (`hub.notify` after the closing
+commit — live closures only, structurally never shutdown-abort or boot-sweep); closed-run cards
+pruned into per-territory tiles (fresh-kill / cracked-earth / hunting / dormant, cracked-earth
+the documented proxy until park-and-persist); `turns` folded per ToolCallEvent; and depleting
+HP/stamina bars + `data-rex` sprite hooks — **ADR Pillar 5 §6's "budget guards visible as
+HP/stamina mechanics" is CLOSED.** *Then next: Step 7 — the aesthetic skin (pixel/CRT CSS, sprite
+keyframes on `data-rex`, day/night scene, damage/feast cues, StaticFiles split — still no build
+step); then `P5` extraction/strict mode + the live ATS (Greenhouse/Lever) adapter; then eval
+tiers 2–3.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
