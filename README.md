@@ -1,4 +1,4 @@
-# RexHunter 🦖
+# RexHunter 🦕
 
 **A tiny-armed T-Rex that hunts AI-engineering jobs while you sleep – and brings them back for you to judge.**
 
