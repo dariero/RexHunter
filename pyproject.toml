@@ -14,7 +14,9 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ruff>=0.15",
-    "pyright>=1.1.410",
+    # [nodejs]: pyright runs on a lockfile-pinned Node (nodejs-wheel-binaries), never the
+    # machine's — an old global Node fails to parse this file and pyright exits 3.
+    "pyright[nodejs]>=1.1.410",
     "pytest>=9.1",
     "hypothesis>=6.156.1",  # property-based DoD for the projection reducer (view.py)
     # Async tests via anyio's pytest plugin (ships with starlette); no extra dep.
