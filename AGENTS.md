@@ -38,7 +38,7 @@ the ADR.
 
 ## Stack
 
-- **Runtime:** Python 3.14+, `asyncio`.
+- **Runtime:** Python 3.15, `asyncio`.
 - **Web/host:** FastAPI (lifespan-launched background daemon + SSE endpoints). Inherited
   from the prototype baseline; not named in the ADR.
 - **Persistence:** SQLite single file, `aiosqlite`, WAL + `busy_timeout=5000`. Core tables

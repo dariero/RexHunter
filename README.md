@@ -64,7 +64,7 @@ Downstream is a firehose (SSE, `Last-Event-ID` resume); upstream is the occasion
 
 ## Tech stack
 
-- **Python 3.14+ / asyncio** – one process, one event loop, no external services.
+- **Python 3.15 / asyncio** – one process, one event loop, no external services.
 - **FastAPI + uvicorn** – lifespan launches the background daemon; SSE + POST endpoints.
 - **SQLite + aiosqlite, WAL mode** – the trajectory store: one file, one writer, many readers.
 - **Pydantic v2** – events are a discriminated union, validated at the network edge.
@@ -109,7 +109,7 @@ crash-sweep marks a dangling run `'crashed'` while leaving the committed prey un
 
 ## Getting started
 
-Requires [uv](https://docs.astral.sh/uv/) – it manages the Python 3.14 toolchain and the virtualenv.
+Requires [uv](https://docs.astral.sh/uv/) – it manages the Python 3.15 toolchain and the virtualenv.
 
 ```bash
 git clone https://github.com/dariero/RexHunter.git

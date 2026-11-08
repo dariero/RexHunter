@@ -2,7 +2,7 @@
 name = "rexhunter"
 version = "0.1.0"
 description = "Local-first autonomous job-hunting agent on a 'terrarium' model."
-requires-python = ">=3.14"
+requires-python = ">=3.15"
 dependencies = [
     "fastapi>=0.162.2",
     "uvicorn>=0.54.0",
