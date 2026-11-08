@@ -36,7 +36,7 @@ That's exactly RexHunter's two laws:
 The prototype baseline kept events in a Python list:
 
 ```python
-events: list[str] = []          # prototype baseline – RAM only
+events: list[str] = []  # prototype baseline – RAM only
 ```
 
 A list lives in the process's memory (RAM). When the process dies – crash, `kill -9`,
@@ -227,11 +227,11 @@ are provisional – invisible to every other connection and discarded on a crash
 Here is the exact line, in `append_event` (`src/rexhunter/db.py:80`):
 
 ```python
-    cursor = await conn.execute(...)   # the INSERT - provisional
-    await conn.commit()                # ← the event becomes durable, HERE
-    event_id = cursor.lastrowid
-    ...
-    return event_id                    # only now can anyone be told about it
+cursor = await conn.execute(...)  # the INSERT - provisional
+await conn.commit()  # ← the event becomes durable, HERE
+event_id = cursor.lastrowid
+...
+return event_id  # only now can anyone be told about it
 ```
 
 The function does not return until the commit has happened. So everything downstream of
