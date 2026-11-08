@@ -8,7 +8,9 @@ INPUT=$(cat)
 FILE=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 [[ -z "$FILE" || ! -f "$FILE" ]] && exit 0
 
-RUFF="$HOME/.venvs/rexhunter/bin/ruff"  # venv lives outside iCloud — see scripts/setup-venv.sh
+# Resolve the repo root the way .githooks/pre-push does; outside a repo → no-op.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+RUFF="$ROOT/.venv/bin/ruff"  # uv's in-repo venv — create it with `uv sync`
 [[ -x "$RUFF" ]] || exit 0   # no formatter installed yet → no-op, not an error
 
 case "$FILE" in

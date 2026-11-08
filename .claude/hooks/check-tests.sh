@@ -16,7 +16,10 @@ if [[ "$(echo "$INPUT" | jq -r '.stop_hook_active')" == "true" ]]; then
   exit 0
 fi
 
-PYTEST="$HOME/.venvs/rexhunter/bin/pytest"  # venv lives outside iCloud — see scripts/setup-venv.sh
+# Resolve the repo root the way .githooks/pre-push does; outside a repo → nothing to gate.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+PYTEST="$ROOT/.venv/bin/pytest"  # uv's in-repo venv — create it with `uv sync`
 
 # No runner yet, or no tests yet → nothing to gate on. This is a SKIP, not a "red".
 [[ -x "$PYTEST" ]] || exit 0

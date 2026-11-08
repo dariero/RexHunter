@@ -1,9 +1,8 @@
 # Python
 __pycache__/
 *.py[cod]
-# venv: a symlink to the external venv at ~/.venvs/rexhunter (see scripts/setup-venv.sh).
-# Bare `.venv` (no trailing slash) so the *symlink* is ignored too — `.venv/` only matches
-# a real directory and would let git commit the (machine-specific, CI-breaking) symlink.
+# venv: uv's in-repo ./.venv (created by `uv sync`). Bare `.venv` (no trailing slash) so it
+# is ignored as a directory or a symlink — `.venv/` only matches a real directory.
 .venv
 
 # Packaging / build artifacts

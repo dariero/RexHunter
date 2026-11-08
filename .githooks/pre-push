@@ -12,11 +12,13 @@ set -uo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)" || exit 1
 cd "$ROOT" || exit 1
-# Tools live in the venv OUTSIDE iCloud (./.venv is a symlink to it); referencing the real
-# path keeps the gate working even if the symlink is disturbed. See scripts/setup-venv.sh.
-VENV="$HOME/.venvs/rexhunter/bin"
+# Tools live in uv's in-repo venv (./.venv, created by `uv sync`). It goes first on PATH so
+# pyright reads the venv's Python version, not whichever python3 the shell finds first.
+VENV="$ROOT/.venv/bin"
+export PATH="$VENV:$PATH"
 
 fail() { echo "❌ pre-push BLOCKED: $1 is red — fix it (don't --no-verify into main)." >&2; exit 1; }
+[[ -x "$VENV/ruff" ]] || { echo "❌ pre-push BLOCKED: no ruff in ./.venv — run \`uv sync\` first." >&2; exit 1; }
 
 echo "pre-push gate → ruff · pyright · pytest"
 "$VENV/ruff" check . || fail "ruff lint"
