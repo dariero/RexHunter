@@ -15,7 +15,7 @@ from typing import Any
 import httpx2
 import pytest
 
-from rexhunter import brain, hunt_smoke_thinking
+from rexhunter import brain, hunt_smoke_thinking, stub
 
 pytestmark = pytest.mark.anyio
 
@@ -146,9 +146,14 @@ async def test_preflight_non_200_stops_before_any_paid_call(tmp_path: Path) -> N
     assert hit["messages"] == 0  # never spent — stopped at the free pre-flight
 
 
-async def test_the_harness_sends_the_pinned_wire(tmp_path: Path) -> None:
+async def test_the_harness_sends_the_pinned_wire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # The paid harness builds its client through the factory: every request (the pre-flight and
     # both brain calls) carries the explicit key and the pinned version, never Bearer auth.
+    monkeypatch.setattr(
+        stub, "SNIFF_INTERVAL", 0.0
+    )  # the stub sniff's 5 s beat proves nothing here
     seen: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
