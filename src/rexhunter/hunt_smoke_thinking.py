@@ -115,7 +115,7 @@ async def run_live_hunt(
     live `AsyncHTTPTransport`; the paid path leaves both at their defaults.
     """
     registry = stub.build_registry()
-    tee = CapturingTransport(inner or httpx2.AsyncHTTPTransport(), brain.MESSAGES_URL)
+    tee = CapturingTransport(inner or brain.live_transport(), brain.MESSAGES_URL)
     async with brain.anthropic_client(api_key, transport=tee, timeout=180.0) as client:
         n_in = await count_tokens_preflight(client, registry)
         print(f"[preflight] count_tokens OK — input_tokens={n_in}")

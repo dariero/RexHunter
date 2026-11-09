@@ -31,10 +31,12 @@ SDK. `request_headers` is gone: the factory owns the headers.
 
 import json
 import os
+import ssl
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any, cast
 
 import anthropic
+import certifi
 import httpx2
 from anthropic import AsyncAPIResponse
 from anthropic.types import Message
@@ -76,6 +78,24 @@ _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 1024
 
 
+def tls_context() -> ssl.SSLContext:
+    """The trust store every real brain transport verifies against: HEAD's, kept (W2.0). It mirrors
+    httpx 0.28's `create_ssl_context`: `SSL_CERT_FILE`, then `SSL_CERT_DIR`, else certifi's bundle.
+    httpx2's own default on macOS and Windows is the system store (truststore), a wider trust set;
+    moving to it is a separate decision, not part of a behaviour-preserving transport swap."""
+    if cafile := os.environ.get("SSL_CERT_FILE"):
+        return ssl.create_default_context(cafile=cafile)
+    if capath := os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context(capath=capath)
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+def live_transport() -> httpx2.AsyncHTTPTransport:
+    """A real network transport on `tls_context`, for the entrypoints that wrap one in a
+    capturing tee (the factory builds its own when no transport is injected)."""
+    return httpx2.AsyncHTTPTransport(verify=tls_context())
+
+
 def anthropic_client(
     api_key: str,
     *,
@@ -99,6 +119,8 @@ def anthropic_client(
       followed one, so a 3xx stays a fatal status error. The factory builds the http client itself
       (the SDK's keep-alive defaults, `follow_redirects=False`); callers inject only a `transport`
       (a capturing tee, a `MockTransport` in tests), so every caller gets the same client.
+    - HEAD's trust store: the client verifies against `tls_context()` (certifi), not httpx2's
+      system-store default.
 
     `default_headers` is typed `Mapping[str, str]`, but the SDK drops `omit`-valued headers at
     runtime (anthropic/_base_client.py `build_headers`), hence the one cast below; the wire test
@@ -114,7 +136,7 @@ def anthropic_client(
     )
     # `transport` is passed only when given: the SDK builds its keep-alive transport when the key
     # is absent, and `transport=None` would skip that.
-    client_options: dict[str, Any] = {"follow_redirects": False}
+    client_options: dict[str, Any] = {"follow_redirects": False, "verify": tls_context()}
     if transport is not None:
         client_options["transport"] = transport
     return anthropic.AsyncAnthropic(

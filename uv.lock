@@ -449,6 +449,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "anthropic" },
+    { name = "certifi" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -467,6 +468,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=2.6.0" },
+    { name = "certifi", specifier = ">=2026.10.23" },
     { name = "fastapi", specifier = ">=0.162.2" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.14.3" },

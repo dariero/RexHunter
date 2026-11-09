@@ -136,7 +136,7 @@ def _report_findings(captured: list[bytes]) -> None:
 async def run_live_hunt(api_key: str) -> None:
     """The paid path: free pre-flight → one capped hunt on the teed client → fixtures + report."""
     registry = stub.build_registry()
-    tee = CapturingTransport(httpx2.AsyncHTTPTransport(), brain.MESSAGES_URL)
+    tee = CapturingTransport(brain.live_transport(), brain.MESSAGES_URL)
     async with brain.anthropic_client(api_key, transport=tee, timeout=120.0) as client:
         n_in = await count_tokens_preflight(client, registry)
         print(f"[preflight] count_tokens OK — input_tokens={n_in}")

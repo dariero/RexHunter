@@ -19,15 +19,18 @@ Coverage maps to the unit's contract:
 """
 
 import json
+import ssl
 import typing
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import anthropic
+import certifi
 import httpx2
 import pytest
 
-from rexhunter import hunt_smoke
+from rexhunter import brain, hunt_smoke
 from rexhunter.brain import (
     MESSAGES_URL,
     SMOKE_MODEL,
@@ -237,6 +240,82 @@ def test_only_the_factory_builds_an_sdk_client() -> None:
         if any(b in line for b in builders)
     ]
     assert hits == ["brain.py", "brain.py"]  # the factory's two constructor calls, nothing else
+
+
+# ── the trust store stays HEAD's: certifi, not the system Keychain (W2.0 commit 5) ─────────────
+
+
+def _certifi_cas() -> list[Any]:
+    return ssl.create_default_context(cafile=certifi.where()).get_ca_certs()
+
+
+def _record_transport_verify(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Spy on every real network transport built (by the SDK or by us): record its `verify`."""
+    seen: list[object] = []
+    original = httpx2.AsyncHTTPTransport.__init__
+
+    def spy(self: httpx2.AsyncHTTPTransport, *args: Any, **kwargs: Any) -> None:
+        seen.append(kwargs.get("verify", True))  # True = httpx2's default: truststore on macOS
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "__init__", spy)
+    return seen
+
+
+def _assert_certifi(verify: object) -> None:
+    assert isinstance(verify, ssl.SSLContext)
+    assert type(verify) is ssl.SSLContext  # a plain context, not truststore's SSLContext subclass
+    assert verify.get_ca_certs() == _certifi_cas()
+
+
+async def test_the_factory_client_trusts_certifi_not_the_system_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # HEAD's httpx verified against certifi's bundle; httpx2's own default on macOS is the system
+    # Keychain (truststore), a wider trust set. The daemon's client keeps HEAD's.
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    seen = _record_transport_verify(monkeypatch)
+    client = brain.anthropic_client("sk-test")  # the daemon's shape: the SDK builds the transport
+    await client.close()
+    assert seen  # the SDK built its keep-alive transport
+    for verify in seen:
+        _assert_certifi(verify)
+
+
+def test_the_teed_entrypoints_live_transport_trusts_certifi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("SSL_CERT_DIR", raising=False)
+    seen = _record_transport_verify(monkeypatch)
+    brain.live_transport()
+    assert len(seen) == 1
+    _assert_certifi(seen[0])
+
+
+def test_the_trust_store_honours_ssl_cert_file_like_httpx(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # HEAD's httpx read SSL_CERT_FILE (then SSL_CERT_DIR) before falling back to certifi; kept.
+    end = "-----END CERTIFICATE-----"
+    one_cert = certifi.contents().split(end)[0] + end + "\n"
+    bundle = tmp_path / "one.pem"
+    bundle.write_text(one_cert)
+    monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
+    assert len(brain.tls_context().get_ca_certs()) == 1
+
+
+def test_only_brain_builds_a_network_transport() -> None:
+    # Every real transport in src/ comes from brain.py, so none can miss the certifi trust store.
+    src = Path(__file__).parents[1] / "src" / "rexhunter"
+    hits = [
+        path.name
+        for path in sorted(src.rglob("*.py"))
+        for line in path.read_text().splitlines()
+        if "AsyncHTTPTransport(" in line
+    ]
+    assert hits == ["brain.py"]
 
 
 # ── the wire stays pinned against the SDK's environment overrides (W2.0) ─────
