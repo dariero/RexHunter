@@ -18,12 +18,15 @@ Sequence (persist-first, one call, no retry — the hard one-call guard):
 """
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-import httpx
+import anthropic
+from anthropic import AsyncAPIResponse
+from anthropic.types import Message
 
 from rexhunter import brain
 from rexhunter.loop import Decision, ToolCallDecision
@@ -51,8 +54,7 @@ def _smoke_messages(territory: str) -> list[dict[str, Any]]:
 
 
 async def count_tokens(
-    client: httpx.AsyncClient,
-    api_key: str,
+    client: anthropic.AsyncAnthropic,
     *,
     model: str,
     messages: list[dict[str, Any]],
@@ -61,47 +63,50 @@ async def count_tokens(
     """FREE pre-flight: count input tokens for the EXACT payload. A non-200 STOPS before any paid
     call — it means egress / auth / schema is wrong; fix it and spend nothing."""
     body: dict[str, Any] = {"model": model, "messages": messages, "tools": tools}
-    resp = await client.post(
-        brain.COUNT_TOKENS_URL, headers=brain.request_headers(api_key), json=body
-    )
-    if resp.status_code != 200:
+    try:
+        result = await client.messages.count_tokens(**body)
+    except anthropic.APIStatusError as exc:
         raise SystemExit(
-            f"[preflight http {resp.status_code}] count_tokens failed — fix before spending.\n"
-            f"{resp.text[:2000]}"
-        )
-    return int(resp.json()["input_tokens"])
+            f"[preflight http {exc.status_code}] count_tokens failed: fix before spending.\n"
+            f"{exc.response.text[:2000]}"
+        ) from exc
+    return result.input_tokens
 
 
 async def run_smoke(
-    client: httpx.AsyncClient, api_key: str, *, territory: str = "mock-gym"
+    client: anthropic.AsyncAnthropic, *, territory: str = "mock-gym"
 ) -> tuple[bytes, Decision]:
-    """One free pre-flight + ONE paid call. Persists the raw 200 response BEFORE parsing (inv 6)."""
+    """One free pre-flight + ONE paid call (the client's max_retries=0 is the hard one-call guard).
+    Persists the raw 200 response BEFORE parsing (inv 6)."""
     tools = brain.build_tools(build_registry())
     messages = _smoke_messages(territory)
 
-    n_in = await count_tokens(
-        client, api_key, model=brain.SMOKE_MODEL, messages=messages, tools=tools
-    )
+    n_in = await count_tokens(client, model=brain.SMOKE_MODEL, messages=messages, tools=tools)
     print(f"[preflight] count_tokens OK — input_tokens={n_in}")
 
     body = brain.build_request_body(
         model=brain.SMOKE_MODEL, max_tokens=SMOKE_MAX_TOKENS, messages=messages, tools=tools
     )
-    resp = await client.post(brain.MESSAGES_URL, headers=brain.request_headers(api_key), json=body)
-    raw = resp.content
-    if resp.status_code != 200:
+    try:
+        # Raw mode: the provider's bytes as they came (a cast: `**body` matches several overloads).
+        resp = cast(
+            AsyncAPIResponse[Message], await client.messages.with_raw_response.create(**body)
+        )
+    except anthropic.APIStatusError as exc:
         # Don't overwrite the golden fixture with an error body; surface it. (A pre-output error is
         # not billed; count_tokens already validated the shape, so this should be rare.)
         raise SystemExit(
-            f"[http {resp.status_code}] paid call failed:\n{raw.decode(errors='replace')[:2000]}"
-        )
+            f"[http {exc.status_code}] paid call failed:\n"
+            f"{exc.response.content.decode(errors='replace')[:2000]}"
+        ) from exc
+    raw = await resp.read()
 
     # 200 → persist the paid artifact FIRST, before stop_reason / parse / assert can throw (inv 6).
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE_PATH.write_bytes(raw)
     print(f"[fixture] wrote {len(raw)} bytes -> {FIXTURE_PATH}")
 
-    if resp.json().get("stop_reason") == "max_tokens":
+    if json.loads(raw).get("stop_reason") == "max_tokens":
         raise SystemExit(
             f"[truncation] stop_reason=max_tokens at max_tokens={SMOKE_MAX_TOKENS} — adaptive "
             "thinking starved the tool_use block. Bump the budget and re-run (a fresh paid call)."
@@ -117,17 +122,18 @@ def main() -> None:
     count_only = "--count-only" in sys.argv  # FREE pre-flight only; spends NOTHING.
 
     async def _go() -> None:
-        # httpx does not retry by default — exactly one messages call (the hard one-call guard).
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        # max_retries=0 (brain.anthropic_client): exactly one messages call, the hard one-call
+        # guard.
+        async with brain.anthropic_client(api_key, timeout=120.0) as client:
             if count_only:
                 tools = brain.build_tools(build_registry())
                 messages = _smoke_messages("mock-gym")
                 n_in = await count_tokens(
-                    client, api_key, model=brain.SMOKE_MODEL, messages=messages, tools=tools
+                    client, model=brain.SMOKE_MODEL, messages=messages, tools=tools
                 )
                 print(f"[count-only] input_tokens={n_in} — validated, NO paid call made.")
                 return
-            _raw, decision = await run_smoke(client, api_key)
+            _raw, decision = await run_smoke(client)
             assert isinstance(decision, ToolCallDecision), (
                 f"expected ToolCallDecision, got {decision!r}"
             )

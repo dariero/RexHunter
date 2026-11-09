@@ -21,14 +21,23 @@ module opens no connection of its own; a `MockTransport` gives the offline tests
 Unit 2b splits out `build_request_body` + `request_headers` (shared with the paid smoke, one
 request shape, no drift) and strips `title` from the derived tool schemas. Streaming and budget
 accounting are later units.
+
+W2.0 moves the transport onto the Anthropic SDK in RAW mode (ADR Pillar 5, the logged D1
+exception): `anthropic_client` builds the one client (max_retries=0, the pinned wire), the SSE
+assembler and `parse_decision` stay hand-rolled and still see the provider's own bytes, and SDK /
+transport errors become the loop's provider-neutral `BrainCallError`; the loop imports no vendor
+SDK. `request_headers` is gone: the factory owns the headers.
 """
 
 import json
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any, cast
 
-import httpx
+import anthropic
+import httpx2
+from anthropic import AsyncAPIResponse
+from anthropic.types import Message
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from rexhunter.events import (
@@ -62,8 +71,61 @@ _TOOL_USE = "tool_use"  # the Anthropic content-block type we act on
 # full URLs rather than a client base_url, so an injected client needs no configuration.
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
+ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 _ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_MAX_TOKENS = 1024
+
+
+def anthropic_client(
+    api_key: str,
+    *,
+    transport: httpx2.AsyncBaseTransport | None = None,
+    timeout: float = 120.0,
+) -> anthropic.AsyncAnthropic:
+    """The ONE place an Anthropic SDK client is built (W2.0): the daemon, the gated entrypoints and
+    the tests all come through here, so the request shape cannot drift between them.
+
+    - `max_retries=0` (D1b): the SDK never retries; the loop owns every retry and logs each attempt
+      as its own ErrorEvent. It is also the paid smoke's hard one-call guard.
+    - The wire is PINNED to what every fixture was recorded under, until W2.1 proves a bump:
+      `x-api-key` auth (the SDK default is `Authorization: Bearer`, omitted here) and
+      `anthropic-version: 2023-06-01` (the SDK default is 2026-10-21).
+    - Explicit `api_key` and `base_url`: the SDK otherwise resolves credentials from the
+      environment / profiles on disk, and `ANTHROPIC_BASE_URL` would redirect the request and the
+      key. `anthropic-beta` is omitted so `ANTHROPIC_CUSTOM_HEADERS` cannot switch betas on; other
+      headers that variable names still reach the wire (a known residual, no SDK option stops it).
+    - No redirects: the SDK's default http client follows them, cross-origin, and would resend the
+      `x-api-key` and the paid POST (httpx2 strips only `Authorization`). HEAD's httpx client never
+      followed one, so a 3xx stays a fatal status error. The factory builds the http client itself
+      (the SDK's keep-alive defaults, `follow_redirects=False`); callers inject only a `transport`
+      (a capturing tee, a `MockTransport` in tests), so every caller gets the same client.
+
+    `default_headers` is typed `Mapping[str, str]`, but the SDK drops `omit`-valued headers at
+    runtime (anthropic/_base_client.py `build_headers`), hence the one cast below; the wire test
+    (tests/test_brain_adapter.py) pins the result."""
+    pinned = cast(
+        "dict[str, str]",
+        {
+            "x-api-key": api_key,
+            "anthropic-version": _ANTHROPIC_VERSION,
+            "Authorization": anthropic.omit,
+            "anthropic-beta": anthropic.omit,
+        },
+    )
+    # `transport` is passed only when given: the SDK builds its keep-alive transport when the key
+    # is absent, and `transport=None` would skip that.
+    client_options: dict[str, Any] = {"follow_redirects": False}
+    if transport is not None:
+        client_options["transport"] = transport
+    return anthropic.AsyncAnthropic(
+        api_key=api_key,
+        base_url=ANTHROPIC_BASE_URL,
+        max_retries=0,
+        timeout=timeout,
+        http_client=anthropic.DefaultAsyncHttpxClient(**client_options),
+        default_headers=pinned,
+    )
+
 
 # The model for the Unit 2b single live smoke call (the first paid call). Sonnet 5: adaptive
 # thinking runs automatically (so the response carries `thinking` sibling blocks), and sampling
@@ -183,11 +245,13 @@ def parse_decision(raw: bytes) -> Decision:
     return decision
 
 
-# ── The streaming transport (Unit 3a): hand-rolled SSE over httpx, no vendor SDK ───────────────
+# ── The streaming transport (Unit 3a): hand-rolled SSE, fed the SDK's raw stream since W2.0 ────
 # Sonnet 5 streams its response as SSE events. We assemble them into the SAME `_ProviderResponse`
 # shape parse_decision consumes — no vendor SDK (ADR §What point 1), and the raw signed thinking
-# block stays in hand (invariants 3 + 6), which the SDK's typed-delta layer would hide. P3's own
-# outbound SSE parser is this same protocol inbound; the system is an SSE relay end to end.
+# block stays in hand (invariants 3 + 6), which the SDK's typed-delta layer would hide. (W2.0 kept
+# this assembler and puts only the transport on the SDK, raw mode: the D9 probe confirmed the typed
+# layer re-serialises the signed block.) P3's own outbound SSE parser is this same protocol inbound;
+# the system is an SSE relay end to end.
 
 
 def iter_sse_events(raw: bytes) -> Iterator[dict[str, Any]]:
@@ -290,7 +354,7 @@ class StreamAssembler:
         }
 
 
-# ── The provider adapter (Unit 2a) + the shared request shape (Unit 2b): httpx, no vendor SDK ──
+# ── The provider adapter (Unit 2a) + the shared request shape (Unit 2b): the SDK in raw mode ──
 
 # Concise, model-facing descriptions for the reserved terminal tools. These are prose (how the
 # model should use the signal), NOT the schema — the schema is still DERIVED from the typed model
@@ -312,11 +376,6 @@ def _strip_titles(schema: Any) -> Any:
     if isinstance(schema, list):
         return [_strip_titles(item) for item in cast("list[Any]", schema)]
     return schema
-
-
-def request_headers(api_key: str) -> dict[str, str]:
-    """The Anthropic auth + version headers. Shared by the adapter and the Unit 2b smoke."""
-    return {"x-api-key": api_key, "anthropic-version": _ANTHROPIC_VERSION}
 
 
 def build_request_body(
@@ -458,18 +517,16 @@ def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list
     return messages
 
 
-async def _drive_stream(response: httpx.Response, sink: ThinkingSink) -> bytes:
+async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     """Consume a streaming Messages response: relay each thinking delta via `sink` (write-ahead,
     live — Unit 3b), assemble the blocks, and return the assembled response bytes for
-    `parse_decision`. A non-2xx body is the error JSON, not SSE, so `raise_for_status` first turns
-    it into an `HTTPStatusError` the loop classifies. The `data:` framing mirrors `iter_sse_events`
-    but over the live line iterator (`aiter_lines`) — the assembler (`feed`) is the shared logic."""
-    if response.status_code != 200:
-        await response.aread()  # a streaming body must be read before raise_for_status
-        response.raise_for_status()
+    `parse_decision`. `lines` is the provider's raw SSE body, line by line (the SDK's raw-mode
+    `iter_lines`, W2.0); a non-2xx never gets here, the SDK raises it as a status error first. The
+    `data:` framing mirrors `iter_sse_events` over the live line iterator; the assembler (`feed`)
+    is the shared logic."""
     assembler = StreamAssembler()
     data_buf: list[str] = []
-    async for line in response.aiter_lines():
+    async for line in lines:
         if line.startswith("data:"):
             data_buf.append(line.removeprefix("data:").strip())
         elif not line.strip():  # a blank line closes the frame
@@ -483,20 +540,37 @@ async def _drive_stream(response: httpx.Response, sink: ThinkingSink) -> bytes:
     return json.dumps(assembler.assembled()).encode()
 
 
-def _brain_error(exc: httpx.HTTPStatusError | httpx.TransportError) -> BrainCallError:
-    """Translate a transport failure into the loop's provider-neutral BrainCallError (W2.0 D1a),
-    so the loop never sees a vendor or transport type. The verdict is the taxonomy the loop always
-    applied: any transport error (a timeout, a reset, also mid-stream) and a 429 / 5xx status are
-    transient; any other status is fatal. The error body rides along (invariant 6)."""
-    if isinstance(exc, httpx.HTTPStatusError):
-        code = exc.response.status_code
+def _brain_error(
+    exc: anthropic.APIStatusError | anthropic.APIConnectionError | httpx2.TransportError,
+) -> BrainCallError:
+    """Translate an SDK or transport failure into the loop's provider-neutral BrainCallError (W2.0
+    D1a), so the loop never sees a vendor or transport type. The verdict is the taxonomy the loop
+    always applied: a transport failure before the response (an `APIConnectionError` whose cause
+    is an `httpx2.TransportError`; the adapter re-raises any other cause before calling this), a
+    transport error while the body streams (the SDK does not wrap those, so it arrives as a bare
+    `httpx2.TransportError`, timeouts included) and a 429 / 5xx status are transient; any other
+    status is fatal. The error body rides along (invariant 6). The message names the real cause,
+    not the SDK's generic wrapper text, as HEAD's ErrorEvent did."""
+    if isinstance(exc, anthropic.APIStatusError):
+        code = exc.status_code
         return BrainCallError(
             repr(exc),
             retryable=code == 429 or 500 <= code < 600,
             status=code,
             raw_response=exc.response.content,
         )
-    return BrainCallError(repr(exc), retryable=True)
+    return BrainCallError(repr(exc.__cause__ or exc), retryable=True)
+
+
+# The failures `_brain_error` translates; anything else (a BrainParseError, a bug) propagates as is.
+_SDK_ERRORS = (anthropic.APIStatusError, anthropic.APIConnectionError, httpx2.TransportError)
+
+
+def _is_transport_failure(exc: anthropic.APIConnectionError) -> bool:
+    """The SDK wraps EVERY exception raised while it sends as an APIConnectionError: a refused
+    connection or a timeout, but also a bug in a transport or a body that will not decode. Only the
+    first kind is a transient blip; HEAD sent the others to the loop's `<loop>` backstop."""
+    return isinstance(exc.__cause__, httpx2.TransportError)
 
 
 def _extract_thinking_block(raw: bytes) -> bytes:
@@ -512,8 +586,7 @@ def _extract_thinking_block(raw: bytes) -> bytes:
 
 def adapter_brain_for(
     *,
-    client: httpx.AsyncClient,
-    api_key: str,
+    client: anthropic.AsyncAnthropic,
     model: str,
     registry: ToolRegistry,
     max_tokens: int = _DEFAULT_MAX_TOKENS,
@@ -521,20 +594,21 @@ def adapter_brain_for(
     stream: bool = False,
 ) -> Callable[[str], Brain]:
     """A `brain_for` factory (the scheduler's seam, `scheduler.py`) backed by the Anthropic Messages
-    API over the INJECTED httpx client. `brain()` never opens or closes the client — its lifecycle
-    belongs to whoever constructed it (the daemon/lifespan for a live call, a `MockTransport` in
-    tests), the same single-owner discipline the run connections follow.
+    API over the INJECTED SDK client (built by `anthropic_client`). `brain()` never opens or closes
+    the client: its lifecycle belongs to whoever constructed it (the daemon/lifespan for a live
+    call, a `MockTransport` in tests), the same single-owner discipline the run connections follow.
 
     Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), thread the
     `HUNT_SYSTEM_PROMPT`. `thinking` defaults to `{type:"disabled"}` (2c's bare tool_use replay);
-    `P5` Unit 3 passes `{type:"adaptive", display:"summarized"}` + `stream=True`. On the streaming
-    path (Unit 3b) the SSE deltas are relayed live via the `sink` and assembled before crossing the
-    single boundary at `parse_decision`; on the non-streaming path a plain POST does the same.
-    `raise_for_status()` turns a non-2xx into an `httpx.HTTPStatusError` the loop's `classify` sorts
-    (429/5xx retryable, 4xx fatal); the parsed `UsageEvent` rides onto the Decision (invariant 5).
+    `P5` Unit 3 passes `{type:"adaptive", display:"summarized"}` + `stream=True`. The SDK runs in
+    RAW mode (W2.0, D9a): on the streaming path `with_streaming_response` hands the SSE body line by
+    line to our assembler, which relays the deltas live via the `sink`; on the plain path
+    `with_raw_response` hands over the response bytes. Either way the provider's own bytes cross the
+    single boundary at `parse_decision` (invariant 3). SDK and transport errors become one
+    BrainCallError the loop's `classify` sorts (429/5xx and transport retryable, other statuses
+    fatal); the parsed `UsageEvent` rides onto the Decision (invariant 5).
     """
     tools = build_tools(registry)  # derived once — stable across the run
-    headers = request_headers(api_key)
     thinking = {"type": "disabled"} if thinking is None else thinking
 
     def brain_for(territory: str) -> Brain:
@@ -548,24 +622,31 @@ def adapter_brain_for(
                 thinking=thinking,
                 tool_choice=HUNT_TOOL_CHOICE,
             )
-            if not stream:
-                try:
-                    response = await client.post(MESSAGES_URL, headers=headers, json=body)
-                    response.raise_for_status()  # non-2xx -> HTTPStatusError -> BrainCallError
-                except (httpx.HTTPStatusError, httpx.TransportError) as exc:
-                    raise _brain_error(exc) from exc
-                return parse_decision(response.content)  # one boundary (invariant 3)
-            body["stream"] = True
             try:
-                async with client.stream(
-                    "POST", MESSAGES_URL, headers=headers, json=body
-                ) as response:
-                    raw = await _drive_stream(response, sink)
-            except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                if not stream:
+                    # Cast, not inferred: `**body` matches several `create` overloads, so pyright
+                    # cannot pick one. Passing `stream=False` would add it to the request JSON.
+                    plain = cast(
+                        AsyncAPIResponse[Message],
+                        await client.messages.with_raw_response.create(**body),
+                    )
+                    raw = await plain.read()  # the provider's bytes, as they came
+                else:
+                    async with client.messages.with_streaming_response.create(
+                        **body, stream=True
+                    ) as streamed:
+                        raw = await _drive_stream(streamed.iter_lines(), sink)
+            except anthropic.APIConnectionError as exc:
+                if not _is_transport_failure(exc):
+                    # Not the network: re-raise the real error for the <loop> backstop, as at HEAD
+                    # (from None: the SDK's wrapper says nothing the cause does not).
+                    raise (exc.__cause__ or exc) from None
+                raise _brain_error(exc) from exc
+            except _SDK_ERRORS as exc:
                 # a failure while the body streams (a reset mid-frame) is a transport blip too
                 raise _brain_error(exc) from exc
-            decision = parse_decision(raw)  # the assembled stream crosses the one boundary (inv 3)
-            if isinstance(decision, ToolCallDecision):
+            decision = parse_decision(raw)  # the one boundary (invariant 3)
+            if stream and isinstance(decision, ToolCallDecision):
                 # Carry the turn's VERBATIM signed thinking block so the NEXT call's reconstructed
                 # assistant turn leads with it (Unit 3c, invariant 6) — echoed, never rebuilt.
                 decision.thinking = _extract_thinking_block(raw)
@@ -580,14 +661,15 @@ def select_brain_for(
     registry: ToolRegistry,
     *,
     default: Callable[[str], Brain] | None = None,
-) -> tuple[Callable[[str], Brain], httpx.AsyncClient | None]:
+) -> tuple[Callable[[str], Brain], anthropic.AsyncAnthropic | None]:
     """The autonomous-spender containment (P5 Unit 2c): the daemon's `brain_for`, selected by the
     `REXHUNTER_BRAIN` env var. Default `"stub"` returns a no-spend brain and no client — a default
     start constructs nothing that could hit the network; `default` (the daemon's injectable stub
     seam, `daemon_config`'s brain) is returned when given, else the module `stub_brain_for`.
     `"live"` is the single opt-in that arms spending: it builds the STREAMING/THINKING adapter (`P5`
     Unit 3 — `stream=True` + adaptive thinking, so Rex's reasoning relays through the hub) over a
-    real httpx client and RETURNS that client so the caller (lifespan / entrypoints) owns its close.
+    real SDK client (`anthropic_client`, max_retries=0 + the pinned wire) and RETURNS that client so
+    the caller (lifespan / entrypoints) owns its close.
     Any other value is a hard error, never a silent fall-through to spending.
     """
     mode = os.environ.get("REXHUNTER_BRAIN", "stub")
@@ -601,10 +683,9 @@ def select_brain_for(
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError("REXHUNTER_BRAIN=live requires ANTHROPIC_API_KEY to be set")
-        client = httpx.AsyncClient(timeout=120.0)
+        client = anthropic_client(api_key, timeout=120.0)
         brain_for = adapter_brain_for(
             client=client,
-            api_key=api_key,
             model=SMOKE_MODEL,
             registry=registry,
             max_tokens=HUNT_MAX_TOKENS,

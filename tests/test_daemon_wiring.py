@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import aiosqlite
-import httpx
+import anthropic
 import pytest
 
 from rexhunter import brain, cost, db, scheduler, server, stub
@@ -88,8 +88,8 @@ async def test_live_selects_the_streaming_thinking_brain(monkeypatch: pytest.Mon
         assert captured["max_tokens"] == brain.HUNT_MAX_TOKENS
         assert brain_for is not stub.stub_brain_for
     finally:
-        assert isinstance(client, httpx.AsyncClient)
-        await client.aclose()  # closed without ever calling brain() → zero spend
+        assert isinstance(client, anthropic.AsyncAnthropic)
+        await client.close()  # closed without ever calling brain() → zero spend
 
 
 # ── W.1 · the id-scoped daemon spend ceiling (Tiny Arms for money) ─────────────

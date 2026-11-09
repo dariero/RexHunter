@@ -15,10 +15,12 @@ ECHOES the stored block rather than rebuilding it:
 """
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import httpx
+import anthropic
+import httpx2
 import pytest
 
 from rexhunter import brain, db
@@ -34,6 +36,8 @@ SIGNED_BLOCK = {
     "signature": "OPAQUE-SiGnAtUre-do/not/interpret+VERBATIM==",
 }
 THINKING_BYTES = json.dumps(SIGNED_BLOCK).encode()
+
+MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
 
 def _tool_call(thinking: bytes) -> list[Any]:
@@ -166,24 +170,23 @@ async def sniff(prey: str) -> str:
     return f"posting:{prey}"
 
 
-async def _run_capturing(db_path: Path) -> list[dict[str, Any]]:
+async def _run_capturing(db_path: Path, mock_anthropic: MockAnthropic) -> list[dict[str, Any]]:
     """Drive a two-call streaming hunt; return the captured request bodies."""
     requests: list[dict[str, Any]] = []
     responses = [CALL1, CALL2]
     state = {"i": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(json.loads(request.content))
         i = state["i"]
         state["i"] += 1
-        return httpx.Response(200, content=responses[i])
+        return httpx2.Response(200, content=responses[i])
 
     reg = ToolRegistry()
     reg.tool(sniff)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with mock_anthropic(handler, api_key="replay") as client:
         brain_for = brain.adapter_brain_for(
             client=client,
-            api_key="replay",
             model=brain.SMOKE_MODEL,
             registry=reg,
             thinking={"type": "adaptive", "display": "summarized"},
@@ -203,8 +206,10 @@ async def _run_capturing(db_path: Path) -> list[dict[str, Any]]:
     return requests
 
 
-async def test_call_two_leads_with_call_ones_stream_assembled_signed_block(tmp_path: Path) -> None:
-    requests = await _run_capturing(tmp_path / "rex.db")
+async def test_call_two_leads_with_call_ones_stream_assembled_signed_block(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    requests = await _run_capturing(tmp_path / "rex.db", mock_anthropic)
     assert len(requests) == 2  # sniff on call one, then hunt_complete on call two
 
     messages = requests[1]["messages"]
@@ -217,8 +222,19 @@ async def test_call_two_leads_with_call_ones_stream_assembled_signed_block(tmp_p
     assert assistant[1]["type"] == "tool_use" and assistant[1]["id"] == "toolu_1"
 
 
-async def test_streaming_request_keeps_the_2c_guards_with_thinking_on(tmp_path: Path) -> None:
-    body = (await _run_capturing(tmp_path / "rex.db"))[0]
+async def test_streaming_request_keeps_the_2c_guards_with_thinking_on(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    body = (await _run_capturing(tmp_path / "rex.db", mock_anthropic))[0]
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}  # thinking back ON
     assert body["tool_choice"]["disable_parallel_tool_use"] is True  # one tool_use per turn intact
     assert "temperature" not in body and "top_p" not in body and "top_k" not in body  # Sonnet 5
+
+
+async def test_the_streaming_request_asks_for_a_stream_on_the_wire(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # W2.0 moved the flag from the body dict to the SDK's `stream=True` argument. The mocks answer
+    # with SSE either way, so only this check catches a lost flag before a paid call would.
+    body = (await _run_capturing(tmp_path / "rex.db", mock_anthropic))[0]
+    assert body["stream"] is True

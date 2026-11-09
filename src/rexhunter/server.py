@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # Close the paid client AFTER the scheduler has drained — it drove brain calls on this
         # client, so an earlier close could abort an in-flight request. None on the stub path.
         if client is not None:
-            await client.aclose()
+            await client.close()
 
 
 app = FastAPI(lifespan=lifespan)

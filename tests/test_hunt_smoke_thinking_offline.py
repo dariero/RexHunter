@@ -2,17 +2,17 @@
 
 `hunt_smoke_thinking.run_live_hunt` is the paid entrypoint. This drives its ENTIRE path — free
 pre-flight → streaming hunt through the `CapturingTransport` tee → fixture write — with an injected
-`httpx.MockTransport` and a tmp fixture dir, so at spend time the ONLY untested unknown is "does the
-real API accept the stream-assembled signed block". The load-bearing thing this catches that the
+`httpx2.MockTransport` and a tmp fixture dir, so at spend time the ONLY untested unknown is "does
+the real API accept the stream-assembled signed block". The load-bearing thing this catches that the
 per-adapter tests can't: the tee reads the full body, and we prove that still feeds the streaming
-adapter (a buffered response iterated by `aiter_lines`).
+adapter (a buffered response the SDK's raw mode iterates with `iter_lines`).
 """
 
 import json
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2
 import pytest
 
 from rexhunter import brain, hunt_smoke_thinking
@@ -98,15 +98,15 @@ CALL2 = _sse("Done.", "SIG-2==", "toolu_2", "hunt_complete", {"catch": ["posting
 async def test_harness_full_path_runs_offline_and_writes_fixtures(tmp_path: Path) -> None:
     msg = {"i": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if str(request.url) == brain.COUNT_TOKENS_URL:
-            return httpx.Response(200, json={"input_tokens": 1234})  # the free pre-flight
+            return httpx2.Response(200, json={"input_tokens": 1234})  # the free pre-flight
         i = msg["i"]
         msg["i"] += 1
-        return httpx.Response(200, content=[CALL1, CALL2][i])  # the two streaming brain calls
+        return httpx2.Response(200, content=[CALL1, CALL2][i])  # the two streaming brain calls
 
     summary = await hunt_smoke_thinking.run_live_hunt(
-        "offline-key", inner=httpx.MockTransport(handler), fixture_dir=tmp_path
+        "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=tmp_path
     )
 
     # Two brain calls captured through the tee — the streaming path survives the full-body read.
@@ -133,14 +133,35 @@ async def test_preflight_non_200_stops_before_any_paid_call(tmp_path: Path) -> N
     the messages endpoint is ever hit — the free call is where a bad payload surfaces, for $0."""
     hit = {"messages": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if str(request.url) == brain.COUNT_TOKENS_URL:
-            return httpx.Response(400, json={"error": {"message": "bad thinking param"}})
+            return httpx2.Response(400, json={"error": {"message": "bad thinking param"}})
         hit["messages"] += 1
-        return httpx.Response(200, content=CALL1)
+        return httpx2.Response(200, content=CALL1)
 
     with pytest.raises(SystemExit):
         await hunt_smoke_thinking.run_live_hunt(
-            "offline-key", inner=httpx.MockTransport(handler), fixture_dir=tmp_path
+            "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=tmp_path
         )
     assert hit["messages"] == 0  # never spent — stopped at the free pre-flight
+
+
+async def test_the_harness_sends_the_pinned_wire(tmp_path: Path) -> None:
+    # The paid harness builds its client through the factory: every request (the pre-flight and
+    # both brain calls) carries the explicit key and the pinned version, never Bearer auth.
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if str(request.url) == brain.COUNT_TOKENS_URL:
+            return httpx2.Response(200, json={"input_tokens": 1234})
+        return httpx2.Response(200, content=[CALL1, CALL2][len(seen) - 2])
+
+    await hunt_smoke_thinking.run_live_hunt(
+        "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=tmp_path
+    )
+    assert len(seen) == 3
+    for request in seen:
+        assert request.headers["x-api-key"] == "offline-key"
+        assert request.headers["anthropic-version"] == "2023-06-01"
+        assert "authorization" not in request.headers

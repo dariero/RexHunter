@@ -17,10 +17,12 @@ signed-block fold are exercised end to end offline.
 """
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import httpx
+import anthropic
+import httpx2
 import pytest
 
 from rexhunter import brain, cost, db
@@ -41,6 +43,8 @@ RUN_ID = "32975e98-4f30-4763-9d6a-a34541d0e1ef"  # THE gated thinking-on hunt; f
 FIXTURES = sorted((FIXTURE_DIR / f"hunt_{RUN_ID}").glob("call_*.json"))
 LIVE_SPEND_USD = 0.0187  # the [hunt] report; fold_cost over the two UsageEvents must reproduce it
 THINKING: dict[str, Any] = {"type": "adaptive", "display": "summarized"}
+
+MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
 
 def _assemble(raw: bytes) -> dict[str, Any]:
@@ -70,31 +74,32 @@ def _sniff_registry() -> ToolRegistry:
     return reg
 
 
-def _replay_transport(requests: list[dict[str, Any]]) -> httpx.MockTransport:
+def _replay_handler(
+    requests: list[dict[str, Any]],
+) -> Callable[[httpx2.Request], httpx2.Response]:
     """Feed the captured SSE streams in order for each MESSAGES_URL call (zero network), saving each
     request body so a test can prove what was folded into call two."""
     responses = [f.read_bytes() for f in FIXTURES]
     state = {"i": 0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(json.loads(request.content))
         idx = state["i"]
         state["i"] += 1
-        return httpx.Response(200, content=responses[idx])
+        return httpx2.Response(200, content=responses[idx])
 
-    return httpx.MockTransport(handler)
+    return handler
 
 
 async def _replay(
-    db_path: Path,
+    db_path: Path, mock_anthropic: MockAnthropic
 ) -> tuple[list[TrajectoryEvent], tuple[str, str | None], list[dict[str, Any]]]:
     """Re-drive run_hunt over the streaming fixtures; return (events, (outcome, reason), reqs)."""
     requests: list[dict[str, Any]] = []
     reg = _sniff_registry()
-    async with httpx.AsyncClient(transport=_replay_transport(requests)) as client:
+    async with mock_anthropic(_replay_handler(requests), api_key="replay") as client:
         brain_for = brain.adapter_brain_for(
             client=client,
-            api_key="replay",
             model=brain.SMOKE_MODEL,
             registry=reg,
             thinking=THINKING,
@@ -136,8 +141,10 @@ def test_fixtures_assemble_to_the_live_decisions() -> None:
     assert CALL1_THINKING["signature"] and len(CALL1_THINKING["signature"]) > 100
 
 
-async def test_replay_reproduces_the_live_hunt_trajectory(tmp_path: Path) -> None:
-    events, (outcome, reason), _requests = await _replay(tmp_path / "rex.db")
+async def test_replay_reproduces_the_live_hunt_trajectory(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    events, (outcome, reason), _requests = await _replay(tmp_path / "rex.db", mock_anthropic)
 
     # Two brain calls → two UsageEvents priced to the live spend (thinking tokens included).
     usage = [e for e in events if isinstance(e, UsageEvent)]
@@ -160,10 +167,12 @@ async def test_replay_reproduces_the_live_hunt_trajectory(tmp_path: Path) -> Non
     assert (outcome, reason) == ("completed", None)  # NOT aborted — call two was accepted live
 
 
-async def test_call_two_led_with_call_ones_verbatim_signed_block(tmp_path: Path) -> None:
+async def test_call_two_led_with_call_ones_verbatim_signed_block(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     # THE GATE: call two's request folds call one's turn back as assistant[thinking, tool_use] —
     # the reconstructed turn LEADS with the byte-identical signed block the real API accepted.
-    _events, _outcome, requests = await _replay(tmp_path / "rex.db")
+    _events, _outcome, requests = await _replay(tmp_path / "rex.db", mock_anthropic)
     assert len(requests) == 2  # exactly two brain calls, no more
 
     messages = requests[1]["messages"]
@@ -181,10 +190,12 @@ async def test_call_two_led_with_call_ones_verbatim_signed_block(tmp_path: Path)
     assert "temperature" not in requests[1] and "top_p" not in requests[1]
 
 
-async def test_replay_is_deterministic_across_two_passes(tmp_path: Path) -> None:
+async def test_replay_is_deterministic_across_two_passes(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     def _norm(events: list[TrajectoryEvent]) -> list[dict[str, Any]]:
         return [json.loads(e.model_dump_json()) for e in events]
 
-    first, _, _ = await _replay(tmp_path / "a.db")
-    second, _, _ = await _replay(tmp_path / "b.db")
+    first, _, _ = await _replay(tmp_path / "a.db", mock_anthropic)
+    second, _, _ = await _replay(tmp_path / "b.db", mock_anthropic)
     assert _norm(first) == _norm(second)

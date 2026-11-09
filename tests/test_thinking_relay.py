@@ -4,7 +4,7 @@ Thinking is back on: as the model streams its reasoning, the loop appends each d
 (write-ahead, invariant 1) and the P3 hub broadcasts it — reusing `publish()`, no new fan-out.
 This is Rex's chain of thought as the live hunt feed.
 
-Driven through the REAL loop: a streaming `httpx.MockTransport` feeds two SSE responses (each a
+Driven through the REAL loop: a streaming `httpx2.MockTransport` feeds two SSE responses (each a
 thinking block + a tool_use), `adapter_brain_for(..., stream=True)` assembles them, and the
 loop-built sink relays each delta. Asserts the three load-bearing properties:
 
@@ -16,9 +16,11 @@ loop-built sink relays each delta. Asserts the three load-bearing properties:
 """
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
-import httpx
+import anthropic
+import httpx2
 import pytest
 
 from rexhunter import brain, db
@@ -123,16 +125,18 @@ CALL1 = _sse(["Scouting ", "mock-gym."], SIG1, "toolu_1", "sniff", {"prey": "moc
 CALL2 = _sse(["Enough — capturing."], SIG2, "toolu_2", "hunt_complete", {"catch": ["posting:mg"]})
 EXPECTED_DELTAS = ["Scouting ", "mock-gym.", "Enough — capturing."]
 
+MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
-def _streaming_transport(responses: list[bytes]) -> httpx.MockTransport:
+
+def _streaming_handler(responses: list[bytes]) -> Callable[[httpx2.Request], httpx2.Response]:
     state = {"i": 0}
 
-    def handler(_request: httpx.Request) -> httpx.Response:
+    def handler(_request: httpx2.Request) -> httpx2.Response:
         i = state["i"]
         state["i"] += 1
-        return httpx.Response(200, content=responses[i])
+        return httpx2.Response(200, content=responses[i])
 
-    return httpx.MockTransport(handler)
+    return handler
 
 
 def _drain(queue: object) -> list[Envelope]:
@@ -143,12 +147,11 @@ def _drain(queue: object) -> list[Envelope]:
     return out
 
 
-async def _run(db_path: Path, hub: Hub) -> str:
+async def _run(db_path: Path, hub: Hub, mock_anthropic: MockAnthropic) -> str:
     reg = _sniff_registry()
-    async with httpx.AsyncClient(transport=_streaming_transport([CALL1, CALL2])) as client:
+    async with mock_anthropic(_streaming_handler([CALL1, CALL2]), api_key="relay") as client:
         brain_for = brain.adapter_brain_for(
             client=client,
-            api_key="relay",
             model=brain.SMOKE_MODEL,
             registry=reg,
             thinking={"type": "adaptive", "display": "summarized"},
@@ -168,11 +171,13 @@ async def _run(db_path: Path, hub: Hub) -> str:
             await conn.close()
 
 
-async def test_two_viewers_render_identical_thinking_delta_streams(tmp_path: Path) -> None:
+async def test_two_viewers_render_identical_thinking_delta_streams(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     hub = Hub(maxsize=256)
     _, qa = hub.register()
     _, qb = hub.register()
-    await _run(tmp_path / "rex.db", hub)
+    await _run(tmp_path / "rex.db", hub, mock_anthropic)
 
     frames_a = [e for e in _drain(qa) if e.id is not None]
     frames_b = [e for e in _drain(qb) if e.id is not None]
@@ -184,13 +189,15 @@ async def test_two_viewers_render_identical_thinking_delta_streams(tmp_path: Pat
     assert [d["text"] for d in deltas] == EXPECTED_DELTAS  # the reasoning, streamed live
 
 
-async def test_thinking_deltas_are_write_ahead(tmp_path: Path) -> None:
+async def test_thinking_deltas_are_write_ahead(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     """Invariant 1: a delta reaches a viewer only after its row is committed — a separate reader
     connection sees every relayed delta's row (the test_hub.py write-ahead shape)."""
     hub = Hub(maxsize=256)
     _, queue = hub.register()
     db_path = tmp_path / "rex.db"
-    await _run(db_path, hub)
+    await _run(db_path, hub, mock_anthropic)
 
     reader = await db.connect(db_path)  # a DIFFERENT connection — sees only commits
     try:
@@ -212,12 +219,14 @@ async def test_thinking_deltas_are_write_ahead(tmp_path: Path) -> None:
         await reader.close()
 
 
-async def test_deltas_are_relayed_during_the_stream_not_batched_after(tmp_path: Path) -> None:
+async def test_deltas_are_relayed_during_the_stream_not_batched_after(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     """Live, not batched: call one's thinking deltas are committed DURING the brain call, so their
     global ids precede that turn's ToolCallEvent (appended only after the decision returns)."""
     hub = Hub(maxsize=256)
     _, queue = hub.register()
-    run_id = await _run(tmp_path / "rex.db", hub)
+    run_id = await _run(tmp_path / "rex.db", hub, mock_anthropic)
 
     ordered = [(e.id, json.loads(e.data)) for e in _drain(queue) if e.id is not None]
     first_delta_id = next(i for i, p in ordered if p["type"] == "thinking_delta")

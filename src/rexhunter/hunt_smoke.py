@@ -21,7 +21,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import httpx
+import anthropic
+import httpx2
 
 from rexhunter import brain, cost, db, stub
 from rexhunter.loop import run_hunt
@@ -51,45 +52,49 @@ def _hunt_body(registry: ToolRegistry, *, territory: str = TERRITORY) -> dict[st
 
 
 async def count_tokens_preflight(
-    client: httpx.AsyncClient, api_key: str, registry: ToolRegistry, *, territory: str = TERRITORY
+    client: anthropic.AsyncAnthropic, registry: ToolRegistry, *, territory: str = TERRITORY
 ) -> int:
     """FREE pre-flight: count input tokens for the EXACT hunt payload (minus `max_tokens`, which the
     count_tokens endpoint does not take). A non-200 STOPS before any paid call — egress / auth /
     schema is wrong; the free call is where that surfaces, for $0."""
     body = _hunt_body(registry, territory=territory)
     count_body: dict[str, Any] = {k: v for k, v in body.items() if k != "max_tokens"}
-    resp = await client.post(
-        brain.COUNT_TOKENS_URL, headers=brain.request_headers(api_key), json=count_body
-    )
-    if resp.status_code != 200:
+    try:
+        result = await client.messages.count_tokens(**count_body)
+    except anthropic.APIStatusError as exc:
         raise SystemExit(
-            f"[preflight http {resp.status_code}] count_tokens rejected the exact payload — "
-            f"fix before spending.\n{resp.text[:2000]}"
-        )
-    return int(resp.json()["input_tokens"])
+            f"[preflight http {exc.status_code}] count_tokens rejected the exact payload: "
+            f"fix before spending.\n{exc.response.text[:2000]}"
+        ) from exc
+    return result.input_tokens
 
 
-class CapturingTransport(httpx.AsyncBaseTransport):
+_KEPT_HEADERS = ("content-type", "request-id")
+
+
+class CapturingTransport(httpx2.AsyncBaseTransport):
     """Tees every response for `capture_url` into `captured` (invariant 6 fixture capture) without
     touching the adapter. Wraps any inner transport — a live `AsyncHTTPTransport`, or a
     `MockTransport` in tests. Reads the body once, returns a fresh buffered response, same bytes."""
 
-    def __init__(self, inner: httpx.AsyncBaseTransport, capture_url: str) -> None:
+    def __init__(self, inner: httpx2.AsyncBaseTransport, capture_url: str) -> None:
         self._inner = inner
         self._capture_url = capture_url
         self.captured: list[bytes] = []
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         response = await self._inner.handle_async_request(request)
-        body = await response.aread()  # DECODED bytes (httpx requests gzip by default)
+        body = await response.aread()  # DECODED bytes (httpx2 requests compression by default)
         if str(request.url) == self._capture_url:
             self.captured.append(body)
-        # Reconstruct with status + body ONLY. Re-attaching the inner headers would carry a stale
-        # `Content-Encoding: gzip` / `Content-Length` over already-decoded bytes and make the
-        # adapter's `.content` read error on a live gzipped response. The adapter reads only the
-        # status (`raise_for_status`) and body (`parse_decision`), never a header — so dropping them
-        # is safe and lets httpx recompute `Content-Length` from `content=`.
-        return httpx.Response(response.status_code, content=body, request=request)
+        # Reconstruct with status + body + two harmless headers. Re-attaching the inner headers
+        # wholesale would carry a stale `Content-Encoding: gzip` / `Content-Length` over
+        # already-decoded bytes and make the adapter's body read error on a live gzipped response;
+        # httpx2 recomputes `Content-Length` from `content=`. `content-type` is kept because the
+        # typed count_tokens pre-flight parses through this tee too, and `request-id` so a teed
+        # status error still names the request.
+        kept = {k: v for k, v in response.headers.items() if k.lower() in _KEPT_HEADERS}
+        return httpx2.Response(response.status_code, headers=kept, content=body, request=request)
 
 
 def write_fixtures(
@@ -131,13 +136,12 @@ def _report_findings(captured: list[bytes]) -> None:
 async def run_live_hunt(api_key: str) -> None:
     """The paid path: free pre-flight → one capped hunt on the teed client → fixtures + report."""
     registry = stub.build_registry()
-    tee = CapturingTransport(httpx.AsyncHTTPTransport(), brain.MESSAGES_URL)
-    async with httpx.AsyncClient(transport=tee, timeout=120.0) as client:
-        n_in = await count_tokens_preflight(client, api_key, registry)
+    tee = CapturingTransport(httpx2.AsyncHTTPTransport(), brain.MESSAGES_URL)
+    async with brain.anthropic_client(api_key, transport=tee, timeout=120.0) as client:
+        n_in = await count_tokens_preflight(client, registry)
         print(f"[preflight] count_tokens OK — input_tokens={n_in}")
         brain_for = brain.adapter_brain_for(
             client=client,
-            api_key=api_key,
             model=brain.SMOKE_MODEL,
             registry=registry,
             max_tokens=HUNT_MAX_TOKENS,
@@ -180,8 +184,8 @@ def main() -> None:
 
     async def _go() -> None:
         if "--count-only" in sys.argv:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                n = await count_tokens_preflight(client, api_key, stub.build_registry())
+            async with brain.anthropic_client(api_key, timeout=120.0) as client:
+                n = await count_tokens_preflight(client, stub.build_registry())
             print(f"[count-only] input_tokens={n} — validated, NO paid call made.")
             return
         if os.environ.get("REXHUNTER_BRAIN") != "live":

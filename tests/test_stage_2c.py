@@ -14,15 +14,19 @@ The adapter now DRIVES the loop. Five contracts, each provable offline:
   5. Config-gated brain — `REXHUNTER_BRAIN` selects the brain; default `stub` (no client, no
      spend), `live` is opt-in. This is the containment for the autonomous-spender surface.
 
-Every test injects `httpx.MockTransport` or hand-built events — zero network, zero spend. The 2b
-fixture (`tests/fixtures/smoke_sonnet5.json`, a genuine Sonnet 5 response) anchors the breaker.
+Every test injects an httpx2 `MockTransport` (through the `mock_anthropic` fixture, the production
+SDK client since W2.0) or hand-built events: zero network, zero spend. The 2b fixture
+(`tests/fixtures/smoke_sonnet5.json`, a genuine Sonnet 5 response) anchors the breaker.
 """
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import anthropic
 import httpx
+import httpx2
 import pytest
 from pydantic import ValidationError
 
@@ -40,6 +44,9 @@ from rexhunter.tools import ToolRegistry
 pytestmark = pytest.mark.anyio
 
 FIXTURE = Path(__file__).parent / "fixtures" / "smoke_sonnet5.json"
+
+MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
+Handler = Callable[[httpx2.Request], httpx2.Response]
 
 
 async def _drop(_text: str) -> None:
@@ -149,16 +156,18 @@ def test_build_request_body_threads_system_and_omits_it_when_absent() -> None:
     assert "system" not in without and "thinking" not in without
 
 
-async def test_adapter_sends_system_prompt_and_disables_thinking() -> None:
-    captured: dict[str, httpx.Request] = {}
+async def test_adapter_sends_system_prompt_and_disables_thinking(
+    mock_anthropic: MockAnthropic,
+) -> None:
+    captured: dict[str, httpx2.Request] = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         captured["req"] = request
-        return httpx.Response(200, content=FIXTURE.read_bytes())
+        return httpx2.Response(200, content=FIXTURE.read_bytes())
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with mock_anthropic(handler) as client:
         brain_for = brain.adapter_brain_for(
-            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=_sniff_registry()
+            client=client, model=brain.SMOKE_MODEL, registry=_sniff_registry()
         )
         await brain_for("mock-gym")([], _drop)
 
@@ -200,25 +209,26 @@ def test_classify_parse_and_validation_errors_are_fatal() -> None:
     assert classify(excinfo.value) is False
 
 
-def _status_transport(code: int, body: bytes) -> httpx.MockTransport:
-    """Every request gets the same non-2xx status — raise_for_status must surface it."""
+def _status_handler(code: int, body: bytes, seen: list[httpx2.Request] | None = None) -> Handler:
+    """Every request gets the same non-2xx status; the SDK must surface it as a status error.
+    `retry-after-ms` is inert under max_retries=0; it only keeps a retrying mutant fast."""
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(code, content=body)
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if seen is not None:
+            seen.append(request)
+        return httpx2.Response(code, content=body, headers={"retry-after-ms": "1"})
 
-    return httpx.MockTransport(handler)
+    return handler
 
 
-async def test_brain_retries_a_transient_5xx_then_aborts(tmp_path: Path) -> None:
-    # Integrated proof of the path classify only unit-tests: raise_for_status → HTTPStatusError →
-    # _call_brain retries within budget, tags "<brain>", captures the body, then aborts.
+async def test_brain_retries_a_transient_5xx_then_aborts(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # Integrated proof of the path classify only unit-tests: the SDK's status error → BrainCallError
+    # → _call_brain retries within budget, tags "<brain>", captures the body, then aborts.
     reg = _sniff_registry()
-    async with httpx.AsyncClient(
-        transport=_status_transport(503, b"upstream unavailable")
-    ) as client:
-        brain_for = brain.adapter_brain_for(
-            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=reg
-        )
+    async with mock_anthropic(_status_handler(503, b"upstream unavailable")) as client:
+        brain_for = brain.adapter_brain_for(client=client, model=brain.SMOKE_MODEL, registry=reg)
         conn = await db.connect(tmp_path / "rex.db")
         try:
             run_id = await run_hunt(
@@ -246,12 +256,12 @@ async def test_brain_retries_a_transient_5xx_then_aborts(tmp_path: Path) -> None
             await conn.close()
 
 
-async def test_brain_4xx_is_fatal_without_retry(tmp_path: Path) -> None:
+async def test_brain_4xx_is_fatal_without_retry(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     reg = _sniff_registry()
-    async with httpx.AsyncClient(transport=_status_transport(400, b"bad request")) as client:
-        brain_for = brain.adapter_brain_for(
-            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=reg
-        )
+    async with mock_anthropic(_status_handler(400, b"bad request")) as client:
+        brain_for = brain.adapter_brain_for(client=client, model=brain.SMOKE_MODEL, registry=reg)
         conn = await db.connect(tmp_path / "rex.db")
         try:
             run_id = await run_hunt(
@@ -340,29 +350,31 @@ async def test_fatal_brain_call_error_aborts_without_retry(tmp_path: Path) -> No
     assert row == ("aborted", "brain call failed")
 
 
-class _ResetMidStream(httpx.AsyncByteStream):
+class _ResetMidStream(httpx2.AsyncByteStream):
     """A 200 streaming body that yields its first frame, then the connection resets."""
 
     async def __aiter__(self):  # type: ignore[override]
         yield b'event: ping\ndata: {"type": "ping"}\n\n'
-        raise httpx.ReadError("connection reset mid-stream")
+        raise httpx2.ReadError("connection reset mid-stream")
 
     async def aclose(self) -> None:
         pass
 
 
-async def test_a_transport_error_mid_stream_is_retried_as_a_brain_error(tmp_path: Path) -> None:
+async def test_a_transport_error_mid_stream_is_retried_as_a_brain_error(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     # A failure DURING the streamed body (after the 200 arrived) is a transient transport blip,
-    # retried within budget like any other, never the `<loop>` backstop.
+    # retried within budget like any other, never the `<loop>` backstop. The SDK does not wrap an
+    # error raised while the body streams, so the adapter's mapping must catch the transport's own.
     reg = _sniff_registry()
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, stream=_ResetMidStream())
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, stream=_ResetMidStream())
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with mock_anthropic(handler) as client:
         brain_for = brain.adapter_brain_for(
             client=client,
-            api_key="sk-test",
             model=brain.SMOKE_MODEL,
             registry=reg,
             thinking=brain.HUNT_THINKING,
@@ -374,24 +386,168 @@ async def test_a_transport_error_mid_stream_is_retried_as_a_brain_error(tmp_path
     assert row == ("aborted", "brain call failed")
 
 
+async def test_a_5xx_makes_exactly_retry_budget_plus_one_requests(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # D1b: the SDK client never retries (max_retries=0), so each loop attempt is exactly ONE HTTP
+    # request and the wire sees the loop's budget, no more: retry_budget + 1 requests.
+    retry_budget = 2  # the budget _hunt_errors runs with
+    seen: list[httpx2.Request] = []
+    async with mock_anthropic(_status_handler(503, b"upstream unavailable", seen)) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client, model=brain.SMOKE_MODEL, registry=_sniff_registry()
+        )
+        errors, row = await _hunt_errors(tmp_path / "rex.db", brain_for("mock-gym"))
+    assert len(seen) == retry_budget + 1
+    assert len(errors) == retry_budget + 1  # one ErrorEvent per request
+    assert row == ("aborted", "brain call failed")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_redirect_is_never_followed(
+    stream: bool, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # HEAD's client never followed redirects, so a 3xx was a fatal status error. The SDK's default
+    # client follows them, cross-origin, with the x-api-key and the paid POST body: the factory
+    # turns that off, and a 3xx stays one fatal <brain> error with its body kept.
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(str(request.url))
+        if request.url.host == "api.anthropic.com":
+            location = {"location": "https://elsewhere.invalid/v1/messages"}
+            return httpx2.Response(307, headers=location, content=b"moved")
+        return httpx2.Response(200, content=FIXTURE.read_bytes())  # reached only if followed
+
+    async with mock_anthropic(handler) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client,
+            model=brain.SMOKE_MODEL,
+            registry=_sniff_registry(),
+            thinking=brain.HUNT_THINKING if stream else None,
+            stream=stream,
+        )
+        errors, row = await _hunt_errors(tmp_path / "rex.db", brain_for("mock-gym"))
+    assert seen == [brain.MESSAGES_URL]  # one request, never re-sent to another origin
+    assert len(errors) == 1
+    assert errors[0].tool == "<brain>" and errors[0].retryable is False
+    assert errors[0].raw_response == b"moved"
+    assert row == ("aborted", "brain call failed")
+
+
+def _connect_error(request: httpx2.Request) -> Exception:
+    return httpx2.ConnectError("refused", request=request)
+
+
+def _connect_timeout(request: httpx2.Request) -> Exception:
+    return httpx2.ConnectTimeout("slow", request=request)
+
+
+def _transport_bug(_request: httpx2.Request) -> Exception:
+    return RuntimeError("bug in a transport")
+
+
+def _decoding_error(request: httpx2.Request) -> Exception:
+    return httpx2.DecodingError("bad gzip body", request=request)
+
+
+@pytest.mark.parametrize(
+    ("make_error", "name"),
+    [(_connect_error, "ConnectError"), (_connect_timeout, "ConnectTimeout")],
+    ids=["connect-error", "connect-timeout"],
+)
+async def test_a_connection_failure_before_the_response_is_retried(
+    make_error: Callable[[httpx2.Request], Exception],
+    name: str,
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+) -> None:
+    # The SDK wraps these as APIConnectionError / APITimeoutError; the adapter retries them like
+    # HEAD's httpx.ConnectError / ConnectTimeout, and the ErrorEvent names the real cause.
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise make_error(request)
+
+    async with mock_anthropic(handler) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client, model=brain.SMOKE_MODEL, registry=_sniff_registry()
+        )
+        errors, row = await _hunt_errors(tmp_path / "rex.db", brain_for("mock-gym"))
+    assert len(errors) == 3
+    assert all(e.tool == "<brain>" and e.retryable for e in errors)
+    assert all(name in e.error for e in errors)  # the cause, not the SDK's generic wrapper text
+    assert row == ("aborted", "brain call failed")
+
+
+@pytest.mark.parametrize(
+    ("make_error", "name"),
+    [(_transport_bug, "RuntimeError"), (_decoding_error, "DecodingError")],
+    ids=["bug", "decoding-error"],
+)
+async def test_a_non_network_failure_inside_the_sdk_send_reaches_the_loop_backstop(
+    make_error: Callable[[httpx2.Request], Exception],
+    name: str,
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+) -> None:
+    # The SDK wraps EVERY exception raised during send as APIConnectionError. Only a transport
+    # failure is a transient blip; anything else (a bug, an undecodable body) is re-raised, so it
+    # reaches run_hunt's <loop> backstop once, as at HEAD, and is never re-requested.
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        raise make_error(request)
+
+    async with mock_anthropic(handler) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client, model=brain.SMOKE_MODEL, registry=_sniff_registry()
+        )
+        errors, row = await _hunt_errors(tmp_path / "rex.db", brain_for("mock-gym"))
+    assert len(seen) == 1
+    assert len(errors) == 1
+    assert errors[0].tool == "<loop>" and errors[0].retryable is False
+    assert name in errors[0].error
+    assert row == ("aborted", "unhandled exception in loop")
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("code", [429, 529])
+async def test_429_and_529_are_retried_on_both_paths(
+    code: int, stream: bool, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    async with mock_anthropic(_status_handler(code, b"slow down")) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client,
+            model=brain.SMOKE_MODEL,
+            registry=_sniff_registry(),
+            thinking=brain.HUNT_THINKING if stream else None,
+            stream=stream,
+        )
+        errors, row = await _hunt_errors(tmp_path / "rex.db", brain_for("mock-gym"))
+    assert len(errors) == 3
+    assert all(e.tool == "<brain>" and e.retryable for e in errors)
+    assert errors[-1].raw_response == b"slow down"
+    assert row == ("aborted", "brain call failed")
+
+
 # ── 4. Cost-ceiling breaker (invariant 5 — folded from UsageEvents) ───────────
 
 
-def _fixture_transport() -> httpx.MockTransport:
+def _fixture_handler() -> Handler:
     raw = FIXTURE.read_bytes()  # a real Sonnet 5 response: tool=sniff, usage 1004 in / 80 out
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=raw)
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=raw)
 
-    return httpx.MockTransport(handler)
+    return handler
 
 
-async def test_cost_ceiling_aborts_before_the_next_brain_call(tmp_path: Path) -> None:
+async def test_cost_ceiling_aborts_before_the_next_brain_call(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     reg = _sniff_registry()
-    async with httpx.AsyncClient(transport=_fixture_transport()) as client:
-        brain_for = brain.adapter_brain_for(
-            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=reg
-        )
+    async with mock_anthropic(_fixture_handler()) as client:
+        brain_for = brain.adapter_brain_for(client=client, model=brain.SMOKE_MODEL, registry=reg)
         conn = await db.connect(tmp_path / "rex.db")
         try:
             run_id = await run_hunt(
@@ -417,14 +573,14 @@ async def test_cost_ceiling_aborts_before_the_next_brain_call(tmp_path: Path) ->
             await conn.close()
 
 
-async def test_high_ceiling_falls_back_to_max_iterations(tmp_path: Path) -> None:
+async def test_high_ceiling_falls_back_to_max_iterations(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     # Cost breaker and max-iter breaker coexist: a never-terminating brain (fixture always sniffs)
     # under a slack ceiling is still bounded by the existing max-iterations breaker.
     reg = _sniff_registry()
-    async with httpx.AsyncClient(transport=_fixture_transport()) as client:
-        brain_for = brain.adapter_brain_for(
-            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=reg
-        )
+    async with mock_anthropic(_fixture_handler()) as client:
+        brain_for = brain.adapter_brain_for(client=client, model=brain.SMOKE_MODEL, registry=reg)
         conn = await db.connect(tmp_path / "rex.db")
         try:
             run_id = await run_hunt(
@@ -476,37 +632,61 @@ async def test_live_brain_is_opt_in_and_never_called(monkeypatch: pytest.MonkeyP
         assert brain_for is not stub.stub_brain_for
     finally:
         if client is not None:
-            await client.aclose()  # closed without ever calling brain() → zero spend
+            await client.close()  # closed without ever calling brain() → zero spend
+
+
+async def test_the_live_client_comes_from_the_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The daemon's spending client must be the factory's (max_retries=0 + the pinned wire), not a
+    # bare AsyncAnthropic with the SDK defaults (2 retries, Bearer auth, another API version).
+    monkeypatch.setenv("REXHUNTER_BRAIN", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://elsewhere.invalid")  # a bare client obeys it
+    _brain_for, client = brain.select_brain_for(stub.build_registry())
+    assert client is not None
+    try:
+        assert client.max_retries == 0
+        assert str(client.base_url) == brain.ANTHROPIC_BASE_URL
+        assert client.default_headers["x-api-key"] == "sk-test-not-real"
+        assert client.default_headers["anthropic-version"] == "2023-06-01"
+    finally:
+        await client.close()
 
 
 # ── 6. Unit 2c.2 — live request shape + count_tokens pre-flight (offline) ──────
 
 
 async def _capture_adapter_body(
-    registry: ToolRegistry, territory: str = "mock-gym"
+    mock_anthropic: MockAnthropic, registry: ToolRegistry, territory: str = "mock-gym"
 ) -> dict[str, Any]:
     """Drive one adapter turn over MockTransport and return the request body it actually sent."""
     captured: dict[str, Any] = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, content=FIXTURE.read_bytes())
+        return httpx2.Response(200, content=FIXTURE.read_bytes())
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with mock_anthropic(handler) as client:
         brain_for = brain.adapter_brain_for(
-            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=registry
+            client=client, model=brain.SMOKE_MODEL, registry=registry
         )
         await brain_for(territory)([], _drop)
     return captured["body"]
 
 
-async def test_live_request_shape() -> None:
-    body = await _capture_adapter_body(_sniff_registry())
+async def test_live_request_shape(mock_anthropic: MockAnthropic) -> None:
+    body = await _capture_adapter_body(mock_anthropic, _sniff_registry())
     for param in ("temperature", "top_p", "top_k"):
         assert param not in body  # any non-default sampling param → 400 on Sonnet 5
     assert body["thinking"] == {"type": "disabled"}  # accepted on Sonnet 5; only "enabled" 400s
     assert body["tool_choice"]["disable_parallel_tool_use"] is True  # one tool per iteration
     assert body["max_tokens"] >= 1024
+
+
+async def test_the_plain_request_sends_no_stream_key(mock_anthropic: MockAnthropic) -> None:
+    # The non-streaming body must stay HEAD's: no `stream` key at all (not even `false`), so the
+    # free pre-flight still prices the exact payload the paid call sends.
+    body = await _capture_adapter_body(mock_anthropic, _sniff_registry())
+    assert "stream" not in body
 
 
 def test_build_request_body_omits_tool_choice_when_absent() -> None:
@@ -526,15 +706,17 @@ def test_build_request_body_omits_tool_choice_when_absent() -> None:
     assert with_tc["tool_choice"] == brain.HUNT_TOOL_CHOICE
 
 
-async def test_count_tokens_preflight_posts_exact_payload_and_returns_count() -> None:
-    seen: dict[str, httpx.Request] = {}
+async def test_count_tokens_preflight_posts_exact_payload_and_returns_count(
+    mock_anthropic: MockAnthropic,
+) -> None:
+    seen: dict[str, httpx2.Request] = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen["req"] = request
-        return httpx.Response(200, json={"input_tokens": 1234})
+        return httpx2.Response(200, json={"input_tokens": 1234})
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        n = await hunt_smoke.count_tokens_preflight(client, "sk-test", _sniff_registry())
+    async with mock_anthropic(handler) as client:
+        n = await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
 
     assert n == 1234
     assert str(seen["req"].url) == brain.COUNT_TOKENS_URL
@@ -545,40 +727,42 @@ async def test_count_tokens_preflight_posts_exact_payload_and_returns_count() ->
     assert count_body["tool_choice"]["disable_parallel_tool_use"] is True
 
 
-async def test_preflight_payload_matches_adapter_body_minus_max_tokens() -> None:
+async def test_preflight_payload_matches_adapter_body_minus_max_tokens(
+    mock_anthropic: MockAnthropic,
+) -> None:
     # Drift guard: the free count must price the exact bytes the paid call will send.
-    adapter_body = await _capture_adapter_body(_sniff_registry())
+    adapter_body = await _capture_adapter_body(mock_anthropic, _sniff_registry())
 
     seen: dict[str, Any] = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         seen["body"] = json.loads(request.content)
-        return httpx.Response(200, json={"input_tokens": 1})
+        return httpx2.Response(200, json={"input_tokens": 1})
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        await hunt_smoke.count_tokens_preflight(client, "sk-test", _sniff_registry())
+    async with mock_anthropic(handler) as client:
+        await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
 
     assert seen["body"] == {k: v for k, v in adapter_body.items() if k != "max_tokens"}
 
 
-async def test_count_tokens_preflight_stops_on_non_200() -> None:
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, text="bad schema — a paid call must not follow")
+async def test_count_tokens_preflight_stops_on_non_200(mock_anthropic: MockAnthropic) -> None:
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(400, text="bad schema: a paid call must not follow")
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with mock_anthropic(handler) as client:
         with pytest.raises(SystemExit):
-            await hunt_smoke.count_tokens_preflight(client, "sk-test", _sniff_registry())
+            await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
 
 
-async def test_capturing_transport_tees_only_messages_responses(tmp_path: Path) -> None:
+async def test_capturing_transport_tees_only_messages_responses(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
     raw = FIXTURE.read_bytes()
-    inner = httpx.MockTransport(lambda _r: httpx.Response(200, content=raw))
+    inner = httpx2.MockTransport(lambda _r: httpx2.Response(200, content=raw))
     tee = hunt_smoke.CapturingTransport(inner, brain.MESSAGES_URL)
     reg = _sniff_registry()
-    async with httpx.AsyncClient(transport=tee) as client:
-        brain_for = brain.adapter_brain_for(
-            client=client, api_key="sk-test", model=brain.SMOKE_MODEL, registry=reg
-        )
+    async with mock_anthropic(tee) as client:
+        brain_for = brain.adapter_brain_for(client=client, model=brain.SMOKE_MODEL, registry=reg)
         conn = await db.connect(tmp_path / "rex.db")
         try:
             await run_hunt(

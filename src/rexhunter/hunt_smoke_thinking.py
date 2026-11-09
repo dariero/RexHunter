@@ -26,7 +26,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import httpx
+import anthropic
+import httpx2
 
 from rexhunter import brain, cost, db, stub
 from rexhunter.hunt_smoke import CapturingTransport, write_fixtures
@@ -62,21 +63,20 @@ def _hunt_body(registry: ToolRegistry, *, territory: str = TERRITORY) -> dict[st
 
 
 async def count_tokens_preflight(
-    client: httpx.AsyncClient, api_key: str, registry: ToolRegistry, *, territory: str = TERRITORY
+    client: anthropic.AsyncAnthropic, registry: ToolRegistry, *, territory: str = TERRITORY
 ) -> int:
     """FREE pre-flight: count input tokens for the EXACT thinking-on payload. A non-200 STOPS before
     any paid call — auth / egress / a thinking param count_tokens rejects surfaces here for $0."""
     body = _hunt_body(registry, territory=territory)
     count_body: dict[str, Any] = {k: v for k, v in body.items() if k != "max_tokens"}
-    resp = await client.post(
-        brain.COUNT_TOKENS_URL, headers=brain.request_headers(api_key), json=count_body
-    )
-    if resp.status_code != 200:
+    try:
+        result = await client.messages.count_tokens(**count_body)
+    except anthropic.APIStatusError as exc:
         raise SystemExit(
-            f"[preflight http {resp.status_code}] count_tokens rejected the exact payload — "
-            f"fix before spending.\n{resp.text[:2000]}"
-        )
-    return int(resp.json()["input_tokens"])
+            f"[preflight http {exc.status_code}] count_tokens rejected the exact payload: "
+            f"fix before spending.\n{exc.response.text[:2000]}"
+        ) from exc
+    return result.input_tokens
 
 
 def _report_findings(captured: list[bytes]) -> None:
@@ -105,7 +105,7 @@ def _report_findings(captured: list[bytes]) -> None:
 async def run_live_hunt(
     api_key: str,
     *,
-    inner: httpx.AsyncBaseTransport | None = None,
+    inner: httpx2.AsyncBaseTransport | None = None,
     fixture_dir: Path = FIXTURE_DIR,
 ) -> dict[str, Any]:
     """Free pre-flight → one capped STREAMING hunt on the teed client → fixtures + report.
@@ -115,13 +115,12 @@ async def run_live_hunt(
     live `AsyncHTTPTransport`; the paid path leaves both at their defaults.
     """
     registry = stub.build_registry()
-    tee = CapturingTransport(inner or httpx.AsyncHTTPTransport(), brain.MESSAGES_URL)
-    async with httpx.AsyncClient(transport=tee, timeout=180.0) as client:
-        n_in = await count_tokens_preflight(client, api_key, registry)
+    tee = CapturingTransport(inner or httpx2.AsyncHTTPTransport(), brain.MESSAGES_URL)
+    async with brain.anthropic_client(api_key, transport=tee, timeout=180.0) as client:
+        n_in = await count_tokens_preflight(client, registry)
         print(f"[preflight] count_tokens OK — input_tokens={n_in}")
         brain_for = brain.adapter_brain_for(
             client=client,
-            api_key=api_key,
             model=brain.SMOKE_MODEL,
             registry=registry,
             max_tokens=HUNT_MAX_TOKENS,
@@ -174,8 +173,8 @@ def main() -> None:
 
     async def _go() -> None:
         if "--count-only" in sys.argv:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                n = await count_tokens_preflight(client, api_key, stub.build_registry())
+            async with brain.anthropic_client(api_key, timeout=120.0) as client:
+                n = await count_tokens_preflight(client, stub.build_registry())
             print(f"[count-only] input_tokens={n} — validated, NO paid call made.")
             return
         if os.environ.get("REXHUNTER_BRAIN") != "live":

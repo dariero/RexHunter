@@ -1,10 +1,11 @@
 """P5 · Unit 2a — the provider adapter (offline half).
 
-The adapter (`brain.py`: `adapter_brain_for`) is a provider-agnostic `Brain` over httpx: it
-builds an Anthropic Messages-API request, POSTs it through an INJECTED transport, and feeds the
-raw response bytes straight into `parse_decision` (one boundary, invariant 3). Every test here
-injects `httpx.MockTransport`, so nothing touches the network and nothing spends — this unit is
-the offline half; the paid smoke call is Unit 2b.
+The adapter (`brain.py`: `adapter_brain_for`) is a provider-agnostic `Brain` over the Anthropic SDK
+in raw mode (W2.0; plain httpx before): it builds an Anthropic Messages-API request, sends it
+through an INJECTED client, and feeds the raw response bytes straight into `parse_decision` (one
+boundary, invariant 3). Every test injects an httpx2 `MockTransport` through the `mock_anthropic`
+fixture, so nothing touches the network and nothing spends: this unit is the offline half; the paid
+smoke call is Unit 2b.
 
 Coverage maps to the unit's contract:
   - the brain wraps `parse_decision` over the injected transport (tool_use → ToolCallDecision,
@@ -13,21 +14,35 @@ Coverage maps to the unit's contract:
     `@rex_tool` signatures (D1), with the right headers + request body;
   - the two branches the lenient scan opened: >1 tool_use block → reject; 0 actionable → reject;
   - sibling-block tolerance: a `thinking` block alongside a valid `tool_use` parses cleanly;
-  - the module imports httpx and no vendor SDK (offline, grep-proof).
+  - the loop imports no vendor SDK, and the adapter is built on `anthropic.AsyncAnthropic`;
+  - the wire stays pinned against the SDK's environment overrides (W2.0).
 """
 
 import json
+import typing
+from collections.abc import Callable
 from pathlib import Path
 
-import httpx
+import anthropic
+import httpx2
 import pytest
 
-from rexhunter.brain import SMOKE_MODEL, adapter_brain_for, build_tools, parse_decision
+from rexhunter import hunt_smoke
+from rexhunter.brain import (
+    MESSAGES_URL,
+    SMOKE_MODEL,
+    adapter_brain_for,
+    build_tools,
+    parse_decision,
+)
 from rexhunter.events import BrainParseError
 from rexhunter.loop import HuntComplete, NeedsHelp, ToolCallDecision
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
+
+MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
+Handler = Callable[[httpx2.Request], httpx2.Response]
 
 
 async def _drop(_text: str) -> None:
@@ -59,50 +74,54 @@ def _provider_response(content: list[dict[str, object]]) -> bytes:
     ).encode()
 
 
-def _canned(handler_response: bytes) -> httpx.MockTransport:
-    """A MockTransport that returns the same canned response to any request (zero network)."""
+def _canned(handler_response: bytes) -> Handler:
+    """A handler that returns the same canned response to any request (zero network)."""
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=handler_response)
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=handler_response)
 
-    return httpx.MockTransport(handler)
+    return handler
 
 
-async def _drive(transport: httpx.MockTransport, registry: ToolRegistry) -> object:
+async def _drive(mock_anthropic: MockAnthropic, handler: Handler, registry: ToolRegistry) -> object:
     """Build the adapter over an injected transport, drive one brain turn, return its Decision."""
-    async with httpx.AsyncClient(transport=transport) as client:
-        brain_for = adapter_brain_for(
-            client=client, api_key="sk-test", model=SMOKE_MODEL, registry=registry
-        )
+    async with mock_anthropic(handler) as client:
+        brain_for = adapter_brain_for(client=client, model=SMOKE_MODEL, registry=registry)
         return await brain_for("acme")([], _drop)
 
 
 # ── the brain wraps parse_decision over the injected transport ────────────────
 
 
-async def test_brain_wraps_parse_decision_into_a_toolcall_decision() -> None:
+async def test_brain_wraps_parse_decision_into_a_toolcall_decision(
+    mock_anthropic: MockAnthropic,
+) -> None:
     raw = _provider_response(
         [{"type": "tool_use", "id": "toolu_01ABC", "name": "sniff", "input": {"prey": "acme"}}]
     )
-    decision = await _drive(_canned(raw), _sniff_registry())
+    decision = await _drive(mock_anthropic, _canned(raw), _sniff_registry())
     assert isinstance(decision, ToolCallDecision)
     assert decision.tool == "sniff"
     assert decision.args == {"prey": "acme"}
     assert decision.tool_use_id == "toolu_01ABC"  # the provider's correlation key survives
 
 
-async def test_brain_returns_hunt_complete_for_the_terminal_tool() -> None:
+async def test_brain_returns_hunt_complete_for_the_terminal_tool(
+    mock_anthropic: MockAnthropic,
+) -> None:
     raw = _provider_response(
         [{"type": "tool_use", "id": "t", "name": "hunt_complete", "input": {"catch": ["p:acme"]}}]
     )
-    decision = await _drive(_canned(raw), _sniff_registry())
+    decision = await _drive(mock_anthropic, _canned(raw), _sniff_registry())
     assert isinstance(decision, HuntComplete)
     assert decision.catch == ["p:acme"]
 
 
-async def test_brain_returns_needs_help_for_the_terminal_tool() -> None:
+async def test_brain_returns_needs_help_for_the_terminal_tool(
+    mock_anthropic: MockAnthropic,
+) -> None:
     raw = _provider_response([{"type": "tool_use", "id": "t", "name": "needs_help", "input": {}}])
-    decision = await _drive(_canned(raw), _sniff_registry())
+    decision = await _drive(mock_anthropic, _canned(raw), _sniff_registry())
     assert isinstance(decision, NeedsHelp)
 
 
@@ -121,22 +140,20 @@ def test_build_tools_presents_sniff_and_both_terminal_tools() -> None:
     assert "catch" in by_name["hunt_complete"]["input_schema"]["properties"]  # from HuntComplete
 
 
-async def test_adapter_sends_anthropic_headers_and_body() -> None:
-    captured: dict[str, httpx.Request] = {}
+async def test_adapter_sends_anthropic_headers_and_body(mock_anthropic: MockAnthropic) -> None:
+    captured: dict[str, httpx2.Request] = {}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         captured["req"] = request
-        return httpx.Response(
+        return httpx2.Response(
             200,
             content=_provider_response(
                 [{"type": "tool_use", "id": "t", "name": "hunt_complete", "input": {"catch": []}}]
             ),
         )
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        brain_for = adapter_brain_for(
-            client=client, api_key="sk-test", model=SMOKE_MODEL, registry=_sniff_registry()
-        )
+    async with mock_anthropic(handler) as client:
+        brain_for = adapter_brain_for(client=client, model=SMOKE_MODEL, registry=_sniff_registry())
         await brain_for("acme")([], _drop)
 
     req = captured["req"]
@@ -186,11 +203,69 @@ def test_thinking_sibling_alongside_a_tool_use_parses_cleanly() -> None:
     assert decision.tool_use_id == "toolu_x"
 
 
-# ── offline / no vendor SDK (grep-proof) ─────────────────────────────────────
+# ── the vendor SDK lives in the adapter only (W2.0 D1, D1a) ───────────────────
 
 
-def test_brain_module_uses_httpx_and_imports_no_vendor_sdk() -> None:
-    src = (Path(__file__).parents[1] / "src" / "rexhunter" / "brain.py").read_text()
-    assert "import httpx" in src
+def test_loop_imports_no_vendor_sdk() -> None:
+    src = (Path(__file__).parents[1] / "src" / "rexhunter" / "loop.py").read_text()
     assert "import anthropic" not in src
     assert "from anthropic" not in src
+
+
+def test_the_adapter_is_built_on_the_anthropic_sdk() -> None:
+    # Pins the seam's DECLARED type (the raw-mode behaviour is the replay tests' job).
+    assert typing.get_type_hints(adapter_brain_for)["client"] is anthropic.AsyncAnthropic
+
+
+def test_only_the_factory_builds_an_sdk_client() -> None:
+    # Every SDK client in src/ comes from brain.anthropic_client: a bare AsyncAnthropic elsewhere
+    # would fall back to the SDK defaults (2 retries, Bearer auth, another API version, redirects).
+    src = Path(__file__).parents[1] / "src" / "rexhunter"
+    builders = ("AsyncAnthropic(", "DefaultAsyncHttpxClient(")
+    hits = [
+        path.name
+        for path in sorted(src.rglob("*.py"))
+        for line in path.read_text().splitlines()
+        if any(b in line for b in builders)
+    ]
+    assert hits == ["brain.py", "brain.py"]  # the factory's two constructor calls, nothing else
+
+
+# ── the wire stays pinned against the SDK's environment overrides (W2.0) ─────
+
+
+@pytest.mark.parametrize("beta_header", ["anthropic-beta", "Anthropic-Beta"])
+async def test_the_wire_is_pinned_against_the_sdks_environment_overrides(
+    beta_header: str, monkeypatch: pytest.MonkeyPatch, mock_anthropic: MockAnthropic
+) -> None:
+    # The SDK reads these variables at construction; the factory must neutralise each one, so
+    # the wire is the one every fixture was recorded under, on the adapter AND the pre-flight.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env-must-not-be-sent")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://elsewhere.invalid")
+    monkeypatch.setenv(
+        "ANTHROPIC_CUSTOM_HEADERS", f"{beta_header}: interleaved-thinking-2025-05-14"
+    )
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.path.endswith("/count_tokens"):
+            return httpx2.Response(200, json={"input_tokens": 1})
+        return httpx2.Response(
+            200,
+            content=_provider_response(
+                [{"type": "tool_use", "id": "t", "name": "needs_help", "input": {}}]
+            ),
+        )
+
+    async with mock_anthropic(handler) as client:
+        brain_for = adapter_brain_for(client=client, model=SMOKE_MODEL, registry=_sniff_registry())
+        await brain_for("acme")([], _drop)
+        await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
+
+    assert [str(r.url) for r in seen] == [MESSAGES_URL, f"{MESSAGES_URL}/count_tokens"]
+    for req in seen:
+        assert req.headers["x-api-key"] == "sk-test"  # the explicit key, never the env's
+        assert req.headers["anthropic-version"] == "2023-06-01"  # pinned, not the SDK default
+        assert "authorization" not in req.headers  # no Bearer auth
+        assert "anthropic-beta" not in req.headers  # ANTHROPIC_CUSTOM_HEADERS cannot add betas
