@@ -56,8 +56,11 @@ the ADR.
   `with_streaming_response`, `max_retries=0` – the loop owns retries); our SSE assembler and
   `parse_decision` still see the provider's raw bytes. The wire stays pinned to what the
   fixtures were recorded under (`x-api-key`, `anthropic-version: 2023-06-01`, explicit
-  `base_url`) until W2.1 proves a bump. Native tool calling, constrained decoding where
-  available, `ThinkingDelta` event relay, per-event cost accounting.
+  `base_url`) until W2.1 proves a bump. `brain.anthropic_client` is the one client factory: no
+  redirects (the SDK default follows them cross-origin with the key), `Authorization` and
+  `anthropic-beta` omitted, TLS verified against certifi – the pre-W2.0 trust store, not the
+  system Keychain. Native tool calling, constrained decoding where available, `ThinkingDelta`
+  event relay, per-event cost accounting.
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
   `pytest-anyio` dep). Pins + config in `pyproject.toml`.
@@ -218,6 +221,17 @@ HP/stamina mechanics" is CLOSED.** *Then next: Step 7 — the aesthetic skin (pi
 keyframes on `data-rex`, day/night scene, damage/feast cues, StaticFiles split — still no build
 step); then `P5` extraction/strict mode + the live ATS (Greenhouse/Lever) adapter; then eval
 tiers 2–3.*
+**▶ W2.0 · Brain adapter on the Anthropic SDK – ✅ done (`2755e7f`→`7c4d883`, 2026-11-09).** The
+adapter's transport moved from raw httpx to `anthropic` 2.6.0 in raw mode (D9a): `with_raw_response`
+/ `with_streaming_response` hand the provider's own bytes to the hand-rolled `StreamAssembler` and
+`parse_decision`, so every recorded fixture replays byte for byte (invariants 3 and 6 unchanged). No
+model change: `claude-sonnet-5`, thinking defaults as before. `brain.anthropic_client` is the one
+client factory (`max_retries=0` – the loop owns retries; wire pinned to `x-api-key` +
+`anthropic-version: 2023-06-01` with an explicit `base_url`; no redirects; certifi trust store). SDK
+and transport errors reach the loop as the provider-neutral `BrainCallError` (D1a); `loop.py`
+imports no SDK and no httpx. Replay-gated offline, no paid call; 261 tests pass at `7c4d883`.
+*Next: W2.1 – among its items, the API-version and Bearer-auth bump behind a free `count_tokens`
+check.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
