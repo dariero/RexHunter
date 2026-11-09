@@ -9,7 +9,8 @@ retro-game frontend is a **pure projection** of that log, streamed over SSE.
 The build deliberately **hand-rolls** the agent loop, tool contract, durable-pause
 machinery, and trajectory store – building those primitives *is* the learning objective.
 Boring technology everywhere else. A dependency must replace >100 lines we'd otherwise
-understand, or it stays out.
+understand, or it stays out – one logged exception: the Anthropic SDK (W2.0 decision D1,
+ADR header note).
 
 **North Star:** `rexhunter-adr.md` – the full architecture. **Read it before any
 architecture decision.** This file is the day-to-day contract; the ADR is the law. If they
@@ -50,9 +51,13 @@ the ADR.
   typed signature (one definition = schema + validator + handler). **No agent framework.**
 - **Transport:** SSE downstream (`EventSource`, `Last-Event-ID` resume); plain HTTP POST
   upstream for verdicts/config.
-- **LLM (`P5`):** provider-agnostic `brain()` – loop imports no vendor SDK. Native tool
-  calling, constrained decoding where available, `ThinkingDelta` event relay, per-event
-  cost accounting.
+- **LLM (`P5`):** provider-agnostic `brain()` – loop imports no vendor SDK. The adapter
+  (`brain.py`) runs on the Anthropic SDK in raw mode (`with_raw_response` /
+  `with_streaming_response`, `max_retries=0` – the loop owns retries); our SSE assembler and
+  `parse_decision` still see the provider's raw bytes. The wire stays pinned to what the
+  fixtures were recorded under (`x-api-key`, `anthropic-version: 2023-06-01`, explicit
+  `base_url`) until W2.1 proves a bump. Native tool calling, constrained decoding where
+  available, `ThinkingDelta` event relay, per-event cost accounting.
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
   `pytest-anyio` dep). Pins + config in `pyproject.toml`.
@@ -113,9 +118,11 @@ iteration → typed outcome), replay-gated. *2c.1 (offline, no-spend) — ✅ do
 projects the trajectory log into an Anthropic `messages` array (inv 2, `project_messages`), threads a
 `HUNT_SYSTEM_PROMPT`, folds per-call usage into a running cost from `UsageEvent`s (inv 5,
 `cost.fold_cost`) with a `COST_CEILING_USD` breaker, `classify` learns httpx transport/status failures
-(429/5xx/timeouts → retryable), and `select_brain_for`/`REXHUNTER_BRAIN` gate the spender surface
-(stub default, opt-in `live`). The live loop path sends `thinking: {type: "disabled"}` +
-`tool_choice: {disable_parallel_tool_use: true}` — bare one-`tool_use` replay turns until thinking
+(429/5xx/timeouts → retryable; since W2.0 the adapter maps SDK/transport errors to a provider-neutral
+`BrainCallError` that `classify` honours, and loop.py imports no httpx), and
+`select_brain_for`/`REXHUNTER_BRAIN` gate the spender surface (stub default, opt-in `live`). The live
+loop path sends `thinking: {type: "disabled"}` + `tool_choice: {disable_parallel_tool_use: true}` –
+bare one-`tool_use` replay turns until thinking
 capture lands in Unit 3. *2c.2 (gated live) — ✅ done:* one budget-capped hunt (`rexhunter.hunt_smoke`,
 `COST_CEILING_USD=0.05`, `MAX_ITERATIONS=3`) on `SMOKE_MODEL` against the mock-gym board — 2 brain
 calls, `needs_help`, $0.0149. **Call two fired: the reconstructed assistant `tool_use` + user
@@ -147,7 +154,9 @@ end-to-end through the real uvicorn server (curl `/events` streamed a full hunt'
 **▶ `P5` · Unit 3 — the `ThinkingDelta` relay — ✅ done.** Thinking is back on and Rex's reasoning
 streams through the P3 hub. *`3a` (streaming transport, offline) — ✅ done (`a3e05b4`):* `brain.py`
 `iter_sse_events` + `StreamAssembler` (90 lines, under the frugality threshold — no vendor SDK; invs
-3/6 need the raw signed-block bytes the SDK's typed-delta layer hides) fold a Sonnet 5 SSE response
+3/6 need the raw signed-block bytes the SDK's typed-delta layer hides; W2.0 kept them hand-rolled and
+put only the transport on the SDK, raw mode – the D9 probe confirmed the typed layer re-serialises the
+signed block, key order `signature,thinking,type`) fold a Sonnet 5 SSE response
 into the SAME `_ProviderResponse` shape `parse_decision` consumes; display streams, execution waits
 (tool_use `input` finalized only at `content_block_stop`). *`3b` (write-ahead relay, offline) — ✅ done
 (`2c37708`):* `ThinkingDelta` joins the union (relay-only, skipped by `project_messages`); `Brain` gains
@@ -250,8 +259,9 @@ tiers 2–3.*
   malformed→`ErrorEvent` path (invariant 6), `tool_use_id` correlation on
   `ToolCallEvent`/`ToolResultEvent`; offline, no-spend — the whole of DoD #5, gate
   `tests/test_stage5_gate.py`. *Unit 2a (provider adapter, offline half) — active:*
-  `adapter_brain_for` over **httpx** wraps `parse_decision` around the Anthropic Messages API,
-  presents `sniff`/`hunt_complete`/`needs_help` as derived tool schemas (D1), rejects multiple
+  `adapter_brain_for` over **httpx** (since W2.0: over the Anthropic SDK in raw mode) wraps
+  `parse_decision` around the Anthropic Messages API, presents
+  `sniff`/`hunt_complete`/`needs_help` as derived tool schemas (D1), rejects multiple
   `tool_use` blocks; injected transport, **no live call** (contract gate
   `tests/test_brain_adapter.py`). *Unit 2b (the first paid call) — ✅ done:* one live smoke on
   `claude-sonnet-5` through the 2a adapter (free `count_tokens` pre-flight → one `messages` call →
@@ -260,8 +270,9 @@ tiers 2–3.*
   block); Sonnet 5 guards (no sampling params / `thinking` / prefill) + `title`-stripped schemas;
   hard one-call guard; `smoke.py` entrypoint. Offline gates `tests/test_smoke_offline.py` +
   `tests/test_smoke_replay.py`. *Unit 3 (streaming `ThinkingDelta` relay + signed-block replay) — ✅
-  done, replay-gated (`c70f2f7`):* hand-rolled SSE `StreamAssembler` (no vendor SDK), the write-ahead
-  `ThinkingDelta` relay through the P3 hub, and `project_messages` echoing the verbatim signed thinking
+  done, replay-gated (`c70f2f7`):* hand-rolled SSE `StreamAssembler` (no vendor SDK; since W2.0 it
+  reads the SDK's raw stream, still hand-rolled), the write-ahead `ThinkingDelta` relay through the
+  P3 hub, and `project_messages` echoing the verbatim signed thinking
   block; one gated live hunt (`claude-sonnet-5`, thinking on, $0.0187) proved call two accepted with
   the reconstructed signed-block turn, captured + offline-replayed (`tests/test_thinking_hunt_replay.py`).
   *Later units:* extraction/strict mode, the live ATS (Greenhouse/Lever) adapter.

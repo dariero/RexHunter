@@ -4,6 +4,8 @@
 **Scope:** Local-first autonomous job-hunting agent ('terrarium' model) – background daemon, event-sourced state, retro-game frontend projection, human-in-the-loop verdicts.
 **Build philosophy:** Hand-rolled primitives over frameworks where the primitive *is* the learning objective. Boring technology everywhere else. Every dependency must replace more than ~100 lines we would otherwise understand.
 
+> **Logged exception (W2.0): the Anthropic SDK.** `anthropic` is the brain adapter's HTTP client although it does **not** meet the ~100-line rule: in raw mode it takes over only the endpoint, the auth headers and the status-to-exception mapping – about 10 lines of `brain.py` – while the SSE assembler and `parse_decision` stay hand-rolled (Pillar 5). The reason is W2.0 decision of record **D1** (Darie, 9 Nov 2026: the brain adapter uses the Anthropic SDK – not the Unit 2a tool-schema "D1"), not this rule. The rule stands, unchanged, for every other dependency.
+
 ---
 
 ## Decision summary
@@ -250,7 +252,7 @@ The reason-coded RELEASE verdict is a quiet second payoff: every rejection is a 
 
 ### The Architecture (The What)
 
-`brain()` sits behind a small provider-agnostic protocol; the loop never imports a vendor SDK directly. Per call:
+`brain()` sits behind a small provider-agnostic protocol; the loop never imports a vendor SDK. The adapter (`brain.py`) is built on the Anthropic SDK used in **raw mode** (`with_raw_response` / `with_streaming_response`): the SDK owns the endpoint, the auth headers and the status-to-exception mapping, while the provider's raw bytes still reach the hand-rolled SSE assembler and `parse_decision` unchanged – point 3's single boundary, and invariants 3 and 6, are untouched (the SDK's typed layer is deliberately not used: it re-serialises the signed thinking block, which the verbatim echo forbids). SDK retries are off (`max_retries=0`): the loop owns every retry and logs each attempt as its own `ErrorEvent`, and the adapter translates SDK and transport errors into one provider-neutral error the loop classifies. Per call:
 
 1. **Tools** are presented as JSON schemas *generated* from `@rex_tool` signatures (`model_json_schema()`) – never hand-written. The schema the model sees, the validator the arguments pass, and the executing function are one definition.
 2. **Native tool calling**: the provider returns a typed `tool_use` block (name, structured arguments, `tool_use_id`). No text parsing exists anywhere in the path. The `tool_use_id` is stored on both `ToolCallEvent` and `ToolResultEvent` – the provider's own correlation key doubles as the log's pairing key.
