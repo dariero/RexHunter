@@ -212,6 +212,14 @@ def test_loop_imports_no_vendor_sdk() -> None:
     assert "from anthropic" not in src
 
 
+def test_loop_imports_no_transport_library() -> None:
+    # W2.0 D1a: transport failures reach the loop only as BrainCallError, so classify needs no
+    # transport types and loop.py imports neither httpx nor httpx2.
+    src = (Path(__file__).parents[1] / "src" / "rexhunter" / "loop.py").read_text()
+    assert "import httpx" not in src  # also matches `import httpx2`
+    assert "from httpx" not in src
+
+
 def test_the_adapter_is_built_on_the_anthropic_sdk() -> None:
     # Pins the seam's DECLARED type (the raw-mode behaviour is the replay tests' job).
     assert typing.get_type_hints(adapter_brain_for)["client"] is anthropic.AsyncAnthropic

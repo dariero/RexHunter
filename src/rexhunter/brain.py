@@ -540,7 +540,7 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     return json.dumps(assembler.assembled()).encode()
 
 
-def _brain_error(
+def brain_call_error(
     exc: anthropic.APIStatusError | anthropic.APIConnectionError | httpx2.TransportError,
 ) -> BrainCallError:
     """Translate an SDK or transport failure into the loop's provider-neutral BrainCallError (W2.0
@@ -562,7 +562,7 @@ def _brain_error(
     return BrainCallError(repr(exc.__cause__ or exc), retryable=True)
 
 
-# The failures `_brain_error` translates; anything else (a BrainParseError, a bug) propagates as is.
+# The failures `brain_call_error` translates; anything else (a BrainParseError, a bug) propagates.
 _SDK_ERRORS = (anthropic.APIStatusError, anthropic.APIConnectionError, httpx2.TransportError)
 
 
@@ -641,10 +641,10 @@ def adapter_brain_for(
                     # Not the network: re-raise the real error for the <loop> backstop, as at HEAD
                     # (from None: the SDK's wrapper says nothing the cause does not).
                     raise (exc.__cause__ or exc) from None
-                raise _brain_error(exc) from exc
+                raise brain_call_error(exc) from exc
             except _SDK_ERRORS as exc:
                 # a failure while the body streams (a reset mid-frame) is a transport blip too
-                raise _brain_error(exc) from exc
+                raise brain_call_error(exc) from exc
             decision = parse_decision(raw)  # the one boundary (invariant 3)
             if stream and isinstance(decision, ToolCallDecision):
                 # Carry the turn's VERBATIM signed thinking block so the NEXT call's reconstructed

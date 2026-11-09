@@ -6,8 +6,9 @@ The adapter now DRIVES the loop. Five contracts, each provable offline:
      array (invariant 2, derived per call — not a second stored chat history); `tool_use_id`
      correlation survives the fold.
   2. System prompt — a stable `HUNT_SYSTEM_PROMPT` constant, threaded into the request.
-  3. Retryable HTTP classification — real httpx failures flow through the EXISTING `classify`
-     (429/5xx/timeouts/connect → retryable; 4xx / parse / validation → fatal).
+  3. Retryable HTTP classification: real SDK / transport failures, mapped by the adapter to
+     BrainCallError (W2.0), flow through the EXISTING `classify` (429/5xx/timeouts/connect →
+     retryable; 4xx / parse / validation → fatal).
   4. Cost-ceiling breaker — per-call usage folds into a running spend from `UsageEvent`s
      (invariant 5, no counter); crossing `COST_CEILING_USD` aborts before the next brain call.
      Proven by replaying the 2b golden fixture under a deliberately low ceiling.
@@ -25,7 +26,6 @@ from pathlib import Path
 from typing import Any
 
 import anthropic
-import httpx
 import httpx2
 import pytest
 from pydantic import ValidationError
@@ -181,25 +181,43 @@ async def test_adapter_sends_system_prompt_and_disables_thinking(
 # ── 3. Retryable HTTP classification (extend the taxonomy, don't fork it) ──────
 
 
-def _status_error(code: int) -> httpx.HTTPStatusError:
-    req = httpx.Request("POST", brain.MESSAGES_URL)
-    resp = httpx.Response(code, request=req)
-    return httpx.HTTPStatusError(f"http {code}", request=req, response=resp)
+# W2.0: the brain's transport failures reach the loop only as the adapter's BrainCallError, so
+# the taxonomy cases move onto the adapter's mapping, with the same cases and the same verdicts:
+# the SDK error (or bare transport error) -> brain.brain_call_error -> the loop's classify.
+
+_REQ = httpx2.Request("POST", brain.MESSAGES_URL)
 
 
-def test_classify_httpx_transport_errors_are_retryable() -> None:
-    req = httpx.Request("POST", brain.MESSAGES_URL)
-    assert classify(httpx.ConnectTimeout("slow", request=req)) is True
-    assert classify(httpx.ReadTimeout("slow", request=req)) is True
-    assert classify(httpx.ConnectError("refused", request=req)) is True
+def _sdk_status_error(code: int) -> anthropic.APIStatusError:
+    response = httpx2.Response(code, request=_REQ)
+    return anthropic.APIStatusError(f"http {code}", response=response, body=None)
 
 
-def test_classify_429_and_5xx_retryable_4xx_fatal() -> None:
-    assert classify(_status_error(429)) is True
-    assert classify(_status_error(503)) is True
-    assert classify(_status_error(500)) is True
-    assert classify(_status_error(400)) is False
-    assert classify(_status_error(404)) is False
+def _sdk_connection_error(cause: httpx2.TransportError) -> anthropic.APIConnectionError:
+    """The SDK's wrapper for a failure before the response, as `_attempt_request` builds it."""
+    if isinstance(cause, httpx2.TimeoutException):
+        wrapped: anthropic.APIConnectionError = anthropic.APITimeoutError(request=_REQ)
+    else:
+        wrapped = anthropic.APIConnectionError(request=_REQ)
+    wrapped.__cause__ = cause
+    return wrapped
+
+
+def test_the_adapter_maps_transport_errors_to_retryable() -> None:
+    connect_timeout = _sdk_connection_error(httpx2.ConnectTimeout("slow", request=_REQ))
+    read_timeout = _sdk_connection_error(httpx2.ReadTimeout("slow", request=_REQ))
+    connect_error = _sdk_connection_error(httpx2.ConnectError("refused", request=_REQ))
+    assert classify(brain.brain_call_error(connect_timeout)) is True
+    assert classify(brain.brain_call_error(read_timeout)) is True
+    assert classify(brain.brain_call_error(connect_error)) is True
+
+
+def test_the_adapter_maps_429_and_5xx_to_retryable_and_4xx_to_fatal() -> None:
+    assert classify(brain.brain_call_error(_sdk_status_error(429))) is True
+    assert classify(brain.brain_call_error(_sdk_status_error(503))) is True
+    assert classify(brain.brain_call_error(_sdk_status_error(500))) is True
+    assert classify(brain.brain_call_error(_sdk_status_error(400))) is False
+    assert classify(brain.brain_call_error(_sdk_status_error(404))) is False
 
 
 def test_classify_parse_and_validation_errors_are_fatal() -> None:

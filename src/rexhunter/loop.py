@@ -17,7 +17,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any, assert_never
 
 import aiosqlite
-import httpx
 from pydantic import BaseModel, ValidationError
 
 from rexhunter import cost, db, events, verdicts
@@ -63,23 +62,18 @@ def classify(exc: BaseException) -> bool:
     """The retryable-vs-fatal taxonomy. ``True`` = retryable (re-try within budget).
 
     Retryable: a timeout (the tool may simply have been slow this once), any RetryableToolError,
-    a BrainCallError the adapter marked retryable (W2.0 D1a, the provider-neutral brain error:
-    its `retryable` flag IS the verdict), and, since `P5` Unit 2c, transient httpx failures from
-    the brain's HTTP call: any transport error (connect/read/write/pool timeouts, connection
-    resets) and a 429 / 5xx HTTP status.
+    and a BrainCallError the adapter marked retryable. Since W2.0 (D1a) the brain's transport
+    failures reach the loop ONLY as that provider-neutral BrainCallError, whose `retryable` flag
+    IS the verdict: the adapter (`brain.brain_call_error`) applies the taxonomy `P5` Unit 2c
+    taught this function (a transport error, a 429 or a 5xx is transient; any other status is
+    fatal), so the loop imports no vendor SDK and no transport library.
     Fatal: everything else - a 4xx client error, a BrainParseError / ValidationError (bad bytes
     never become good on retry), a bug in the tool, an unknown-tool lookup. Retrying a fatal error
-    only burns budget without changing the outcome. httpx is the transport, not a vendor SDK, so
-    the loop knowing its exception shapes does not couple it to a provider (ADR §What point 1).
+    only burns budget without changing the outcome.
     """
     if isinstance(exc, BrainCallError):
         return exc.retryable
-    if isinstance(exc, TimeoutError | RetryableToolError | httpx.TransportError):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        code = exc.response.status_code
-        return code == 429 or 500 <= code < 600
-    return False
+    return isinstance(exc, TimeoutError | RetryableToolError)
 
 
 def _to_bytes(result: object) -> bytes:
