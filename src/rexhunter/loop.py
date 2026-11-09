@@ -38,17 +38,42 @@ class RetryableToolError(Exception):
     """
 
 
+class BrainCallError(Exception):
+    """A brain call failed at the provider/transport layer: the ONE provider-neutral shape (W2.0
+    D1a) the adapter translates its SDK / transport errors into, so the loop never imports a vendor
+    SDK. `retryable` is the adapter's verdict (a transport blip, a 429 or a 5xx is transient);
+    `status` is the HTTP status (None for a transport failure); `raw_response` is the provider's
+    error body (invariant 6), or None when no response arrived."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool,
+        status: int | None = None,
+        raw_response: bytes | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status = status
+        self.raw_response = raw_response
+
+
 def classify(exc: BaseException) -> bool:
     """The retryable-vs-fatal taxonomy. ``True`` = retryable (re-try within budget).
 
     Retryable: a timeout (the tool may simply have been slow this once), any RetryableToolError,
-    and — since `P5` Unit 2c — transient httpx failures from the brain's HTTP call: any transport
-    error (connect/read/write/pool timeouts, connection resets) and a 429 / 5xx HTTP status.
+    a BrainCallError the adapter marked retryable (W2.0 D1a, the provider-neutral brain error:
+    its `retryable` flag IS the verdict), and, since `P5` Unit 2c, transient httpx failures from
+    the brain's HTTP call: any transport error (connect/read/write/pool timeouts, connection
+    resets) and a 429 / 5xx HTTP status.
     Fatal: everything else - a 4xx client error, a BrainParseError / ValidationError (bad bytes
     never become good on retry), a bug in the tool, an unknown-tool lookup. Retrying a fatal error
     only burns budget without changing the outcome. httpx is the transport, not a vendor SDK, so
     the loop knowing its exception shapes does not couple it to a provider (ADR §What point 1).
     """
+    if isinstance(exc, BrainCallError):
+        return exc.retryable
     if isinstance(exc, TimeoutError | RetryableToolError | httpx.TransportError):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
@@ -255,12 +280,14 @@ async def _call_brain(
 ) -> Decision | None:
     """One brain call, retrying the brain's HTTP transport failures; ``None`` = abort.
 
-    Owns exactly the errors this unit adds: httpx transport + status failures. A transient blip
-    (`classify` True: timeout / 429 / 5xx) is re-tried within budget, each attempt appending its own
-    ErrorEvent(tool="<brain>") in the owning task (single writer, invariant 7); a fatal one (a 4xx)
-    logs once and aborts. Everything else propagates unchanged: BrainParseError to run_hunt's clause
-    (invariant 6, raw bytes preserved) and any genuinely unforeseen exception to run_hunt's `<loop>`
-    backstop (DoD #2) - `_call_brain` narrows to httpx so it never swallows a brain bug.
+    Owns exactly one error shape: the provider-neutral BrainCallError (W2.0 D1a), which the adapter
+    raises for every transport + status failure, so the loop knows no vendor or transport types. A
+    transient blip (`classify` True: timeout / 429 / 5xx) is re-tried within budget, each attempt
+    appending its own ErrorEvent(tool="<brain>") in the owning task (single writer, invariant 7); a
+    fatal one (a 4xx) logs once and aborts. Everything else propagates unchanged: BrainParseError
+    to run_hunt's clause (invariant 6, raw bytes preserved) and any genuinely unforeseen exception
+    to run_hunt's `<loop>` backstop (DoD #2) - `_call_brain` narrows to BrainCallError so it never
+    swallows a brain bug.
     """
 
     async def sink(text: str) -> None:
@@ -273,9 +300,9 @@ async def _call_brain(
     for attempt in range(attempts):
         try:
             return await brain(context, sink)
-        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+        except BrainCallError as exc:
             retryable = classify(exc)
-            raw_response = exc.response.content if isinstance(exc, httpx.HTTPStatusError) else None
+            raw_response = exc.raw_response  # the provider's error body (inv 6), None if none came
             await db.append_event(
                 conn,
                 run_id,

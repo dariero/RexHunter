@@ -41,6 +41,7 @@ from rexhunter.events import (
 )
 from rexhunter.loop import (
     Brain,
+    BrainCallError,
     Context,
     Decision,
     HuntComplete,
@@ -482,6 +483,22 @@ async def _drive_stream(response: httpx.Response, sink: ThinkingSink) -> bytes:
     return json.dumps(assembler.assembled()).encode()
 
 
+def _brain_error(exc: httpx.HTTPStatusError | httpx.TransportError) -> BrainCallError:
+    """Translate a transport failure into the loop's provider-neutral BrainCallError (W2.0 D1a),
+    so the loop never sees a vendor or transport type. The verdict is the taxonomy the loop always
+    applied: any transport error (a timeout, a reset, also mid-stream) and a 429 / 5xx status are
+    transient; any other status is fatal. The error body rides along (invariant 6)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return BrainCallError(
+            repr(exc),
+            retryable=code == 429 or 500 <= code < 600,
+            status=code,
+            raw_response=exc.response.content,
+        )
+    return BrainCallError(repr(exc), retryable=True)
+
+
 def _extract_thinking_block(raw: bytes) -> bytes:
     """The turn's VERBATIM signed thinking block from an assembled response, for replay (inv 6):
     its raw JSON bytes, or b"" if the turn carried no thinking. `project_messages` echoes these
@@ -532,12 +549,21 @@ def adapter_brain_for(
                 tool_choice=HUNT_TOOL_CHOICE,
             )
             if not stream:
-                response = await client.post(MESSAGES_URL, headers=headers, json=body)
-                response.raise_for_status()  # non-2xx -> HTTPStatusError, classified by the loop
+                try:
+                    response = await client.post(MESSAGES_URL, headers=headers, json=body)
+                    response.raise_for_status()  # non-2xx -> HTTPStatusError -> BrainCallError
+                except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                    raise _brain_error(exc) from exc
                 return parse_decision(response.content)  # one boundary (invariant 3)
             body["stream"] = True
-            async with client.stream("POST", MESSAGES_URL, headers=headers, json=body) as response:
-                raw = await _drive_stream(response, sink)
+            try:
+                async with client.stream(
+                    "POST", MESSAGES_URL, headers=headers, json=body
+                ) as response:
+                    raw = await _drive_stream(response, sink)
+            except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                # a failure while the body streams (a reset mid-frame) is a transport blip too
+                raise _brain_error(exc) from exc
             decision = parse_decision(raw)  # the assembled stream crosses the one boundary (inv 3)
             if isinstance(decision, ToolCallDecision):
                 # Carry the turn's VERBATIM signed thinking block so the NEXT call's reconstructed

@@ -34,7 +34,7 @@ from rexhunter.events import (
     ToolResultEvent,
     UsageEvent,
 )
-from rexhunter.loop import classify, run_hunt
+from rexhunter.loop import BrainCallError, Context, Decision, ThinkingSink, classify, run_hunt
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
@@ -275,6 +275,103 @@ async def test_brain_4xx_is_fatal_without_retry(tmp_path: Path) -> None:
             assert row == ("aborted", "brain call failed")
         finally:
             await conn.close()
+
+
+# ── 3b. W2.0 D1a: the provider-neutral brain error (the loop imports no vendor SDK) ──
+
+
+def _raising_brain(exc: BaseException):
+    """A brain whose every call raises `exc`: no adapter, no transport, no spend."""
+
+    async def brain(_context: Context, _sink: ThinkingSink) -> Decision:
+        raise exc
+
+    return brain
+
+
+async def _hunt_errors(db_path: Path, brain_fn: Any) -> tuple[list[ErrorEvent], Any]:
+    conn = await db.connect(db_path)
+    try:
+        run_id = await run_hunt(
+            conn,
+            territory="mock-gym",
+            brain=brain_fn,
+            registry=_sniff_registry(),
+            retry_budget=2,  # 3 attempts total
+            max_iterations=10,
+            cost_ceiling_usd=1000.0,
+            tool_timeout_s=5.0,
+        )
+        errors = [e for e in await db.read_events(conn, run_id) if isinstance(e, ErrorEvent)]
+        async with conn.execute(
+            "SELECT outcome, abort_reason FROM runs WHERE id = ?", (run_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return errors, row
+    finally:
+        await conn.close()
+
+
+def test_classify_honours_the_brain_call_error_verdict() -> None:
+    assert classify(BrainCallError("blip", retryable=True)) is True
+    assert classify(BrainCallError("http 400", retryable=False, status=400)) is False
+
+
+async def test_retryable_brain_call_error_is_retried_within_budget(tmp_path: Path) -> None:
+    # The adapter's provider-neutral error: retried within budget, each attempt its own
+    # ErrorEvent(tool="<brain>") in the owning task (inv 7), the error body kept (inv 6).
+    err = BrainCallError(
+        "http 503", retryable=True, status=503, raw_response=b"upstream unavailable"
+    )
+    errors, row = await _hunt_errors(tmp_path / "rex.db", _raising_brain(err))
+    assert len(errors) == 3
+    assert all(e.tool == "<brain>" for e in errors)
+    assert [e.retryable for e in errors] == [True, True, True]
+    assert all(e.raw_response == b"upstream unavailable" for e in errors)
+    assert row == ("aborted", "brain call failed")
+
+
+async def test_fatal_brain_call_error_aborts_without_retry(tmp_path: Path) -> None:
+    err = BrainCallError("http 400", retryable=False, status=400, raw_response=b"bad request")
+    errors, row = await _hunt_errors(tmp_path / "rex.db", _raising_brain(err))
+    assert len(errors) == 1
+    assert errors[0].tool == "<brain>" and errors[0].retryable is False
+    assert errors[0].raw_response == b"bad request"
+    assert row == ("aborted", "brain call failed")
+
+
+class _ResetMidStream(httpx.AsyncByteStream):
+    """A 200 streaming body that yields its first frame, then the connection resets."""
+
+    async def __aiter__(self):  # type: ignore[override]
+        yield b'event: ping\ndata: {"type": "ping"}\n\n'
+        raise httpx.ReadError("connection reset mid-stream")
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def test_a_transport_error_mid_stream_is_retried_as_a_brain_error(tmp_path: Path) -> None:
+    # A failure DURING the streamed body (after the 200 arrived) is a transient transport blip,
+    # retried within budget like any other, never the `<loop>` backstop.
+    reg = _sniff_registry()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_ResetMidStream())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client,
+            api_key="sk-test",
+            model=brain.SMOKE_MODEL,
+            registry=reg,
+            thinking=brain.HUNT_THINKING,
+            stream=True,
+        )
+        errors, row = await _hunt_errors(tmp_path / "rex.db", brain_for("mock-gym"))
+    assert len(errors) == 3
+    assert all(e.tool == "<brain>" and e.retryable for e in errors)
+    assert row == ("aborted", "brain call failed")
 
 
 # ── 4. Cost-ceiling breaker (invariant 5 — folded from UsageEvents) ───────────
