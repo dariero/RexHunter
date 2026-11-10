@@ -356,3 +356,130 @@ async def test_the_wire_is_pinned_against_the_sdks_environment_overrides(
         assert req.headers["anthropic-version"] == "2023-06-01"  # pinned, not the SDK default
         assert "authorization" not in req.headers  # no Bearer auth
         assert "anthropic-beta" not in req.headers  # ANTHROPIC_CUSTOM_HEADERS cannot add betas
+
+
+@pytest.mark.parametrize(
+    ("custom_headers", "listed", "absent"),
+    [
+        ("x-extra: 1\nX-Two: 2", [("x-extra", "1"), ("X-Two", "2")], ["x-extra", "X-Two"]),
+        ("Content-Type: text/plain", [("Content-Type", "text/plain")], []),
+        ("X-Stainless-Raw-Response: stream", [("X-Stainless-Raw-Response", "stream")], []),
+        (
+            "x-api-key: sk-env\nanthropic-version: 2026-10-21",
+            [("x-api-key", "sk-env"), ("anthropic-version", "2026-10-21")],
+            [],
+        ),
+        (
+            "\N{IDEOGRAPHIC SPACE}x-api-key\N{NO-BREAK SPACE}: sk-env\n"
+            " anthropic-version\t: 2026-10-21",
+            [("x-api-key", "sk-env"), ("anthropic-version", "2026-10-21")],
+            [],
+        ),
+        (
+            "x-api-key: a\nX-Api-Key: sk-env\nx-api-key: b\n"
+            "anthropic-version: a\nAnthropic-Version: 2026-10-21\n"
+            "Authorization: a\nauthorization: Bearer sk-env\nanthropic-beta: a\nAnthropic-Beta: b",
+            [
+                ("x-api-key", "a"),
+                ("X-Api-Key", "sk-env"),
+                ("x-api-key", "b"),
+                ("anthropic-version", "a"),
+                ("Anthropic-Version", "2026-10-21"),
+                ("Authorization", "a"),
+                ("authorization", "Bearer sk-env"),
+                ("anthropic-beta", "a"),
+                ("Anthropic-Beta", "b"),
+            ],
+            [],
+        ),
+        (
+            " \N{IDEOGRAPHIC SPACE}x-pad\N{NO-BREAK SPACE} : a:b\nx-empty:",
+            [("x-pad", "a:b"), ("x-empty", "")],
+            ["x-pad", "x-empty"],
+        ),
+        (
+            "x-extra: 1\nX-Extra: 2\nx-extra: 3",
+            [("x-extra", "1"), ("X-Extra", "2"), ("x-extra", "3")],
+            ["x-extra"],
+        ),
+        ("x-cr\r: 1\n: v", [("x-cr", "1"), ("", "v")], ["x-cr"]),
+    ],
+    ids=[
+        "extra-names",
+        "sdk-owned-name",
+        "raw-response-mode",
+        "pinned-names",
+        "padded-pinned-names",
+        "pinned-names-in-two-spellings",
+        "padded-name-colon-in-value-empty-value",
+        "one-name-in-two-spellings",
+        "carriage-return-and-empty-name",
+    ],
+)
+async def test_no_value_from_anthropic_custom_headers_reaches_the_wire(
+    custom_headers: str,
+    listed: list[tuple[str, str]],
+    absent: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    mock_anthropic: MockAnthropic,
+) -> None:
+    # W2.1 (H1a, criterion C-value): the SDK merges this variable into every request's headers.
+    # For each name it lists, no header of that name may carry the variable's value, on the
+    # adapter call AND the pre-flight; extra names are absent. What a name the SDK sets itself
+    # carries instead (dropped, or an httpx2 default) is a residual, deliberately not pinned here.
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", custom_headers)
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.path.endswith("/count_tokens"):
+            return httpx2.Response(200, json={"input_tokens": 7})
+        return httpx2.Response(
+            200,
+            content=_provider_response(
+                [{"type": "tool_use", "id": "t", "name": "needs_help", "input": {}}]
+            ),
+        )
+
+    async with mock_anthropic(handler) as client:
+        brain_for = adapter_brain_for(client=client, model=SMOKE_MODEL, registry=_sniff_registry())
+        await brain_for("acme")([], _drop)
+        counted = await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
+
+    assert counted == 7  # the pre-flight still returns its count (`Raw-Response: stream` broke it)
+    assert [str(r.url) for r in seen] == [MESSAGES_URL, f"{MESSAGES_URL}/count_tokens"]
+    for req in seen:
+        for name, value in listed:
+            assert value not in req.headers.get_list(name)  # the variable's value never on the wire
+        for name in absent:
+            assert name not in req.headers  # an extra name never reaches the wire at all
+        assert req.headers.get_list("x-api-key") == ["sk-test"]  # the pins keep winning
+        assert req.headers.get_list("anthropic-version") == ["2023-06-01"]
+        assert "authorization" not in req.headers and "anthropic-beta" not in req.headers
+
+
+async def test_a_line_without_a_colon_lists_no_header(
+    monkeypatch: pytest.MonkeyPatch, mock_anthropic: MockAnthropic
+) -> None:
+    # The SDK skips a line with no colon, so it lists no name, and the factory must not cover one:
+    # the SDK's own Content-Type stays on both calls (it is dropped only when the name is listed).
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "Content-Type")
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.path.endswith("/count_tokens"):
+            return httpx2.Response(200, json={"input_tokens": 7})
+        return httpx2.Response(
+            200,
+            content=_provider_response(
+                [{"type": "tool_use", "id": "t", "name": "needs_help", "input": {}}]
+            ),
+        )
+
+    async with mock_anthropic(handler) as client:
+        brain_for = adapter_brain_for(client=client, model=SMOKE_MODEL, registry=_sniff_registry())
+        await brain_for("acme")([], _drop)
+        await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
+
+    assert [r.headers.get_list("content-type") for r in seen] == [["application/json"]] * 2
