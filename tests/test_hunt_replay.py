@@ -30,7 +30,9 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 RUN_ID = "1ab26132-953e-4a14-864e-e00817ebce38"  # THE gated live hunt; fixtures pinned to this run
 FIXTURES = sorted((FIXTURE_DIR / f"hunt_{RUN_ID}").glob("call_*.json"))
 CALL1_TOOL_USE_ID = "toolu_01LvxWhUt8t37c6vKAtZYWt7"  # call 1's sniff id — the correlation key
-LIVE_SPEND_USD = 0.0149  # the [hunt] report; fold_cost over the two UsageEvents must reproduce it
+LIVE_SPEND_USD = 0.0149  # the [hunt] report; fold_cost under LIVE_PRICES must reproduce it
+LIVE_PRICES = {"claude-sonnet-5": (3.0, 15.0)}  # the table the live run was priced at (before D6)
+SPEND_TODAY_USD = 0.009964  # the same tokens under cost.py's table (D6, $2/$10): an exact product
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
@@ -111,12 +113,14 @@ async def test_replay_reproduces_the_live_hunt_trajectory(
 ) -> None:
     events, (outcome, reason), _requests = await _replay(tmp_path / "rex.db", mock_anthropic)
 
-    # Two brain calls → two UsageEvents, priced to the live spend.
+    # Two brain calls → two UsageEvents, priced to the live spend under the live run's table, and
+    # to today's spend under cost.py's table (the table is an input to the fold, invariant 5).
     usage = [e for e in events if isinstance(e, UsageEvent)]
     assert len(usage) == 2
     assert (usage[0].input_tokens, usage[0].output_tokens) == (1810, 69)
     assert (usage[1].input_tokens, usage[1].output_tokens) == (1877, 190)
-    assert cost.fold_cost(events) == pytest.approx(LIVE_SPEND_USD, abs=1e-4)
+    assert cost.fold_cost(events, prices=LIVE_PRICES) == pytest.approx(LIVE_SPEND_USD, abs=1e-4)
+    assert cost.fold_cost(events) == pytest.approx(SPEND_TODAY_USD)
 
     # Call 1's sniff → one ToolCallEvent + one ToolResultEvent, paired by tool_use_id.
     calls = [e for e in events if isinstance(e, ToolCallEvent)]

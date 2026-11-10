@@ -18,7 +18,8 @@ This is W.3's novel surface — P3's `/events` smoke, now over a REAL streaming 
   - the `tool_call` carries its VERBATIM signed thinking block (Unit 3c, invariant 6);
   - `tool_call` / `tool_result` pair by `tool_use_id`;
   - the `usage` frames FOLD (via `cost`) to the run's reported spend — the id-scoped daemon budget
-    (`daemon_spend_usd` is exactly this fold) reconciles to $0.0224;
+    (`daemon_spend_usd` is exactly this fold) reconciles to $0.0224 under the $3/$15 table the run
+    was priced at; under cost.py's table (D6, $2/$10) the same tokens fold to $0.014928;
   - a heartbeat frame carries no id (never advances the cursor);
   - ids are strictly monotonic.
 
@@ -45,7 +46,9 @@ from rexhunter.events import (
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 RUN_ID = "4688398b-f24d-42ee-be11-715aa9a22fb5"  # THE gated live daemon hunt; the fixture pins it
 FIXTURE = FIXTURE_DIR / f"daemon_hunt_{RUN_ID}.sse"
-LIVE_SPEND_USD = 0.0224  # the [hunt] report; fold_cost over the two UsageEvents must reproduce it
+LIVE_SPEND_USD = 0.0224  # the [hunt] report; fold_cost under LIVE_PRICES must reproduce it
+LIVE_PRICES = {"claude-sonnet-5": (3.0, 15.0)}  # the table the live run was priced at (before D6)
+SPEND_TODAY_USD = 0.014928  # the same tokens under cost.py's table (D6, $2/$10): an exact product
 
 
 def _parse_stream(raw: str) -> tuple[list[tuple[int, TrajectoryEvent]], int]:
@@ -114,11 +117,13 @@ def test_tool_call_carries_its_verbatim_signed_thinking_block_and_pairs_with_its
 def test_usage_frames_fold_to_the_reported_daemon_spend() -> None:
     """Budget reconciliation: the stream's `usage` frames fold (via `cost`) to the run's spend. This
     fold IS `scheduler.daemon_spend_usd` (fold_cost over the log's UsageEvents), so the id-scoped
-    daemon budget reconciles to the hunt's actual $0.0224."""
+    daemon budget reconciles to the hunt's actual $0.0224 under the table the run was priced at,
+    and to $0.014928 under cost.py's table (the table is an input to the fold, invariant 5)."""
     _, events, _ = _load()
     usage = [e for e in events if isinstance(e, UsageEvent)]
     assert len(usage) == 2  # two brain calls
-    assert cost.fold_cost(events) == pytest.approx(LIVE_SPEND_USD, abs=1e-4)
+    assert cost.fold_cost(events, prices=LIVE_PRICES) == pytest.approx(LIVE_SPEND_USD, abs=1e-4)
+    assert cost.fold_cost(events) == pytest.approx(SPEND_TODAY_USD)
 
 
 def test_stream_carries_a_heartbeat_and_ends_needs_help_without_prey() -> None:

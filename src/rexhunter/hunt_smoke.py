@@ -31,7 +31,7 @@ from rexhunter.tools import ToolRegistry
 TERRITORY = "mock-gym"  # the deterministic mock board (stub `sniff`) — repeatable, no external dep
 HUNT_MAX_TOKENS = 1024  # thinking off → tiny output; the live request-shape floor (>= 1024)
 COST_CEILING_USD = (
-    0.05  # the load-bearing spend guard for the smoke (cost.py over-meters at sticker)
+    0.05  # the load-bearing spend guard for the smoke (cost.py meters at the $2/$10 sticker, D6)
 )
 MAX_ITERATIONS = 3  # a few turns: enough to reach call two (the reconstructed-turn gate)
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
