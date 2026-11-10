@@ -113,7 +113,7 @@ async def _seed_usage(db_path: Path, *, input_tokens: int, output_tokens: int) -
 
 async def test_daemon_spend_usd_folds_usage_across_all_runs(tmp_path: Path) -> None:
     """The id-scoped analogue of `fold_cost`: total USD folded from EVERY run's UsageEvents along
-    the global id cursor (inv 5). 1M input @ $3 (a) + 1M output @ $15 (b) = $18 across two runs."""
+    the global id cursor (inv 5). 1M input @ $2 (a) + 1M output @ $10 (b) = $12 across two runs."""
     db_path = tmp_path / "rex.db"
     conn = await db.connect(db_path)
     try:
@@ -126,7 +126,7 @@ async def test_daemon_spend_usd_folds_usage_across_all_runs(tmp_path: Path) -> N
             conn, r2, UsageEvent(model="claude-sonnet-5", input_tokens=0, output_tokens=1_000_000)
         )
         spend = await scheduler.daemon_spend_usd(conn)
-        assert spend == pytest.approx(18.0)
+        assert spend == pytest.approx(12.0)
         # Same primitive, id-scoped: it equals fold_cost over the whole-log usage sub-set.
         assert spend == pytest.approx(cost.fold_cost(await db.read_usage(conn)))
     finally:
@@ -168,7 +168,7 @@ async def test_daemon_ceiling_refuses_the_next_hunt(tmp_path: Path) -> None:
     returns None BEFORE running (the brain is never called), and no new run row is created. The
     daemon pauses, never crashes."""
     db_path = tmp_path / "rex.db"
-    await _seed_usage(db_path, input_tokens=1_000_000, output_tokens=0)  # $3.00 >> ceiling
+    await _seed_usage(db_path, input_tokens=1_000_000, output_tokens=0)  # $2.00 >> ceiling
 
     flag = {"launched": False}
     run_id = await _run_one(db_path, flag, daemon_spend_ceiling_usd=0.01)

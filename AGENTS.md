@@ -56,11 +56,23 @@ the ADR.
   `with_streaming_response`, `max_retries=0` – the loop owns retries); our SSE assembler and
   `parse_decision` still see the provider's raw bytes. The wire stays pinned to what the
   fixtures were recorded under (`x-api-key`, `anthropic-version: 2023-06-01`, explicit
-  `base_url`) until W2.1 proves a bump. `brain.anthropic_client` is the one client factory: no
-  redirects (the SDK default follows them cross-origin with the key), `Authorization` and
-  `anthropic-beta` omitted, TLS verified against certifi – the pre-W2.0 trust store, not the
-  system Keychain. Native tool calling, constrained decoding where available, `ThinkingDelta`
-  event relay, per-event cost accounting.
+  `base_url`); the bump is deferred to its own run. `brain.anthropic_client` is the one client
+  factory: no redirects (the SDK default follows them cross-origin with the key), `Authorization`
+  and `anthropic-beta` omitted, TLS verified against certifi – the pre-W2.0 trust store, not the
+  system Keychain. `ANTHROPIC_CUSTOM_HEADERS` (W2.1): every name it lists gets the pinned value if
+  it is a pinned name, in any spelling, and `omit` otherwise, so no value from that variable
+  reaches the wire. The residual: a listed name the SDK sets itself (the client-level defaults
+  `Accept`, `Content-Type`, `User-Agent`, `X-Stainless-Async` and the `X-Stainless-*` platform
+  headers, and the per-request `X-Stainless` timeout, read-timeout and retry-count headers) loses
+  its value on the wire, dropped or downgraded to the httpx2 default, so the wire differs from the
+  unset case; whether the API accepts a POST without `Content-Type` is unverified. `Host`,
+  `Content-Length`, `Connection` and `Accept-Encoding` (httpx2 sets them per request),
+  `X-Stainless-Raw-Response` and the pinned names come back unchanged. A listed name that is not
+  valid UTF-8 makes every request fail before it is sent, as it did before W2.1. A client
+  `copy()` or `with_options()` keeps these entries but re-reads the variable, so a name or
+  spelling added to it after the factory ran is not covered on the copy and can reach the wire, a
+  second spelling of a pinned name included; src/ never copies the client. Native tool calling,
+  constrained decoding where available, `ThinkingDelta` event relay, per-event cost accounting.
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
   `pytest-anyio` dep). Pins + config in `pyproject.toml`.
@@ -185,7 +197,8 @@ injectable lifespan seam) and the lifespan owns the paid client's close. The id-
 `DAEMON_SPEND_CEILING_USD` is the seq-scoped per-run ceiling's analogue: `daemon_spend_usd = cost.fold_cost`
 over the whole log's `UsageEvent`s (`db.read_usage`, ALL runs along the global `id` cursor) — a fold over the
 log, NOT a counter (inv 5: a counter drifts on a crash between the usage commit and the increment, and races
-across concurrent hunts; the fold reconstructs spend exactly, one price table, two windows). `_bounded_hunt`
+across concurrent hunts; the fold reconstructs spend exactly, one price table – an input to the fold, never
+stored state; `prices=` defaults to `cost.PRICE_PER_MTOK` (W2.1) – two windows). `_bounded_hunt`
 consults it BEFORE `run_hunt` and refuses to launch when over budget (Tiny Arms for money, inv 4 — the daemon
 structurally cannot overspend; fail-closed whole-log window, rolling day-window deferred). `cost_ceiling_usd`
 threaded scheduler→run_hunt; env knobs `DAEMON_SPEND_CEILING_USD`/`COST_CEILING_USD`/`MAX_ITERATIONS`. *`W.2`
@@ -195,7 +208,8 @@ threaded scheduler→run_hunt; env knobs `DAEMON_SPEND_CEILING_USD`/`COST_CEILIN
 correct). *`W.3` (one gated live daemon hunt + browser smoke) — ✅ done, replay-gated:* one live hunt through
 the real lifespan (`claude-sonnet-5`, thinking-on + streaming, `DAEMON_SPEND_CEILING_USD=0.005`, fresh
 `REXHUNTER_DB`) — **$0.0224, ONE run, budget gate refused further hunts** (`daemon_spend_usd` == the run's
-`fold_cost` == $0.0224). The browser tab rendered Rex's reasoning streaming live: `thinking_delta` frames
+`fold_cost` == $0.0224 at the $3/$15 table the run was priced at; D6 reprices the same tokens to $0.014928).
+The browser tab rendered Rex's reasoning streaming live: `thinking_delta` frames
 committed DURING each brain call, interleaved with the verbatim-signed-block `tool_call`, `tool_result`,
 `usage`, and an id-less `: keep-alive`. This hunt ended `needs_help` (the model judged the mock board
 unworkable), so no `prey_captured` in THIS stream — that event's live streaming is covered by the free stub
@@ -230,8 +244,24 @@ client factory (`max_retries=0` – the loop owns retries; wire pinned to `x-api
 `anthropic-version: 2023-06-01` with an explicit `base_url`; no redirects; certifi trust store). SDK
 and transport errors reach the loop as the provider-neutral `BrainCallError` (D1a); `loop.py`
 imports no SDK and no httpx. Replay-gated offline, no paid call; 261 tests pass at `7c4d883`.
-*Next: W2.1 – among its items, the API-version and Bearer-auth bump behind a free `count_tokens`
-check.*
+*Next: W2.1 (below). The API-version and Bearer-auth bump behind a free `count_tokens` check is
+deferred to its own run.*
+**▶ W2.1 · Prices and the custom-headers residual – ✅ done on branch `w2.1-prices-headers`
+(`120457b`→`66e704d`, 2026-11-10), PR #1.** Offline: no paid call, no model change, no
+wire bump. D6 prices `claude-sonnet-5` at the $2/$10 sticker ("is now the standard price"; was
+$3/$15), and the table gains `claude-sonnet-5-5` ($2/$10), `claude-opus-5-5` ($4/$20) and
+`claude-fable-5-1` ($10/$50), with a guard that the unknown-model fallback ($15/$75) is at least
+the dearest row on each side. The table is an input to the fold (P1b, inv 5): `cost.cost_of` /
+`fold_cost` take `prices=`, defaulting to `PRICE_PER_MTOK`; each replay test checks its live
+report under the $3/$15 table its run was priced at, plus the exact fold under today's table.
+Existing logs reprice: `daemon_spend_usd` over a pre-D6 log of `claude-sonnet-5` usage reads a
+third lower.
+`ANTHROPIC_CUSTOM_HEADERS` (H1a): `anthropic_client` gives every listed name the pinned value or
+`omit`, so no value from the variable reaches the wire (residual in Stack → LLM). The review
+found and closed R1, live at `cdc7c14`: a second spelling of a pinned name (the exact spelling
+first, then a case variant) let the variable replace the key and the version, add
+`Authorization`, and switch a beta on. 276 tests pass at `66e704d`. *Not in W2.1, each deferred to its own run:
+the API-version and Bearer-auth bump (behind a free `count_tokens` check) and W2.2.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill

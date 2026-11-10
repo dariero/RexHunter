@@ -107,13 +107,28 @@ def anthropic_client(
 
     - `max_retries=0` (D1b): the SDK never retries; the loop owns every retry and logs each attempt
       as its own ErrorEvent. It is also the paid smoke's hard one-call guard.
-    - The wire is PINNED to what every fixture was recorded under, until W2.1 proves a bump:
-      `x-api-key` auth (the SDK default is `Authorization: Bearer`, omitted here) and
+    - The wire is PINNED to what every fixture was recorded under; a bump is deferred to its own
+      run: `x-api-key` auth (the SDK default is `Authorization: Bearer`, omitted here) and
       `anthropic-version: 2023-06-01` (the SDK default is 2026-10-21).
     - Explicit `api_key` and `base_url`: the SDK otherwise resolves credentials from the
       environment / profiles on disk, and `ANTHROPIC_BASE_URL` would redirect the request and the
-      key. `anthropic-beta` is omitted so `ANTHROPIC_CUSTOM_HEADERS` cannot switch betas on; other
-      headers that variable names still reach the wire (a known residual, no SDK option stops it).
+      key.
+    - `ANTHROPIC_CUSTOM_HEADERS` (W2.1): the SDK merges that variable into every request's headers
+      (anthropic/_client.py `__init__`). Every name it lists gets an entry here, parsed the way the
+      SDK parses it (lines split on newlines, the name before the first colon, stripped): a pinned
+      name, in any spelling, gets its pinned value, and any other name is set to `omit`. So no
+      value from the variable reaches the wire, and it cannot switch betas on. The residual: a
+      listed name the SDK sets itself (the client-level defaults Accept, Content-Type, User-Agent,
+      X-Stainless-Async and the X-Stainless-* platform headers, and the per-request X-Stainless
+      timeout, read-timeout and retry-count headers) loses its value on the wire, dropped or
+      downgraded to the httpx2 default, so the wire differs from the unset case; whether the API
+      accepts a POST without Content-Type is unverified. Host, Content-Length, Connection and
+      Accept-Encoding (httpx2 sets them per request), X-Stainless-Raw-Response and the pinned names
+      come back unchanged. A listed name that is not valid UTF-8 makes every request fail before it
+      is sent, as it did before W2.1. A client `copy()` or `with_options()` keeps these entries but
+      re-reads the variable, so a name or spelling added to it after the factory ran is not covered
+      on the copy and can reach the wire, a second spelling of a pinned name included; src/ never
+      copies the client.
     - No redirects: the SDK's default http client follows them, cross-origin, and would resend the
       `x-api-key` and the paid POST (httpx2 strips only `Authorization`). HEAD's httpx client never
       followed one, so a 3xx stays a fatal status error. The factory builds the http client itself
@@ -125,15 +140,21 @@ def anthropic_client(
     `default_headers` is typed `Mapping[str, str]`, but the SDK drops `omit`-valued headers at
     runtime (anthropic/_base_client.py `build_headers`), hence the one cast below; the wire test
     (tests/test_brain_adapter.py) pins the result."""
-    pinned = cast(
-        "dict[str, str]",
-        {
-            "x-api-key": api_key,
-            "anthropic-version": _ANTHROPIC_VERSION,
-            "Authorization": anthropic.omit,
-            "anthropic-beta": anthropic.omit,
-        },
-    )
+    pinned: dict[str, str | anthropic.Omit] = {
+        "x-api-key": api_key,
+        "anthropic-version": _ANTHROPIC_VERSION,
+        "Authorization": anthropic.omit,
+        "anthropic-beta": anthropic.omit,
+    }
+    # Every name ANTHROPIC_CUSTOM_HEADERS lists gets an entry of its own, in its own spelling: the
+    # pinned value for a pinned name (any case, so a second spelling listed after the first cannot
+    # win the case-insensitive fold), `omit` for any other. Omitting a pinned name instead would
+    # drop our own key and send the request unauthenticated.
+    by_lower = {name.lower(): value for name, value in pinned.items()}
+    for line in os.environ.get("ANTHROPIC_CUSTOM_HEADERS", "").split("\n"):
+        name, colon, _value = line.partition(":")
+        if colon:
+            pinned[name.strip()] = by_lower.get(name.strip().lower(), anthropic.omit)
     # `transport` is passed only when given: the SDK builds its keep-alive transport when the key
     # is absent, and `transport=None` would skip that.
     client_options: dict[str, Any] = {"follow_redirects": False, "verify": tls_context()}
@@ -145,7 +166,7 @@ def anthropic_client(
         max_retries=0,
         timeout=timeout,
         http_client=anthropic.DefaultAsyncHttpxClient(**client_options),
-        default_headers=pinned,
+        default_headers=cast("dict[str, str]", pinned),
     )
 
 

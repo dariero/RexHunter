@@ -41,7 +41,9 @@ pytestmark = pytest.mark.anyio
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 RUN_ID = "32975e98-4f30-4763-9d6a-a34541d0e1ef"  # THE gated thinking-on hunt; fixtures pin this run
 FIXTURES = sorted((FIXTURE_DIR / f"hunt_{RUN_ID}").glob("call_*.json"))
-LIVE_SPEND_USD = 0.0187  # the [hunt] report; fold_cost over the two UsageEvents must reproduce it
+LIVE_SPEND_USD = 0.0187  # the [hunt] report; fold_cost under LIVE_PRICES must reproduce it
+LIVE_PRICES = {"claude-sonnet-5": (3.0, 15.0)}  # the table the live run was priced at (before D6)
+SPEND_TODAY_USD = 0.012464  # the same tokens under cost.py's table (D6, $2/$10): an exact product
 THINKING: dict[str, Any] = {"type": "adaptive", "display": "summarized"}
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
@@ -146,12 +148,14 @@ async def test_replay_reproduces_the_live_hunt_trajectory(
 ) -> None:
     events, (outcome, reason), _requests = await _replay(tmp_path / "rex.db", mock_anthropic)
 
-    # Two brain calls → two UsageEvents priced to the live spend (thinking tokens included).
+    # Two brain calls → two UsageEvents (thinking tokens included), priced to the live spend under
+    # the live run's table, and to today's spend under cost.py's table (invariant 5).
     usage = [e for e in events if isinstance(e, UsageEvent)]
     assert len(usage) == 2
     assert (usage[0].input_tokens, usage[0].output_tokens) == (1810, 121)
     assert (usage[1].input_tokens, usage[1].output_tokens) == (1947, 374)
-    assert cost.fold_cost(events) == pytest.approx(LIVE_SPEND_USD, abs=1e-4)
+    assert cost.fold_cost(events, prices=LIVE_PRICES) == pytest.approx(LIVE_SPEND_USD, abs=1e-4)
+    assert cost.fold_cost(events) == pytest.approx(SPEND_TODAY_USD)
 
     # The streamed reasoning was relayed — ThinkingDelta events, the live feed.
     assert [e for e in events if isinstance(e, ThinkingDelta)]
