@@ -19,11 +19,18 @@ from collections.abc import Mapping, Sequence
 
 from rexhunter.events import TrajectoryEvent, UsageEvent
 
-# (input $/MTok, output $/MTok) at the sticker rate. Sonnet 5 at $2/$10, the standard price (D6).
-PRICE_PER_MTOK: dict[str, tuple[float, float]] = {"claude-sonnet-5": (2.0, 10.0)}
+# (input $/MTok, output $/MTok) at the sticker rate. Sonnet 5 at $2/$10, the standard price (D6);
+# the other rows are the platform.claude.com prices read on 9 Nov 2026 (W2.1).
+PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-fable-5-1": (10.0, 50.0),
+}
 
-# Unknown model → a deliberately-high fallback (above any current model). NEVER 0: a 0 price would
-# fold to $0 forever and silently disarm the spend guard.
+# Unknown model → a deliberately-high fallback, at least the dearest row above on each side
+# (pinned by tests/test_cost.py). NEVER 0: a 0 price would fold to $0 forever and silently disarm
+# the spend guard.
 _FALLBACK_PRICE_PER_MTOK: tuple[float, float] = (15.0, 75.0)
 
 
