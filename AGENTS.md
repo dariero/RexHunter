@@ -247,7 +247,7 @@ imports no SDK and no httpx. Replay-gated offline, no paid call; 261 tests pass 
 *Next: W2.1 (below). The API-version and Bearer-auth bump behind a free `count_tokens` check is
 deferred to its own run.*
 **▶ W2.1 · Prices and the custom-headers residual – ✅ done on branch `w2.1-prices-headers`
-(`120457b`→`66e704d`, 2026-11-10), not yet merged.** Offline: no paid call, no model change, no
+(`120457b`→`66e704d`, 2026-11-10), PR #1.** Offline: no paid call, no model change, no
 wire bump. D6 prices `claude-sonnet-5` at the $2/$10 sticker ("is now the standard price"; was
 $3/$15), and the table gains `claude-sonnet-5-5` ($2/$10), `claude-opus-5-5` ($4/$20) and
 `claude-fable-5-1` ($10/$50), with a guard that the unknown-model fallback ($15/$75) is at least
