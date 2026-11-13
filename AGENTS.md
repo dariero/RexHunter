@@ -266,6 +266,21 @@ found and closed R1, live at `cdc7c14`: a second spelling of a pinned name (the 
 first, then a case variant) let the variable replace the key and the version, add
 `Authorization`, and switch a beta on. 276 tests pass at `66e704d`. *Not in W2.1, each deferred to its own run:
 the API-version and Bearer-auth bump (behind a free `count_tokens` check) and W2.2.*
+**▶ W2.1b · Wire bump and F8 – ✅ done on branch `w2.1b-wire-bump` (`db94095`→`2a2a322`,
+2026-11-14), PR #4.** One paid check, no model change (`SMOKE_MODEL` stays `claude-sonnet-5`).
+F8: `smoke.py` no longer overwrites `tests/fixtures/smoke_sonnet5.json`. Each paid smoke writes a
+new `smoke_<model>_<UTC time>Z.json`, reserved with `"xb"` before any call (an existing name
+refuses at $0), dropped only while no paid reply has reached it, and written, flushed and closed
+before parsing (inv 6); `fixture_dir` and `now` have no defaults. The wire (W1a): `anthropic_client`
+pins `Authorization: Bearer <key>` and `anthropic-version: 2026-10-21`, with `x-api-key` and
+`anthropic-beta` omitted – today's SDK 2.6.0 defaults, pinned so a later SDK default cannot move
+them (a test fakes one); the SDK defaults alone (W1b) would fail open under H1a. Paid check
+(Darie): `count_tokens` 200 over the new wire, then run `4c47b41b-5268-4da3-b787-9483b21d2c3f` on
+`claude-sonnet-5`: 2 brain calls, `needs_help`, $0.0096. Its two responses are the new fixtures
+(`tests/test_wire_bump_hunt_replay.py`, DoD #5); every earlier fixture replays unchanged. Also in
+this run: `claude-fable-5-2` priced at $8/$40 (PR #3) and the branch + PR workflow (PR #2).
+Keychain trust: not adopted – Darie, 13 Nov 2026 (the trust store stays certifi). 295 tests pass
+at `2a2a322`. *Next: W2.2 (`between_tools`).*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
