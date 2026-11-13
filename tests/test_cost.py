@@ -31,6 +31,7 @@ def test_fold_cost_prices_usage_under_the_table_it_is_given() -> None:
         ("claude-sonnet-5-5", 12.0),  # $2 + $10
         ("claude-opus-5-5", 24.0),  # $4 + $20
         ("claude-fable-5-1", 60.0),  # $10 + $50
+        ("claude-fable-5-2", 48.0),  # $8 + $40
     ],
 )
 def test_each_listed_model_prices_at_its_sticker(model: str, usd: float) -> None:
