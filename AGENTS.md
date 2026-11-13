@@ -343,19 +343,22 @@ the API-version and Bearer-auth bump (behind a free `count_tokens` check) and W2
 - **Push back with the invariant number** if I reach for a framework or shortcut that breaks
   a law (e.g. *"publishes before the commit – breaks invariant 1"*). Don't quietly comply.
 
-## Solo workflow – direct-to-main
+## Solo workflow – branch + PR
 
-Solo engineer, no feature-branch / PR overhead – commit and push straight to `main`.
-Machine-enforced quality replaces team review, in two layers:
+Solo engineer, branch + PR: every change goes on a named branch and lands on `main` through a
+pull request, merged with a merge commit (never squash or rebase), so the commit hashes this file
+cites stay valid. GitHub deletes the head branch at the merge. Machine-enforced quality replaces
+team review, in two layers:
 
 - **Local pre-push gate** (`.githooks/pre-push`) – every push runs `ruff check` +
   `ruff format --check` + `pyright` + `pytest`; any red aborts the push. Arm once per clone:
   `git config core.hooksPath .githooks`. Bypassable with `--no-verify` – a convenience gate,
   not a wall.
-- **Server-side protection** – GitHub branch protection on `main` blocks force-pushes and
-  deletion (admins included); CI (`.github/workflows/ci.yml`) runs on every push. Limit:
-  required status checks gate PR *merges*, not direct pushes – a direct push lands first and
-  CI reports red *after*. The pre-push hook makes red rare; CI makes it loud and fast.
+- **Server-side protection on `main`** – CI (`.github/workflows/ci.yml`, job `quality`) runs on
+  every pull request and on every push to `main`. `quality` is a required status check: a PR
+  merges only with it green and with its branch up to date with `main` (strict), admins included.
+  Branch protection and a repository ruleset block force-pushes to `main` and its deletion. The
+  pre-push hook makes red rare; the required check keeps a red PR from merging.
 
 Never `--no-verify` into `main`. If the gate is red, the fix is green code, not a bypass.
 
