@@ -1,4 +1,4 @@
-# Structural backstop for the solo direct-to-main workflow: the check that
+# Structural backstop for the branch + PR workflow: the check that
 # `git push --no-verify` cannot bypass. Pair with GitHub branch protection on
 # `main` requiring this job. It installs exactly what uv.lock pins — the same
 # versions the local pre-push gate runs — and `--locked` fails if the lock is stale.
