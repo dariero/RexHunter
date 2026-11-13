@@ -54,12 +54,15 @@ the ADR.
 - **LLM (`P5`):** provider-agnostic `brain()` – loop imports no vendor SDK. The adapter
   (`brain.py`) runs on the Anthropic SDK in raw mode (`with_raw_response` /
   `with_streaming_response`, `max_retries=0` – the loop owns retries); our SSE assembler and
-  `parse_decision` still see the provider's raw bytes. The wire stays pinned to what the
-  fixtures were recorded under (`x-api-key`, `anthropic-version: 2023-06-01`, explicit
-  `base_url`); the bump is deferred to its own run. `brain.anthropic_client` is the one client
-  factory: no redirects (the SDK default follows them cross-origin with the key), `Authorization`
-  and `anthropic-beta` omitted, TLS verified against certifi – the pre-W2.0 trust store, not the
-  system Keychain. `ANTHROPIC_CUSTOM_HEADERS` (W2.1): every name it lists gets the pinned value if
+  `parse_decision` still see the provider's raw bytes. The wire is pinned explicitly (W2.1b):
+  `Authorization: Bearer <key>`, `anthropic-version: 2026-10-21` and an explicit `base_url`, with
+  `x-api-key` and `anthropic-beta` omitted; today the pins equal the SDK 2.6.0 defaults and hold
+  if a later SDK changes them. Fixtures recorded before W2.1b used `x-api-key` and `2023-06-01`;
+  they hold response bytes only and replay unchanged. `brain.anthropic_client` is the one client
+  factory: no redirects (the SDK default follows them cross-origin, resending the paid body on a
+  307/308; httpx2 strips the Bearer key there, not an `x-api-key`), TLS verified against
+  certifi – the pre-W2.0 trust store, not the system Keychain. `ANTHROPIC_CUSTOM_HEADERS` (W2.1):
+  every name it lists gets the pinned value if
   it is a pinned name, in any spelling, and `omit` otherwise, so no value from that variable
   reaches the wire. The residual: a listed name the SDK sets itself (the client-level defaults
   `Accept`, `Content-Type`, `User-Agent`, `X-Stainless-Async` and the `X-Stainless-*` platform
@@ -67,7 +70,8 @@ the ADR.
   its value on the wire, dropped or downgraded to the httpx2 default, so the wire differs from the
   unset case; whether the API accepts a POST without `Content-Type` is unverified. `Host`,
   `Content-Length`, `Connection` and `Accept-Encoding` (httpx2 sets them per request),
-  `X-Stainless-Raw-Response` and the pinned names come back unchanged. A listed name that is not
+  `X-Stainless-Raw-Response` and the pinned names keep their values (a listed spelling of a
+  pinned name can become the header's name; the value stays pinned). A listed name that is not
   valid UTF-8 makes every request fail before it is sent, as it did before W2.1. A client
   `copy()` or `with_options()` keeps these entries but re-reads the variable, so a name or
   spelling added to it after the factory ran is not covered on the copy and can reach the wire, a

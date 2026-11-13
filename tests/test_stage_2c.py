@@ -426,8 +426,9 @@ async def test_a_redirect_is_never_followed(
     stream: bool, tmp_path: Path, mock_anthropic: MockAnthropic
 ) -> None:
     # HEAD's client never followed redirects, so a 3xx was a fatal status error. The SDK's default
-    # client follows them, cross-origin, with the x-api-key and the paid POST body: the factory
-    # turns that off, and a 3xx stays one fatal <brain> error with its body kept.
+    # client follows them, cross-origin, with the paid POST body (httpx2 strips the Bearer key,
+    # not the body): the factory turns that off, and a 3xx stays one fatal <brain> error with its
+    # body kept.
     seen: list[str] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -655,7 +656,7 @@ async def test_live_brain_is_opt_in_and_never_called(monkeypatch: pytest.MonkeyP
 
 async def test_the_live_client_comes_from_the_factory(monkeypatch: pytest.MonkeyPatch) -> None:
     # The daemon's spending client must be the factory's (max_retries=0 + the pinned wire), not a
-    # bare AsyncAnthropic with the SDK defaults (2 retries, Bearer auth, another API version).
+    # bare AsyncAnthropic with the SDK defaults (2 retries, an unpinned wire, the env base URL).
     monkeypatch.setenv("REXHUNTER_BRAIN", "live")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://elsewhere.invalid")  # a bare client obeys it
@@ -664,8 +665,9 @@ async def test_the_live_client_comes_from_the_factory(monkeypatch: pytest.Monkey
     try:
         assert client.max_retries == 0
         assert str(client.base_url) == brain.ANTHROPIC_BASE_URL
-        assert client.default_headers["x-api-key"] == "sk-test-not-real"
-        assert client.default_headers["anthropic-version"] == "2023-06-01"
+        assert client.default_headers["Authorization"] == "Bearer sk-test-not-real"
+        assert isinstance(client.default_headers["x-api-key"], anthropic.Omit)
+        assert client.default_headers["anthropic-version"] == "2026-10-21"
     finally:
         await client.close()
 
