@@ -54,12 +54,15 @@ the ADR.
 - **LLM (`P5`):** provider-agnostic `brain()` – loop imports no vendor SDK. The adapter
   (`brain.py`) runs on the Anthropic SDK in raw mode (`with_raw_response` /
   `with_streaming_response`, `max_retries=0` – the loop owns retries); our SSE assembler and
-  `parse_decision` still see the provider's raw bytes. The wire stays pinned to what the
-  fixtures were recorded under (`x-api-key`, `anthropic-version: 2023-06-01`, explicit
-  `base_url`); the bump is deferred to its own run. `brain.anthropic_client` is the one client
-  factory: no redirects (the SDK default follows them cross-origin with the key), `Authorization`
-  and `anthropic-beta` omitted, TLS verified against certifi – the pre-W2.0 trust store, not the
-  system Keychain. `ANTHROPIC_CUSTOM_HEADERS` (W2.1): every name it lists gets the pinned value if
+  `parse_decision` still see the provider's raw bytes. The wire is pinned explicitly (W2.1b):
+  `Authorization: Bearer <key>`, `anthropic-version: 2026-10-21` and an explicit `base_url`, with
+  `x-api-key` and `anthropic-beta` omitted; today the pins equal the SDK 2.6.0 defaults and hold
+  if a later SDK changes them. Fixtures recorded before W2.1b used `x-api-key` and `2023-06-01`;
+  they hold response bytes only and replay unchanged. `brain.anthropic_client` is the one client
+  factory: no redirects (the SDK default follows them cross-origin, resending the paid body on a
+  307/308; httpx2 strips the Bearer key there, not an `x-api-key`), TLS verified against
+  certifi – the pre-W2.0 trust store, not the system Keychain. `ANTHROPIC_CUSTOM_HEADERS` (W2.1):
+  every name it lists gets the pinned value if
   it is a pinned name, in any spelling, and `omit` otherwise, so no value from that variable
   reaches the wire. The residual: a listed name the SDK sets itself (the client-level defaults
   `Accept`, `Content-Type`, `User-Agent`, `X-Stainless-Async` and the `X-Stainless-*` platform
@@ -67,7 +70,8 @@ the ADR.
   its value on the wire, dropped or downgraded to the httpx2 default, so the wire differs from the
   unset case; whether the API accepts a POST without `Content-Type` is unverified. `Host`,
   `Content-Length`, `Connection` and `Accept-Encoding` (httpx2 sets them per request),
-  `X-Stainless-Raw-Response` and the pinned names come back unchanged. A listed name that is not
+  `X-Stainless-Raw-Response` and the pinned names keep their values (a listed spelling of a
+  pinned name can become the header's name; the value stays pinned). A listed name that is not
   valid UTF-8 makes every request fail before it is sent, as it did before W2.1. A client
   `copy()` or `with_options()` keeps these entries but re-reads the variable, so a name or
   spelling added to it after the factory ran is not covered on the copy and can reach the wire, a
@@ -262,6 +266,21 @@ found and closed R1, live at `cdc7c14`: a second spelling of a pinned name (the 
 first, then a case variant) let the variable replace the key and the version, add
 `Authorization`, and switch a beta on. 276 tests pass at `66e704d`. *Not in W2.1, each deferred to its own run:
 the API-version and Bearer-auth bump (behind a free `count_tokens` check) and W2.2.*
+**▶ W2.1b · Wire bump and F8 – ✅ done on branch `w2.1b-wire-bump` (`db94095`→`2a2a322`,
+2026-11-14), PR #4.** One paid check, no model change (`SMOKE_MODEL` stays `claude-sonnet-5`).
+F8: `smoke.py` no longer overwrites `tests/fixtures/smoke_sonnet5.json`. Each paid smoke writes a
+new `smoke_<model>_<UTC time>Z.json`, reserved with `"xb"` before any call (an existing name
+refuses at $0), dropped only while no paid reply has reached it, and written, flushed and closed
+before parsing (inv 6); `fixture_dir` and `now` have no defaults. The wire (W1a): `anthropic_client`
+pins `Authorization: Bearer <key>` and `anthropic-version: 2026-10-21`, with `x-api-key` and
+`anthropic-beta` omitted – today's SDK 2.6.0 defaults, pinned so a later SDK default cannot move
+them (a test fakes one); the SDK defaults alone (W1b) would fail open under H1a. Paid check
+(Darie): `count_tokens` 200 over the new wire, then run `4c47b41b-5268-4da3-b787-9483b21d2c3f` on
+`claude-sonnet-5`: 2 brain calls, `needs_help`, $0.0096. Its two responses are the new fixtures
+(`tests/test_wire_bump_hunt_replay.py`, DoD #5); every earlier fixture replays unchanged. Also in
+this run: `claude-fable-5-2` priced at $8/$40 (PR #3) and the branch + PR workflow (PR #2).
+Keychain trust: not adopted – Darie, 13 Nov 2026 (the trust store stays certifi). 295 tests pass
+at `2a2a322`. *Next: W2.2 (`between_tools`).*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill

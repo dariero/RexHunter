@@ -150,7 +150,12 @@ async def test_the_harness_sends_the_pinned_wire(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The paid harness builds its client through the factory: every request (the pre-flight and
-    # both brain calls) carries the explicit key and the pinned version, never Bearer auth.
+    # both brain calls) carries the explicit key as Bearer auth and the pinned version, never
+    # x-api-key. The new wire equals the SDK defaults, so the variable below is what tells the
+    # factory from a bare client: only the factory neutralises it.
+    monkeypatch.setenv(
+        "ANTHROPIC_CUSTOM_HEADERS", "x-api-key: sk-env\nanthropic-version: 1999-01-01"
+    )
     monkeypatch.setattr(
         stub, "SNIFF_INTERVAL", 0.0
     )  # the stub sniff's 5 s beat proves nothing here
@@ -167,6 +172,6 @@ async def test_the_harness_sends_the_pinned_wire(
     )
     assert len(seen) == 3
     for request in seen:
-        assert request.headers["x-api-key"] == "offline-key"
-        assert request.headers["anthropic-version"] == "2023-06-01"
-        assert "authorization" not in request.headers
+        assert request.headers.get_list("authorization") == ["Bearer offline-key"]
+        assert request.headers["anthropic-version"] == "2026-10-21"
+        assert "x-api-key" not in request.headers

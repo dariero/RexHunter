@@ -160,8 +160,9 @@ async def test_adapter_sends_anthropic_headers_and_body(mock_anthropic: MockAnth
         await brain_for("acme")([], _drop)
 
     req = captured["req"]
-    assert req.headers["x-api-key"] == "sk-test"
-    assert req.headers["anthropic-version"] == "2023-06-01"
+    assert req.headers.get_list("authorization") == ["Bearer sk-test"]
+    assert req.headers["anthropic-version"] == "2026-10-21"
+    assert "x-api-key" not in req.headers
     body = json.loads(req.content)
     assert body["model"] == SMOKE_MODEL
     assert isinstance(body["max_tokens"], int) and body["max_tokens"] > 0
@@ -230,7 +231,7 @@ def test_the_adapter_is_built_on_the_anthropic_sdk() -> None:
 
 def test_only_the_factory_builds_an_sdk_client() -> None:
     # Every SDK client in src/ comes from brain.anthropic_client: a bare AsyncAnthropic elsewhere
-    # would fall back to the SDK defaults (2 retries, Bearer auth, another API version, redirects).
+    # would fall back to the SDK defaults (2 retries, an unpinned wire, redirects).
     src = Path(__file__).parents[1] / "src" / "rexhunter"
     builders = ("AsyncAnthropic(", "DefaultAsyncHttpxClient(")
     hits = [
@@ -325,9 +326,10 @@ def test_only_brain_builds_a_network_transport() -> None:
 async def test_the_wire_is_pinned_against_the_sdks_environment_overrides(
     beta_header: str, monkeypatch: pytest.MonkeyPatch, mock_anthropic: MockAnthropic
 ) -> None:
-    # The SDK reads these variables at construction; the factory must neutralise each one, so
-    # the wire is the one every fixture was recorded under, on the adapter AND the pre-flight.
+    # These variables could steer the SDK or the factory (credentials, base URL, betas): none may
+    # reach the wire, on the adapter AND the pre-flight, and the client keeps the explicit key.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-env-must-not-be-sent")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-token-from-env-must-not-be-sent")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://elsewhere.invalid")
     monkeypatch.setenv(
         "ANTHROPIC_CUSTOM_HEADERS", f"{beta_header}: interleaved-thinking-2025-05-14"
@@ -346,15 +348,16 @@ async def test_the_wire_is_pinned_against_the_sdks_environment_overrides(
         )
 
     async with mock_anthropic(handler) as client:
+        assert client.api_key == "sk-test"  # the SDK's own credential is the explicit key too
         brain_for = adapter_brain_for(client=client, model=SMOKE_MODEL, registry=_sniff_registry())
         await brain_for("acme")([], _drop)
         await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
 
     assert [str(r.url) for r in seen] == [MESSAGES_URL, f"{MESSAGES_URL}/count_tokens"]
     for req in seen:
-        assert req.headers["x-api-key"] == "sk-test"  # the explicit key, never the env's
-        assert req.headers["anthropic-version"] == "2023-06-01"  # pinned, not the SDK default
-        assert "authorization" not in req.headers  # no Bearer auth
+        assert req.headers.get_list("authorization") == ["Bearer sk-test"]  # never the env's
+        assert req.headers["anthropic-version"] == "2026-10-21"  # pinned
+        assert "x-api-key" not in req.headers  # Bearer is the only auth header
         assert "anthropic-beta" not in req.headers  # ANTHROPIC_CUSTOM_HEADERS cannot add betas
 
 
@@ -365,26 +368,35 @@ async def test_the_wire_is_pinned_against_the_sdks_environment_overrides(
         ("Content-Type: text/plain", [("Content-Type", "text/plain")], []),
         ("X-Stainless-Raw-Response: stream", [("X-Stainless-Raw-Response", "stream")], []),
         (
-            "x-api-key: sk-env\nanthropic-version: 2026-10-21",
-            [("x-api-key", "sk-env"), ("anthropic-version", "2026-10-21")],
+            "x-api-key: sk-env\nanthropic-version: 2023-06-01\nAuthorization: Bearer sk-env",
+            [
+                ("x-api-key", "sk-env"),
+                ("anthropic-version", "2023-06-01"),
+                ("Authorization", "Bearer sk-env"),
+            ],
             [],
         ),
         (
             "\N{IDEOGRAPHIC SPACE}x-api-key\N{NO-BREAK SPACE}: sk-env\n"
-            " anthropic-version\t: 2026-10-21",
-            [("x-api-key", "sk-env"), ("anthropic-version", "2026-10-21")],
+            " anthropic-version\t: 2023-06-01\n"
+            "\N{NO-BREAK SPACE}Authorization\t: Bearer sk-env",
+            [
+                ("x-api-key", "sk-env"),
+                ("anthropic-version", "2023-06-01"),
+                ("Authorization", "Bearer sk-env"),
+            ],
             [],
         ),
         (
             "x-api-key: a\nX-Api-Key: sk-env\nx-api-key: b\n"
-            "anthropic-version: a\nAnthropic-Version: 2026-10-21\n"
+            "anthropic-version: a\nAnthropic-Version: 2023-06-01\n"
             "Authorization: a\nauthorization: Bearer sk-env\nanthropic-beta: a\nAnthropic-Beta: b",
             [
                 ("x-api-key", "a"),
                 ("X-Api-Key", "sk-env"),
                 ("x-api-key", "b"),
                 ("anthropic-version", "a"),
-                ("Anthropic-Version", "2026-10-21"),
+                ("Anthropic-Version", "2023-06-01"),
                 ("Authorization", "a"),
                 ("authorization", "Bearer sk-env"),
                 ("anthropic-beta", "a"),
@@ -453,9 +465,9 @@ async def test_no_value_from_anthropic_custom_headers_reaches_the_wire(
             assert value not in req.headers.get_list(name)  # the variable's value never on the wire
         for name in absent:
             assert name not in req.headers  # an extra name never reaches the wire at all
-        assert req.headers.get_list("x-api-key") == ["sk-test"]  # the pins keep winning
-        assert req.headers.get_list("anthropic-version") == ["2023-06-01"]
-        assert "authorization" not in req.headers and "anthropic-beta" not in req.headers
+        assert req.headers.get_list("authorization") == ["Bearer sk-test"]  # the pins keep winning
+        assert req.headers.get_list("anthropic-version") == ["2026-10-21"]
+        assert "x-api-key" not in req.headers and "anthropic-beta" not in req.headers
 
 
 async def test_a_line_without_a_colon_lists_no_header(
@@ -483,3 +495,60 @@ async def test_a_line_without_a_colon_lists_no_header(
         await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
 
     assert [r.headers.get_list("content-type") for r in seen] == [["application/json"]] * 2
+
+
+# ── the pins are the factory's, not the SDK's defaults (W2.1b, W1a) ────────────
+
+
+def _x_api_key_auth(self: anthropic.AsyncAnthropic) -> dict[str, str]:
+    """A stand-in for a later SDK that authenticates an api_key with x-api-key by default and
+    switches a beta on by default."""
+    return {"X-Api-Key": self.api_key or "", "anthropic-beta": "a-default-beta"}
+
+
+async def test_the_pins_hold_when_the_sdk_changes_its_defaults(
+    monkeypatch: pytest.MonkeyPatch, mock_anthropic: MockAnthropic
+) -> None:
+    # Today the pinned wire equals the SDK 2.6.0 defaults, so with ANTHROPIC_CUSTOM_HEADERS unset
+    # the checks above cannot tell a pin from no pin. Give the SDK other defaults (another API
+    # version, x-api-key auth, a default beta): the wire must not move. Both targets are strings,
+    # so pyright's private-use check stays clean; an SDK bump that renames them turns this red,
+    # loudly, and the canary at the end turns it red if the patches stop moving the SDK's wire.
+    monkeypatch.setattr("anthropic._client.ANTHROPIC_API_VERSION", "1999-01-01")
+    monkeypatch.setattr("anthropic.AsyncAnthropic._api_key_auth", property(_x_api_key_auth))
+    seen: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if request.url.path.endswith("/count_tokens"):
+            return httpx2.Response(200, json={"input_tokens": 1})
+        return httpx2.Response(
+            200,
+            content=_provider_response(
+                [{"type": "tool_use", "id": "t", "name": "needs_help", "input": {}}]
+            ),
+        )
+
+    async with mock_anthropic(handler) as client:
+        brain_for = adapter_brain_for(client=client, model=SMOKE_MODEL, registry=_sniff_registry())
+        await brain_for("acme")([], _drop)
+        await hunt_smoke.count_tokens_preflight(client, _sniff_registry())
+
+    assert [str(r.url) for r in seen] == [MESSAGES_URL, f"{MESSAGES_URL}/count_tokens"]
+    for req in seen:
+        assert req.headers.get_list("authorization") == ["Bearer sk-test"]
+        assert req.headers.get_list("anthropic-version") == ["2026-10-21"]
+        assert "x-api-key" not in req.headers
+        assert "anthropic-beta" not in req.headers
+
+    # Canary: under the same patches a bare SDK client (no pins) does move, so the patches act on
+    # what the SDK sends; without this, a patch that did nothing would leave the test green.
+    async with anthropic.AsyncAnthropic(
+        api_key="sk-test",
+        base_url=brain.ANTHROPIC_BASE_URL,
+        http_client=anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler)),
+    ) as bare:
+        await hunt_smoke.count_tokens_preflight(bare, _sniff_registry())
+    assert seen[-1].headers.get_list("x-api-key") == ["sk-test"]
+    assert seen[-1].headers.get_list("anthropic-version") == ["1999-01-01"]
+    assert seen[-1].headers.get_list("anthropic-beta") == ["a-default-beta"]

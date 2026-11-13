@@ -74,7 +74,7 @@ _TOOL_USE = "tool_use"  # the Anthropic content-block type we act on
 MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 COUNT_TOKENS_URL = "https://api.anthropic.com/v1/messages/count_tokens"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
-_ANTHROPIC_VERSION = "2023-06-01"
+_ANTHROPIC_VERSION = "2026-10-21"
 _DEFAULT_MAX_TOKENS = 1024
 
 
@@ -107,9 +107,11 @@ def anthropic_client(
 
     - `max_retries=0` (D1b): the SDK never retries; the loop owns every retry and logs each attempt
       as its own ErrorEvent. It is also the paid smoke's hard one-call guard.
-    - The wire is PINNED to what every fixture was recorded under; a bump is deferred to its own
-      run: `x-api-key` auth (the SDK default is `Authorization: Bearer`, omitted here) and
-      `anthropic-version: 2023-06-01` (the SDK default is 2026-10-21).
+    - The wire is PINNED explicitly (W2.1b): `Authorization: Bearer <key>` and
+      `anthropic-version: 2026-10-21`, with `x-api-key` and `anthropic-beta` omitted. Today the
+      pins equal the SDK 2.6.0 defaults; they keep these four headers fixed if a later SDK changes
+      its defaults (pinned by tests/test_brain_adapter.py). Fixtures recorded before W2.1b used
+      `x-api-key` and 2023-06-01; they hold response bytes only, so they replay unchanged.
     - Explicit `api_key` and `base_url`: the SDK otherwise resolves credentials from the
       environment / profiles on disk, and `ANTHROPIC_BASE_URL` would redirect the request and the
       key.
@@ -124,13 +126,15 @@ def anthropic_client(
       downgraded to the httpx2 default, so the wire differs from the unset case; whether the API
       accepts a POST without Content-Type is unverified. Host, Content-Length, Connection and
       Accept-Encoding (httpx2 sets them per request), X-Stainless-Raw-Response and the pinned names
-      come back unchanged. A listed name that is not valid UTF-8 makes every request fail before it
-      is sent, as it did before W2.1. A client `copy()` or `with_options()` keeps these entries but
-      re-reads the variable, so a name or spelling added to it after the factory ran is not covered
-      on the copy and can reach the wire, a second spelling of a pinned name included; src/ never
-      copies the client.
-    - No redirects: the SDK's default http client follows them, cross-origin, and would resend the
-      `x-api-key` and the paid POST (httpx2 strips only `Authorization`). HEAD's httpx client never
+      keep their values (a listed spelling of a pinned name can become the header's name on the
+      wire; the value stays pinned). A listed name that is not valid UTF-8 makes every request
+      fail before it is sent, as it did before W2.1. A client `copy()` or `with_options()` keeps
+      these entries but re-reads the variable, so a name or spelling added to it after the factory
+      ran is not covered on the copy and can reach the wire, a second spelling of a pinned name
+      included; src/ never copies the client.
+    - No redirects: the SDK's default http client follows them, cross-origin, and on a 307 or 308
+      would resend the paid POST body (httpx2 strips `Authorization` on a cross-origin redirect, so
+      the Bearer key would not follow; an `x-api-key` would have). HEAD's httpx client never
       followed one, so a 3xx stays a fatal status error. The factory builds the http client itself
       (the SDK's keep-alive defaults, `follow_redirects=False`); callers inject only a `transport`
       (a capturing tee, a `MockTransport` in tests), so every caller gets the same client.
@@ -141,9 +145,9 @@ def anthropic_client(
     runtime (anthropic/_base_client.py `build_headers`), hence the one cast below; the wire test
     (tests/test_brain_adapter.py) pins the result."""
     pinned: dict[str, str | anthropic.Omit] = {
-        "x-api-key": api_key,
+        "Authorization": f"Bearer {api_key}",
         "anthropic-version": _ANTHROPIC_VERSION,
-        "Authorization": anthropic.omit,
+        "x-api-key": anthropic.omit,
         "anthropic-beta": anthropic.omit,
     }
     # Every name ANTHROPIC_CUSTOM_HEADERS lists gets an entry of its own, in its own spelling: the
