@@ -1,0 +1,96 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_011Ch2ByfJQGuSoUWXn8863T","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":1810,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":2,"service_tier":"standard","inference_geo":"global","speed":"standard"},"diagnostics":null}   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}   }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"'m checking the"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" sniff tool, which loo"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ks like a har"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"mless mock with no real"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" board,"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" network"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":", or spend, since"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" it"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" only echoes back the \"pr"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ey\" scent. That sugg"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ests this is a test environment r"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ather than a live set"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"up, so I'll call"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" s"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"niff to see how"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" it respon"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ds."} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EsoFCscCCBMYAipAbn/7qzWgSIlPZVKq8Zp2GOdEeNXEikVNVygQIc71m3lKsQ/EpH3mTIOLX/kemQrGdZ0Tx5EllGq0HAysJjp+ITIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ5NDRlMmFlOC05N2U2LTQ3ZDQtYWM4YS1kMDc3ZTg2OWFmYWGaAREKD2NsYXVkZS1zb25uZXQtNagBiMff1wbCAT0IBRAAGg8Bie4CBpoDTzcFmDgEJq0gAjIEEnHPJToEi9stTUIEbgY8KUoEiGB981ADWgTZBeFWYAJoAXAB2gFgChZwcmVmaXhfYmVmb3JlX2Jsb2NrX3YxEiCbskm4Eao+SlL7t7XAoAF5VIrEu++gN9/JDaoW3SifxyIAMiDCwBPIapyS4i+Wbz2GF3aPi3pEyQKtzAl7+h4JivtOH0gGEgxAt40y2N1/hngZCjQaDLLro8TZKBgm525klyIwWiXGfcFUb+WxxVwaXYreF+w3KremSBv4DoL4388Z0cENVNUFQGghNYe0y86wHFYHKq8Cih3lC+LtilJBtUQR22g7UsR2T9oSIQtpceolOKoOKM7zdlbIkA/iJ2TmGHDkYkKg3KXJV6PKpHvP1Kr7U2Xdo/X76GnIExL9DkPeeiwx3m5kfRPjges4RkpapHbQEnotuxkUoNVgjdu7/RtLfIhk3/z/IeWRhjj2Uw0e7TZOdtImxfSU1/HCbE7cCxhYNoKDDWwIvrAzH86SAB49h4Wgm2oA2kWbUdQDn0YAFSAHXRf3ZMwP3P3GIbrAywXOMayL/dn5SgaSyd5wfyNSN6qhKwydcJsOilpqUVHdCVWBjywfIiLp0Uj1WcW4IG80AY4I/14o618kAcHWUfF9MzssEy51Z0SL2ltzXP34IU0MTqZ1DVUTlwbJVp5nqohuUjf8vAgq0ZmClC4ImpuBi+7vGAE="}           }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01PA9irUadRNfsrqcMqHKdQV","name":"sniff","input":{},"caller":{"type":"direct"}}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"prey\""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":": \"mock"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"-gym\"}"}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1      }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":1810,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":148,"output_tokens_details":{"thinking_tokens":96}}           }
+
+event: message_stop
+data: {"type":"message_stop"   }
+
