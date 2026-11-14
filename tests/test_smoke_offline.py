@@ -3,8 +3,9 @@
 Two locks the paid call depends on:
   1. schema-clean — `build_tools` strips every `title` from the derived `input_schema`s; the
      `@rex_tool` args-models still emit `additionalProperties: false` (kept — Anthropic accepts it);
-  2. Sonnet 5 request guards — `build_request_body` omits the params that 400 on Sonnet 5
-     (`temperature`/`top_p`/`top_k`/`thinking`) and never ends `messages` on an assistant prefill.
+  2. the live model's request guards — `build_request_body`, called as the smoke calls it, sends
+     no `temperature`/`top_p`/`top_k` (a 400 on Sonnet 5.5) and no `thinking` (adaptive thinking
+     runs by default), and never ends `messages` on an assistant prefill (a 400).
 
 Since W2.0 the smoke runs on the Anthropic SDK (raw mode), so a third lock: 3. the smoke's HTTP
 path, driven offline over an httpx2 `MockTransport` with `fixture_dir=tmp_path` passed explicitly
@@ -39,7 +40,7 @@ SMOKE_FIXTURE = Path(__file__).parent / "fixtures" / "smoke_sonnet5.json"  # rea
 FIXTURES = Path(__file__).parent / "fixtures"  # the real fixture tree, read-only here
 GOLDEN_SHA256 = "bcbdbbab3549e7a77c848d9c96e2c5ccf9e1162c4ea463092c025ff6fbea12a5"  # smoke_sonnet5
 NOW = datetime(2026, 11, 14, 0, 0, 0, tzinfo=UTC)  # a pinned clock, so the file name is known
-FIXTURE_NAME = "smoke_claude-sonnet-5_20261114T000000000000Z.json"  # what run_smoke writes at NOW
+FIXTURE_NAME = "smoke_claude-sonnet-5-5_20261114T000000000000Z.json"  # what run_smoke writes at NOW
 
 
 def _has_title(node: Any) -> bool:
@@ -68,7 +69,7 @@ def test_rex_tool_schema_keeps_additionalproperties_false() -> None:
     assert "additionalProperties" not in by_name["hunt_complete"]["input_schema"]
 
 
-# ── 2. Sonnet 5 request guards ───────────────────────────────────────────────
+# ── 2. the live model's request guards ───────────────────────────────────────
 
 
 def test_smoke_request_body_omits_sonnet5_forbidden_params() -> None:
@@ -76,7 +77,7 @@ def test_smoke_request_body_omits_sonnet5_forbidden_params() -> None:
     body = build_request_body(
         model=SMOKE_MODEL, max_tokens=4096, messages=messages, tools=build_tools(build_registry())
     )
-    assert body["model"] == "claude-sonnet-5"
+    assert body["model"] == "claude-sonnet-5-5"
     assert body["max_tokens"] >= 1024  # room for adaptive-thinking tokens + the tool_use block
     for forbidden in ("temperature", "top_p", "top_k", "thinking"):
         assert forbidden not in body  # any of these → 400 on Sonnet 5

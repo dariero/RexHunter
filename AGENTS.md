@@ -78,7 +78,10 @@ the ADR.
   second spelling of a pinned name included; src/ never copies the client. Native tool calling,
   constrained decoding where available, `ThinkingDelta` event relay, per-event cost accounting.
   Each `ToolCallEvent` the live brain writes stores the whole assistant turn (`assistant_content`,
-  W2.3), and the next call sends it back as stored, every block in order.
+  W2.3), and the next call sends it back as stored, every block in order. The live model is
+  `claude-sonnet-5-5` (`SMOKE_MODEL`, W2.5); a thinking-off hunt sends that model's row of
+  `brain.THINKING_FLOOR` (`between_tools`; `disabled` on `claude-sonnet-5`), and a model with no
+  row fails closed with `ValueError` before any request (W2.2).
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
   `pytest-anyio` dep). Config and version floors in `pyproject.toml`; exact pins in `uv.lock`.
@@ -307,6 +310,47 @@ was accepted. Its three streams are the new fixtures (`tests/test_verbatim_turn_
 DoD #5); every earlier fixture file is unchanged and still replays; in the three earlier hunt
 replays, call two now carries the W2.3 echo, pinned offline. 325 tests pass at `3c6269f`. *Next: the
 switch to Sonnet 5.5 (W2.2 + W2.5, plan B, Darie 14 Nov).*
+**▶ W2.2 + W2.5 · The switch to Claude Sonnet 5.5 – ✅ done on branch `w2.2-thinking-floor`
+(`c93e577`→`b6cd940`, 2026-11-14), PR #7, and branch `w2.5-sonnet-5-5` (`f8bc50a`→`8bed83c`,
+2026-11-15), PR #8.** Plan B, forks chosen 14 Nov under Darie's delegation. W2.2 (F5, fork F1):
+`brain.THINKING_FLOOR` holds the lowest thinking setting per model, `claude-sonnet-5`
+`{type: "disabled"}` and `claude-sonnet-5-5` `{type: "between_tools"}` (the thinking docs and the
+Sonnet 5.5 migration guide, read 14 Nov 2026: Sonnet 5.5 answers `disabled` with a 400, and
+`between_tools` takes no other field). `thinking_floor(model)` returns a copy of the row; a model
+with no row raises `ValueError` in `adapter_brain_for` and in the pre-flight body, before any
+request (fail closed). Fork R1: each replay of a recorded run drives the adapter on the model it
+was recorded on (`RECORDED_MODEL`) and asserts that model on the wire, and `disabled` on the
+thinking-off runs. Part A left the Sonnet 5 wire unchanged (the pre-flight and adapter bodies are
+byte-identical); 336 tests pass at `3ae8268`. W2.5 (D2): `SMOKE_MODEL = "claude-sonnet-5-5"`, so
+every gated entrypoint and the daemon's `select_brain_for` (`REXHUNTER_BRAIN=live`) run on Sonnet
+5.5; no live daemon run was made. Free probe K (`count_tokens` on Sonnet 5.5): K1, the thinking-off
+body (`between_tools`), 200, 1743 input tokens; K2, the thinking-on body (adaptive,
+`display: "summarized"`), 200, 1744; the controls 400, so `count_tokens` checks the thinking value:
+K3 (`disabled`: "To turn thinking off on this model, send `"thinking": {"type": "between_tools"}`
+instead of `{"type": "disabled"}`. The model does not think before responding. The short updates it
+writes between tool calls come back as thinkin", cut there by the probe) and K4 (`between_tools`
+with `display`: "Extra inputs are not permitted"). Paid checks (Darie, $0.028018 of a $0.25 cap):
+run `5b62bc48-7577-4a52-b003-bdabf592061d`, thinking off, plain: 3 brain calls, `needs_help`,
+$0.013476. Each turn came back `[text, tool_use]` with 0 thinking tokens and no progress-update
+block; calls two and three sent back one and two stored thinking-off turns and were accepted (the
+first live `messages` send-back of a stored thinking-off turn; the prefix check passed). Run
+`54590aec-de50-4727-a0a2-9e533fb02efa`, thinking on, streamed: 3 brain calls, `needs_help`,
+$0.014542. Call one did not think (`[tool_use]` only); calls two and three each carried one
+summarized, signed thinking block; the SSE event and delta types are those of the Sonnet 5
+recordings; call three sent back call two's signed block and was accepted (the first live send-back
+of a Sonnet 5.5 thinking block). Their responses and streams are the new fixtures
+(`tests/test_sonnet_5_5_hunt_replay.py`, `tests/test_sonnet_5_5_thinking_hunt_replay.py`, DoD #5);
+every earlier fixture file is unchanged and still replays, each recorded hunt on `claude-sonnet-5`
+(R1). Still offline only or unverified: a turn with two thinking blocks; whether a thinking block
+is up-front reasoning or a progress update; the "interrupted before it finished" truncation shape;
+the tool descriptions, as the replays register their own `sniff` while the live runs sent
+`stub.sniff`'s docstring (call three of the thinking-on run quotes it); and a `display` dropped
+from `HUNT_THINKING`, caught only by the wire literals of two replay tests. Earlier lines of this
+section that name `claude-sonnet-5` as `SMOKE_MODEL` or `disabled` as the live thinking-off value
+describe the state before this entry. 350 tests pass at `8bed83c`. *Next: W3. New for it:
+`tests/test_hunt_smoke_thinking_offline.py` leaves two `rexhunter-think-*` temp directories per
+suite run, and `tests/test_stage5_gate.py` intermittently raises an aiosqlite
+`PytestUnhandledThreadExceptionWarning`.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
