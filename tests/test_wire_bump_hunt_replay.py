@@ -39,6 +39,7 @@ FIXTURES = sorted((FIXTURE_DIR / f"hunt_{RUN_ID}").glob("call_*.json"))
 CALL1_TOOL_USE_ID = "toolu_01PzYiMeMjrpwgia2hmXY6mv"  # call 1's sniff id, the correlation key
 LIVE_SPEND_USD = 0.0096  # the [hunt] report (printed to 4 places), priced at today's table
 SPEND_TODAY_USD = 0.009624  # (1810 + 1877) x $2/M + (67 + 158) x $10/M, an exact product
+RECORDED_MODEL = "claude-sonnet-5"  # the model the run was recorded on (each fixture's "model")
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
@@ -75,7 +76,7 @@ async def _replay(
     requests: list[httpx2.Request] = []
     reg = _sniff_registry()
     async with mock_anthropic(_replay_handler(requests), api_key="replay") as client:
-        brain_for = brain.adapter_brain_for(client=client, model=brain.SMOKE_MODEL, registry=reg)
+        brain_for = brain.adapter_brain_for(client=client, model=RECORDED_MODEL, registry=reg)
         conn = await db.connect(db_path)
         try:
             run_id = await run_hunt(
@@ -100,6 +101,12 @@ async def _replay(
 
 def test_two_fixtures_were_captured() -> None:
     assert len(FIXTURES) == 2  # the live hunt made two brain calls
+
+
+def test_each_fixture_names_the_recorded_model() -> None:
+    assert len(FIXTURES) == 2  # never vacuous: no fixture, no pass
+    for path in FIXTURES:
+        assert json.loads(path.read_bytes())["model"] == RECORDED_MODEL
 
 
 def test_the_fixtures_carry_the_2026_10_21_response_shape() -> None:
@@ -160,6 +167,10 @@ async def test_call_two_carried_the_reconstructed_turn_over_the_new_wire(
     for request in requests:
         assert request.headers.get_list("authorization") == ["Bearer replay"]
         assert request.headers.get_list("anthropic-version") == ["2026-10-21"]
+        # R1 (W2.2): a replay sends each request on the model the run was recorded on, thinking off.
+        body = json.loads(request.content)
+        assert body["model"] == RECORDED_MODEL
+        assert body["thinking"] == {"type": "disabled"}
 
     messages: list[dict[str, Any]] = json.loads(requests[1].content)["messages"]
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]

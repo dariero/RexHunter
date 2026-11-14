@@ -61,6 +61,7 @@ PREY = ["mock-gym", "AI engineer", "Machine Learning Engineer"]
 USAGE = [(1810, 148), (1974, 462), (2452, 833)]
 LIVE_SPEND_USD = 0.0269  # the [hunt] report (4 places), priced at today's table
 SPEND_TODAY_USD = 0.026902  # (1810 + 1974 + 2452) x $2/M + (148 + 462 + 833) x $10/M
+RECORDED_MODEL = "claude-sonnet-5"  # the model the run was recorded on (each stream's "model")
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
@@ -102,7 +103,7 @@ async def _replay(
     async with mock_anthropic(_replay_handler(requests), api_key="replay") as client:
         brain_for = brain.adapter_brain_for(
             client=client,
-            model=brain.SMOKE_MODEL,
+            model=RECORDED_MODEL,
             registry=reg,
             max_tokens=hunt_smoke_thinking.HUNT_MAX_TOKENS,
             thinking=hunt_smoke_thinking.THINKING,
