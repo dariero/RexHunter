@@ -41,7 +41,7 @@ the ADR.
 
 - **Runtime:** Python 3.15, `asyncio`.
 - **Web/host:** FastAPI (lifespan-launched background daemon + SSE endpoints). Inherited
-  from the prototype baseline; not named in the ADR.
+  from the prototype baseline; the ADR names it only in that baseline's build-sequence row.
 - **Persistence:** SQLite single file, `aiosqlite`, WAL + `busy_timeout=5000`. Core tables
   `runs` + `trajectory_events`, dual cursor: global `id` (SSE stream) + per-run `seq` (ghost
   replay). Append-only, immutable.
@@ -79,7 +79,7 @@ the ADR.
   constrained decoding where available, `ThinkingDelta` event relay, per-event cost accounting.
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
-  `pytest-anyio` dep). Pins + config in `pyproject.toml`.
+  `pytest-anyio` dep). Config and version floors in `pyproject.toml`; exact pins in `uv.lock`.
 
 ## Project structure
 
@@ -146,7 +146,7 @@ capture lands in Unit 3. *2c.2 (gated live) — ✅ done:* one budget-capped hun
 `COST_CEILING_USD=0.05`, `MAX_ITERATIONS=3`) on `SMOKE_MODEL` against the mock-gym board — 2 brain
 calls, `needs_help`, $0.0149. **Call two fired: the reconstructed assistant `tool_use` + user
 `tool_result` (paired by `tool_use_id`) was accepted by the real API** — the never-run path is proven.
-Each call's raw bytes captured as golden fixtures (`tests/fixtures/hunt_smoke_call_0{1,2}.json`, inv 6);
+Each call's raw bytes captured as golden fixtures (`tests/fixtures/hunt_1ab26132…/call_0{1,2}.json`, inv 6);
 `tests/test_hunt_replay.py` re-drives them offline to identical events (DoD #5). The daemon still drives
 the **no-spend stub brain** (`stub.py`); daemon-lifespan live wiring is a later unit.
 **▶ `P3` · Streaming hub — ✅ done. DoD #3 CLOSED.** The prototype poll is retired; the real in-process
@@ -321,7 +321,7 @@ at `2a2a322`. *Next: W2.2 (`between_tools`).*
   `brain.py` `parse_decision` (raw provider bytes → typed `Decision`, invariant 3), the
   malformed→`ErrorEvent` path (invariant 6), `tool_use_id` correlation on
   `ToolCallEvent`/`ToolResultEvent`; offline, no-spend — the whole of DoD #5, gate
-  `tests/test_stage5_gate.py`. *Unit 2a (provider adapter, offline half) — active:*
+  `tests/test_stage5_gate.py`. *Unit 2a (provider adapter, offline half) – ✅ done (`edd4ec8`):*
   `adapter_brain_for` over **httpx** (since W2.0: over the Anthropic SDK in raw mode) wraps
   `parse_decision` around the Anthropic Messages API, presents
   `sniff`/`hunt_complete`/`needs_help` as derived tool schemas (D1), rejects multiple
@@ -348,8 +348,8 @@ at `2a2a322`. *Next: W2.2 (`between_tools`).*
   envelope reaches a viewer only after a separate reader sees the committed row (inv 1).
 
 `payload` is a typed event union (`events.py`); the agent loop & `@rex_tool` harness landed in
-`P2.2` (`loop.py`, `tools/`). The brain is still a **stub** — don't introduce the LLM
-`brain()` early; it's `P5` (paid), and the loop stays free until then.
+`P2.2` (`loop.py`, `tools/`). The no-spend stub brain (`stub.py`) drives by default; the live
+`brain()` (`P5`, paid) runs only when `REXHUNTER_BRAIN=live` arms it (`brain.select_brain_for`).
 
 ## How to work with me
 

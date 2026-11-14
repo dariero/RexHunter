@@ -55,7 +55,7 @@ That one property is what this whole slice purchases.
 
 A SQL database stores data in **tables** – grids with named, typed **columns**, where each
 record is a **row**. P1 needs exactly two. Both are created by the `_SCHEMA` string
-at the top of `db.py` (`src/rexhunter/db.py:13`), which `connect()` executes every boot –
+at the top of `db.py` (`src/rexhunter/db.py:25`), which `connect()` executes every boot –
 `CREATE TABLE IF NOT EXISTS` means "create it the first time, silently skip every time
 after", so booting is also bootstrapping.
 
@@ -153,7 +153,7 @@ because watching-everything-live and rewatching-one-match are different jobs.
 In RexHunter:
 
 - The **SSE feed** (live ticker) runs `WHERE id > :last_seen ORDER BY id`
-  (`src/rexhunter/server.py:74`). Its bookmark even survives a dropped browser
+  (`src/rexhunter/server.py:134`). Its bookmark even survives a dropped browser
   connection: each SSE message carries `id: <global id>`, the browser remembers the last
   one, and on reconnect sends it back in a `Last-Event-ID` header. Resuming is a
   protocol feature, not code we invented.
@@ -184,7 +184,7 @@ id  run       seq  payload
 3. **A cheap query.** The `(run_id, seq)` index serves replay directly.
 
 How does `seq` get assigned without a race? Look at `append_event`
-(`src/rexhunter/db.py:63`):
+(`src/rexhunter/db.py:149`):
 
 ```python
 cursor = await conn.execute(
@@ -224,7 +224,7 @@ Invariant 1 says: **commit to the log first, tell the world second.**
 A **commit** is the database's "make it permanent" moment. Writes inside a transaction
 are provisional – invisible to every other connection and discarded on a crash – until
 `commit()` returns; after it returns, the data is on disk and will survive `kill -9`.
-Here is the exact line, in `append_event` (`src/rexhunter/db.py:80`):
+Here is the exact line, in `append_event` (`src/rexhunter/db.py:164`):
 
 ```python
 cursor = await conn.execute(...)  # the INSERT - provisional
@@ -266,7 +266,7 @@ hub is fine – you recover by re-reading the log) but is never allowed to **inv
 Promise less, guarantee it absolutely.
 
 One naming collision to defuse: SQLite's `PRAGMA journal_mode=WAL`
-(`src/rexhunter/db.py:43`) puts the *file format* in "Write-Ahead Logging" mode – an
+(`src/rexhunter/db.py:99`) puts the *file format* in "Write-Ahead Logging" mode – an
 internal SQLite journal that lets readers read while the one writer writes. That is
 SQLite applying the same instinct to bytes-on-disk that invariant 1 applies to events.
 Same philosophy, two different layers; `busy_timeout=5000` is its sidekick ("if the file
@@ -358,7 +358,7 @@ boot: marked 1 dangling run(s) as crashed
 INFO:     Application startup complete.
 ```
 
-That line is `mark_crashed_runs` (`src/rexhunter/db.py:89`) doing the boot-time sweep:
+That line is `mark_crashed_runs` (`src/rexhunter/db.py:214`) doing the boot-time sweep:
 *"any run still open at boot did not survive its process"* – a single UPDATE of every
 `outcome IS NULL` row to `'crashed'`. The logic is beautifully indirect: we never detect
 the crash; we detect the *absence of a clean ending*. The state machine on the `runs` row

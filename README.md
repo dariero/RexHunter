@@ -19,8 +19,8 @@ the agent's actual trajectory replayed as a creature moving through its world.
 > and retro-game renderer (`view`/`viewstate`/`render`, property-tested) – has shipped, and the
 > game-state layer on top of it is done and browser-verified: run/territory overlays with
 > recorded budget ceilings, live run-finished pulses, per-territory scene tiles
-> (fresh-kill/cracked-earth/hunting/dormant), and depleting HP/stamina bars. The current
-> frontier is the aesthetic skin (pixel/CRT, sprite keyframes, day/night scene). Slice IDs,
+> (fresh-kill/cracked-earth/hunting/dormant), and depleting HP/stamina bars. The aesthetic
+> skin (pixel/CRT, sprite keyframes, day/night scene) has shipped too. Slice IDs,
 > order, and gates live in the [ADR](rexhunter-adr.md#build-sequence-canonical).
 
 ## Core constraints
@@ -71,7 +71,8 @@ Downstream is a firehose (SSE, `Last-Event-ID` resume); upstream is the occasion
 - **Hand-rolled agent loop – no LangChain, no LangGraph.** The ~150-line loop, the tool
   contract, and the trajectory store *are* the point of this project; a framework would hide
   exactly the control flow and durable-state machinery it exists to build.
-- **Tooling:** `ruff`, `pyright` (strict), `pytest` – pinned in `pyproject.toml`.
+- **Tooling:** `ruff`, `pyright` (strict), `pytest` – configured in `pyproject.toml`, pinned in
+  `uv.lock`.
 
 ## Build status
 
@@ -92,7 +93,7 @@ ADR owns the order and gates; this table tracks only status. Slices are named by
 | `P3` | Streaming hub – per-viewer broadcast queues, snapshot + catch-up + `Last-Event-ID` resume | 3 | **Done** – prototype poll retired; `/events` streams from the real in-process hub |
 | Frontend spine | view/viewstate/render – pure projection reducer + assembler + renderer, property-locked | – | **Done** |
 | Frontend game state | runs ⊕ overlay + recorded budget ceilings + run-finished pulse + territory tiles (incl. dormant/cracked-earth) + HP/stamina bars + sprite-state hooks | – | **Done** – browser-verified; ADR Pillar 5 §6 (budget guards as HP/stamina mechanics) closed |
-| Aesthetic skin | Retro dino-game visual skin: pixel/CRT CSS, sprite keyframes on the data-rex hooks, day/night scene, damage/feast cues | – | **Not started** – current frontier |
+| Aesthetic skin | Retro dino-game visual skin: pixel/CRT CSS, sprite keyframes on the data-rex hooks, day/night scene, damage/feast cues | – | **Done** |
 
 Gates are test-first and defined in the ADR. `P1`'s gate (`tests/test_stage1_gate.py`): a real
 hunt subprocess is `kill -9`ed mid-append; every confirmed event must survive the restart and the
