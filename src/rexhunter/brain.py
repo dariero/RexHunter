@@ -496,20 +496,32 @@ def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list
     PROJECTION of the log (invariant 2), derived per brain call — not a second stored chat history.
     The seed directive opens it; then each event maps to its conversational turn:
 
-      - ToolCallEvent    -> an assistant turn with the native `tool_use` block (id/name/input);
+      - ToolCallEvent    -> the assistant turn. Since W2.3 (D7) the event stores the whole turn
+        (`assistant_content`, the response's `content` array) and it is echoed EXACTLY as stored,
+        every block in order: thinking and redacted_thinking blocks, text, the tool_use with its
+        `caller` and the model's own `input`. An event written before W2.3 gets the old shape: its
+        signed thinking block (if any), then a `tool_use` rebuilt from id/name/`raw_request`;
       - ToolResultEvent  -> a user turn with the matching `tool_result` (paired by `tool_use_id`);
       - a FATAL tool ErrorEvent -> an `is_error` tool_result paired to the open tool_use (ErrorEvent
         carries no id, so we pair it with the last-opened call).
 
     Skipped (not conversation): retryable ErrorEvents (a retry follows, superseded by its
     ToolResultEvent), `<brain>`/`<loop>` failures (transport/loop errors, not turns), and
-    SniffEvent / PreyCapturedEvent / UsageEvent. Assistant *thinking* is NOT reconstructed — it is
-    not captured until Unit 3, which is why the loop path disables thinking (bare tool_use replay).
+    SniffEvent / PreyCapturedEvent / UsageEvent / ThinkingDelta (the stored turn, not its partial
+    deltas, is what goes back).
     """
     messages: list[dict[str, Any]] = [{"role": "user", "content": _seed_directive(territory)}]
     open_tool_use_id = ""  # the id of the tool_use awaiting its result (for id-less ErrorEvents)
     for event in context:
-        if isinstance(event, ToolCallEvent):
+        if isinstance(event, ToolCallEvent) and event.assistant_content:
+            # The whole turn, echoed exactly as the API returned it (W2.3, D7, fork E1): nothing is
+            # rebuilt, so the conversation stays append-only. A thinking block that is reordered,
+            # edited or dropped is a 400, and on models with preserved thinking the prefix check
+            # compares every earlier message, the tool_use included.
+            turn: list[dict[str, Any]] = json.loads(event.assistant_content)
+            messages.append({"role": "assistant", "content": turn})
+            open_tool_use_id = event.tool_use_id
+        elif isinstance(event, ToolCallEvent):
             content: list[dict[str, Any]] = []
             if event.thinking:
                 # Lead with the model's VERBATIM signed thinking block (`P5` Unit 3c, invariant 6):

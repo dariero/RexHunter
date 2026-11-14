@@ -47,11 +47,18 @@ class ToolCallEvent(_Event):
     tool: str
     raw_request: bytes  # the JSON-serialised validated args (invariant 6)
     tool_use_id: str = ""  # the provider's correlation key (P5); "" for stub/pre-P5 dispatches
+    assistant_content: bytes = b""  # the WHOLE assistant turn (W2.3, D7, invariant 6): the JSON
+    # bytes of the response's `content` array, every block in order (thinking, redacted_thinking,
+    # text, the tool_use with its `caller` and the model's own `input`). project_messages echoes it
+    # exactly as stored, never rebuilt: the docs say to send each assistant turn back exactly as the
+    # API returned it, and a reordered, edited or dropped thinking block is a 400. Empty for
+    # stub/scripted turns and every event written before W2.3.
     thinking: bytes = b""  # the model's VERBATIM signed thinking block for THIS assistant turn
     # (`P5` Unit 3, invariant 6): the raw JSON `{type:"thinking", thinking, signature}` assembled
-    # off the stream. project_messages leads the reconstructed turn with it — echoed, never rebuilt:
-    # the signature is bound to the exact block content, so a rebuild would 400 ("thinking blocks
-    # cannot be modified"). Empty for stub/scripted turns and every pre-Unit-3 event/fixture.
+    # off the stream. Read by project_messages only when `assistant_content` is empty (the pre-W2.3
+    # form): it leads the reconstructed turn — echoed, never rebuilt: the signature is bound to the
+    # exact block content, so a rebuild would 400 ("thinking blocks cannot be modified"). Empty for
+    # stub/scripted turns and every pre-Unit-3 event/fixture.
 
 
 class ToolResultEvent(_Event):
