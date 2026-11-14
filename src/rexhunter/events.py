@@ -53,12 +53,13 @@ class ToolCallEvent(_Event):
     # exactly as stored, never rebuilt: the docs say to send each assistant turn back exactly as the
     # API returned it, and a reordered, edited or dropped thinking block is a 400. Empty for
     # stub/scripted turns and every event written before W2.3.
-    thinking: bytes = b""  # the model's VERBATIM signed thinking block for THIS assistant turn
-    # (`P5` Unit 3, invariant 6): the raw JSON `{type:"thinking", thinking, signature}` assembled
-    # off the stream. Read by project_messages only when `assistant_content` is empty (the pre-W2.3
-    # form): it leads the reconstructed turn — echoed, never rebuilt: the signature is bound to the
-    # exact block content, so a rebuild would 400 ("thinking blocks cannot be modified"). Empty for
-    # stub/scripted turns and every pre-Unit-3 event/fixture.
+    thinking: bytes = b""  # the pre-W2.3 form (`P5` Unit 3, invariant 6): the turn's FIRST signed
+    # thinking block, `{type:"thinking", thinking, signature}`, kept on streaming turns only. Events
+    # written since W2.3 leave it empty and store the whole turn in `assistant_content`; it is kept
+    # so older logs and fixtures still decode and replay. project_messages reads it only when
+    # `assistant_content` is empty: it leads the reconstructed turn — echoed, never rebuilt: the
+    # signature is bound to the exact block content, so a rebuild would 400 ("thinking blocks cannot
+    # be modified"). Empty for stub/scripted turns and every pre-Unit-3 event/fixture.
 
 
 class ToolResultEvent(_Event):
@@ -110,9 +111,9 @@ class ThinkingDelta(_Event):
     skips it). A reconstructed assistant turn must echo the model's VERBATIM signed thinking block
     (invariant 6), never a rebuild folded from these partial deltas: the signature is bound to the
     exact block content, so a fold would drift the bytes and the API would 400 ("thinking blocks
-    cannot be modified"). The durable replay artifact is the signed block on ToolCallEvent (Unit
-    3c); these deltas are the live feed — a separate consumer of the same log (the two-cursor
-    design)."""
+    cannot be modified"). The durable replay artifact is the whole turn on ToolCallEvent
+    (`assistant_content`, W2.3; the single signed block in `thinking` before it); these deltas are
+    the live feed — a separate consumer of the same log (the two-cursor design)."""
 
     type: Literal["thinking_delta"] = "thinking_delta"
     text: str

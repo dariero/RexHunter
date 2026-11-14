@@ -11,6 +11,10 @@ through the loop reproduces the run's events every time.
 The responses also record what 2026-10-21 sends back: extra top-level `container` and
 `diagnostics`, `usage.speed`, and a `caller` on each tool_use block. The lenient envelope ignores
 them, so they parse to the same decisions as the 2023-06-01 recordings.
+
+Since W2.3 the replayed call two sends call one's WHOLE turn (its text block, then the tool_use with
+`caller`). The live run sent the pre-W2.3 rebuild (the tool_use alone), so the W2.3 shape is pinned
+here offline only.
 """
 
 import json
@@ -147,9 +151,10 @@ async def test_replay_reproduces_the_live_hunt_trajectory(
 async def test_call_two_carried_the_reconstructed_turn_over_the_new_wire(
     tmp_path: Path, mock_anthropic: MockAnthropic
 ) -> None:
-    # THE GATE: call two folds call one's tool_use back as assistant(tool_use) + user(tool_result),
-    # paired by tool_use_id: the turn the real API accepted over Bearer + 2026-10-21. The replay
-    # goes through the same factory, so both requests carry that wire too.
+    # THE GATE: call two folds call one's turn back as assistant + user(tool_result), paired by
+    # tool_use_id. The real API accepted the pre-W2.3 turn (the tool_use alone) over Bearer +
+    # 2026-10-21; since W2.3 the whole turn goes back (text, then the tool_use), checked here
+    # offline. The replay goes through the same factory, so both requests carry that wire too.
     _events, _outcome, requests = await _replay(tmp_path / "rex.db", mock_anthropic)
     assert len(requests) == 2  # exactly two brain calls, no more
     for request in requests:
@@ -158,7 +163,7 @@ async def test_call_two_carried_the_reconstructed_turn_over_the_new_wire(
 
     messages: list[dict[str, Any]] = json.loads(requests[1].content)["messages"]
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]
-    assistant_block = messages[1]["content"][0]
+    assistant_block = messages[1]["content"][1]
     result_block = messages[2]["content"][0]
     assert assistant_block["type"] == "tool_use"
     assert assistant_block["id"] == CALL1_TOOL_USE_ID
@@ -166,6 +171,8 @@ async def test_call_two_carried_the_reconstructed_turn_over_the_new_wire(
     assert result_block["type"] == "tool_result"
     assert result_block["tool_use_id"] == CALL1_TOOL_USE_ID  # correlation survives the fold
     assert "posting:" in result_block["content"]  # the sniff output threaded back as observation
+    # W2.3: the whole turn goes back, so call one's text block leads it, as the API returned it.
+    assert messages[1]["content"][0] == json.loads(FIXTURES[0].read_bytes())["content"][0]
 
 
 async def test_replay_is_deterministic_across_two_passes(

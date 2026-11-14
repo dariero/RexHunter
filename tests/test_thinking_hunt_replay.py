@@ -14,6 +14,9 @@ Determinism lives in replaying fixed bytes, not in the model — the live call i
 re-drives it to identical events every time (DoD #5: "replaying a recorded run's raw payloads …
 reproduces identical events"). Each fixture is the raw stream, so the streaming assembler + the
 signed-block fold are exercised end to end offline.
+
+Since W2.3 the replayed call two echoes call one's WHOLE stored turn, so its tool_use also carries
+`caller`, a key the live call two did not send. The signed thinking block is the same bytes as live.
 """
 
 import json
@@ -166,7 +169,9 @@ async def test_replay_reproduces_the_live_hunt_trajectory(
     assert len(calls) == 1 and len(results) == 1
     assert calls[0].tool == "sniff"
     assert calls[0].tool_use_id == results[0].tool_use_id == CALL1_TOOL_USE_ID
-    assert json.loads(calls[0].thinking) == CALL1_THINKING  # the signed block stored on the event
+    # The whole turn is stored on the event (W2.3): call one's assembled content, every block.
+    assert json.loads(calls[0].assistant_content) == CALL1["content"]
+    assert json.loads(calls[0].assistant_content)[0] == CALL1_THINKING  # the signed block leads it
 
     assert (outcome, reason) == ("completed", None)  # NOT aborted — call two was accepted live
 

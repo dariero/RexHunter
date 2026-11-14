@@ -224,7 +224,8 @@ class _ProviderResponse(BaseModel):
     untrusted provider I/O, so — unlike our own event models (`extra="forbid"`) — the envelope is
     lenient on unmodeled fields (`id`/`model`/`role`/`usage`/…): we validate `content` is a list
     and pull the actionable `tool_use` block out of it, tolerating sibling blocks (text, thinking)
-    without letting them reject the payload."""
+    without letting them reject the payload. Only that block is validated further; the whole
+    `content` list is otherwise kept as received and stored as the turn (W2.3)."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -251,7 +252,10 @@ def parse_decision(raw: bytes) -> Decision:
     """Raw provider bytes -> typed `Decision`, or `BrainParseError` (invariants 3 + 6). Pure: no
     clock, no randomness, no network — the same bytes always yield the same decision. The parsed
     `UsageEvent` (token cost, P5 Unit 2c) rides onto the Decision so the loop can fold spend from
-    the log (invariant 5) without a second crossing of the raw bytes."""
+    the log (invariant 5) without a second crossing of the raw bytes. A `ToolCallDecision` also
+    carries the whole turn (W2.3, D7): the validated envelope's `content` array, every block in
+    order, as JSON bytes, which the loop stores on the ToolCallEvent for the next call's echo. Both
+    paths come through here, so the plain and the streaming turn are stored the same way."""
     try:
         response = _ProviderResponse.model_validate_json(raw)
     except ValidationError as exc:
@@ -287,7 +291,15 @@ def parse_decision(raw: bytes) -> Decision:
     elif block.name == NEEDS_HELP:
         decision = NeedsHelp()
     else:
-        decision = ToolCallDecision(tool=block.name, args=block.input, tool_use_id=block.id)
+        decision = ToolCallDecision(
+            tool=block.name,
+            args=block.input,
+            tool_use_id=block.id,
+            # The whole turn, from the SAME validated envelope (not a second crossing of `raw`):
+            # every block, in order, with every key the provider sent. Parsed JSON is what the API
+            # compares, so re-serialising it here keeps the turn exactly as returned.
+            assistant_content=json.dumps(response.content).encode(),
+        )
     decision.usage = usage  # every Decision carries the call's cost (None for a no-usage payload)
     return decision
 
@@ -632,17 +644,6 @@ def _is_transport_failure(exc: anthropic.APIConnectionError) -> bool:
     return isinstance(exc.__cause__, httpx2.TransportError)
 
 
-def _extract_thinking_block(raw: bytes) -> bytes:
-    """The turn's VERBATIM signed thinking block from an assembled response, for replay (inv 6):
-    its raw JSON bytes, or b"" if the turn carried no thinking. `project_messages` echoes these
-    bytes onto the reconstructed assistant turn — never rebuilds them: the signature is bound to the
-    exact block content (a rebuild would 400 "thinking blocks cannot be modified")."""
-    for block in json.loads(raw).get("content", []):
-        if block.get("type") == "thinking":
-            return json.dumps(block).encode()
-    return b""
-
-
 def adapter_brain_for(
     *,
     client: anthropic.AsyncAnthropic,
@@ -658,8 +659,9 @@ def adapter_brain_for(
     call, a `MockTransport` in tests), the same single-owner discipline the run connections follow.
 
     Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), thread the
-    `HUNT_SYSTEM_PROMPT`. `thinking` defaults to `{type:"disabled"}` (2c's bare tool_use replay);
-    `P5` Unit 3 passes `{type:"adaptive", display:"summarized"}` + `stream=True`. The SDK runs in
+    `HUNT_SYSTEM_PROMPT`. `thinking` defaults to `{type:"disabled"}` (2c's thinking-off hunt; since
+    W2.3 its echoed turn is the whole stored turn, e.g. text then the tool_use); `P5` Unit 3 passes
+    `{type:"adaptive", display:"summarized"}` + `stream=True`. The SDK runs in
     RAW mode (W2.0, D9a): on the streaming path `with_streaming_response` hands the SSE body line by
     line to our assembler, which relays the deltas live via the `sink`; on the plain path
     `with_raw_response` hands over the response bytes. Either way the provider's own bytes cross the
@@ -704,12 +706,9 @@ def adapter_brain_for(
             except _SDK_ERRORS as exc:
                 # a failure while the body streams (a reset mid-frame) is a transport blip too
                 raise brain_call_error(exc) from exc
-            decision = parse_decision(raw)  # the one boundary (invariant 3)
-            if stream and isinstance(decision, ToolCallDecision):
-                # Carry the turn's VERBATIM signed thinking block so the NEXT call's reconstructed
-                # assistant turn leads with it (Unit 3c, invariant 6) — echoed, never rebuilt.
-                decision.thinking = _extract_thinking_block(raw)
-            return decision
+            # The one boundary (invariant 3). A ToolCallDecision carries the whole turn from here
+            # on both paths (W2.3), so the next call echoes it exactly as returned.
+            return parse_decision(raw)
 
         return brain
 
