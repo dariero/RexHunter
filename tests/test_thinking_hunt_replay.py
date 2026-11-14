@@ -48,6 +48,7 @@ LIVE_SPEND_USD = 0.0187  # the [hunt] report; fold_cost under LIVE_PRICES must r
 LIVE_PRICES = {"claude-sonnet-5": (3.0, 15.0)}  # the table the live run was priced at (before D6)
 SPEND_TODAY_USD = 0.012464  # the same tokens under cost.py's table (D6, $2/$10): an exact product
 THINKING: dict[str, Any] = {"type": "adaptive", "display": "summarized"}
+RECORDED_MODEL = "claude-sonnet-5"  # the model the run was recorded on (each stream's "model")
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
@@ -105,7 +106,7 @@ async def _replay(
     async with mock_anthropic(_replay_handler(requests), api_key="replay") as client:
         brain_for = brain.adapter_brain_for(
             client=client,
-            model=brain.SMOKE_MODEL,
+            model=RECORDED_MODEL,
             registry=reg,
             thinking=THINKING,
             stream=True,
@@ -134,6 +135,12 @@ async def _replay(
 
 def test_two_streaming_fixtures_were_captured() -> None:
     assert len(FIXTURES) == 2  # the live hunt made two brain calls
+
+
+def test_each_stream_names_the_recorded_model() -> None:
+    assert len(FIXTURES) == 2  # never vacuous: no fixture, no pass
+    for path in FIXTURES:
+        assert _assemble(path.read_bytes())["model"] == RECORDED_MODEL
 
 
 def test_fixtures_assemble_to_the_live_decisions() -> None:
@@ -183,6 +190,8 @@ async def test_call_two_led_with_call_ones_verbatim_signed_block(
     # the reconstructed turn LEADS with the byte-identical signed block the real API accepted.
     _events, _outcome, requests = await _replay(tmp_path / "rex.db", mock_anthropic)
     assert len(requests) == 2  # exactly two brain calls, no more
+    # R1 (W2.2): a replay sends each request on the model the run was recorded on.
+    assert [body["model"] for body in requests] == [RECORDED_MODEL, RECORDED_MODEL]
 
     messages = requests[1]["messages"]
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]

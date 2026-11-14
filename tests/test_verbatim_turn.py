@@ -198,6 +198,7 @@ def test_each_stored_turn_is_echoed_in_its_own_position() -> None:
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 PLAIN_RUN = "4c47b41b-5268-4da3-b787-9483b21d2c3f"  # W2.1b: thinking off, [text, tool_use]
 STREAM_RUN = "32975e98-4f30-4763-9d6a-a34541d0e1ef"  # Unit 3: thinking on, [thinking, tool_use]
+RECORDED_MODEL = "claude-sonnet-5"  # the model both recorded runs ran on (each fixture's "model")
 NEEDS_HELP_TURN: dict[str, Any] = {
     "type": "tool_use",
     "id": "toolu_2",
@@ -294,9 +295,11 @@ async def _hunt(
     *,
     stream: bool,
     tool: ToolFn = sniff,
+    model: str | None = None,
 ) -> tuple[list[TrajectoryEvent], list[httpx2.Request]]:
     """Drive run_hunt over `responses` in order (zero network); return (events, requests), the
-    requests exactly as the mock transport received them (after the SDK serialised the body)."""
+    requests exactly as the mock transport received them (after the SDK serialised the body).
+    `model` defaults to SMOKE_MODEL (synthetic streams); a recorded run passes its own (R1)."""
     requests: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -308,7 +311,7 @@ async def _hunt(
     async with mock_anthropic(handler, api_key="replay") as client:
         brain_for = brain.adapter_brain_for(
             client=client,
-            model=brain.SMOKE_MODEL,
+            model=brain.SMOKE_MODEL if model is None else model,
             registry=reg,
             thinking=brain.HUNT_THINKING if stream else None,
             stream=stream,
@@ -393,9 +396,17 @@ async def test_the_recorded_plain_hunt_echoes_call_ones_turn_on_the_wire(
     fixtures = sorted((FIXTURE_DIR / f"hunt_{PLAIN_RUN}").glob("call_*.json"))
     assert len(fixtures) == 2
     responses = [f.read_bytes() for f in fixtures]
-    events, requests = await _hunt(tmp_path / "rex.db", mock_anthropic, responses, stream=False)
+    events, requests = await _hunt(
+        tmp_path / "rex.db", mock_anthropic, responses, stream=False, model=RECORDED_MODEL
+    )
     call_one = json.loads(responses[0])["content"]
     assert len(requests) == 2
+    # R1 (W2.2): each request on the model the run was recorded on, thinking off.
+    assert [json.loads(r)["model"] for r in responses] == [RECORDED_MODEL, RECORDED_MODEL]
+    for request in requests:
+        body = json.loads(request.content)
+        assert body["model"] == RECORDED_MODEL
+        assert body["thinking"] == {"type": "disabled"}
     sent = _sent_assistant_turn(requests[1])
     assert sent == call_one
     assert _keys(sent) == _keys(call_one)  # stored and sent as returned, key order included
@@ -413,8 +424,13 @@ async def test_the_recorded_thinking_hunt_echoes_call_ones_assembled_turn_on_the
     fixtures = sorted((FIXTURE_DIR / f"hunt_{STREAM_RUN}").glob("call_*.json"))
     assert len(fixtures) == 2
     responses = [f.read_bytes() for f in fixtures]
-    _events, requests = await _hunt(tmp_path / "rex.db", mock_anthropic, responses, stream=True)
+    _events, requests = await _hunt(
+        tmp_path / "rex.db", mock_anthropic, responses, stream=True, model=RECORDED_MODEL
+    )
     assert len(requests) == 2
+    # R1 (W2.2): each request on the model the run was recorded on.
+    assert [_assemble(r)["model"] for r in responses] == [RECORDED_MODEL, RECORDED_MODEL]
+    assert [json.loads(r.content)["model"] for r in requests] == [RECORDED_MODEL, RECORDED_MODEL]
     sent = _sent_assistant_turn(requests[1])
     assembled = _assemble(responses[0])["content"]
     assert sent == assembled

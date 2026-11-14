@@ -37,6 +37,7 @@ CALL1_TOOL_USE_ID = "toolu_01LvxWhUt8t37c6vKAtZYWt7"  # call 1's sniff id — th
 LIVE_SPEND_USD = 0.0149  # the [hunt] report; fold_cost under LIVE_PRICES must reproduce it
 LIVE_PRICES = {"claude-sonnet-5": (3.0, 15.0)}  # the table the live run was priced at (before D6)
 SPEND_TODAY_USD = 0.009964  # the same tokens under cost.py's table (D6, $2/$10): an exact product
+RECORDED_MODEL = "claude-sonnet-5"  # the model the run was recorded on (each fixture's "model")
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
@@ -76,7 +77,7 @@ async def _replay(
     requests: list[dict[str, Any]] = []
     reg = _sniff_registry()
     async with mock_anthropic(_replay_handler(requests), api_key="replay") as client:
-        brain_for = brain.adapter_brain_for(client=client, model=brain.SMOKE_MODEL, registry=reg)
+        brain_for = brain.adapter_brain_for(client=client, model=RECORDED_MODEL, registry=reg)
         conn = await db.connect(db_path)
         try:
             run_id = await run_hunt(
@@ -101,6 +102,12 @@ async def _replay(
 
 def test_two_fixtures_were_captured() -> None:
     assert len(FIXTURES) == 2  # the live hunt made two brain calls
+
+
+def test_each_fixture_names_the_recorded_model() -> None:
+    assert len(FIXTURES) == 2  # never vacuous: no fixture, no pass
+    for path in FIXTURES:
+        assert json.loads(path.read_bytes())["model"] == RECORDED_MODEL
 
 
 def test_fixtures_round_trip_through_parse_decision() -> None:
@@ -145,6 +152,10 @@ async def test_call_two_carried_the_reconstructed_turn(
     # since W2.3 the whole turn goes back (text, then the tool_use), checked here offline.
     _events, _outcome, requests = await _replay(tmp_path / "rex.db", mock_anthropic)
     assert len(requests) == 2  # exactly two brain calls, no more
+    # R1 (W2.2): a replay sends each request on the model the run was recorded on, thinking off.
+    for body in requests:
+        assert body["model"] == RECORDED_MODEL
+        assert body["thinking"] == {"type": "disabled"}
 
     messages = requests[1]["messages"]
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]
