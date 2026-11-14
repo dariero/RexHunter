@@ -7,8 +7,8 @@ NOT a test — pytest must never spend. Like `hunt_smoke` (2c.2) but with thinki
     ANTHROPIC_API_KEY=... REXHUNTER_BRAIN=live PYTHONPATH=src \
         uv run python -m rexhunter.hunt_smoke_thinking  # $
 
-Sonnet 5 runs adaptive thinking (summarized), streamed as SSE. Two differences from 2c.2 that are
-load-bearing at spend time:
+The live model runs adaptive thinking (summarized), streamed as SSE. Two differences from 2c.2
+that are load-bearing at spend time:
 
   - `HUNT_MAX_TOKENS` is RAISED to 4096: thinking tokens AND the tool_use both count against
     `max_tokens`, so a tight 1024 budget truncates into `stop_reason=max_tokens` (an incomplete

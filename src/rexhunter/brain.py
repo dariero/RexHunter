@@ -174,11 +174,15 @@ def anthropic_client(
     )
 
 
-# The model for the Unit 2b single live smoke call (the first paid call). Sonnet 5: adaptive
-# thinking runs automatically (so the response carries `thinking` sibling blocks), and sampling
-# params / manual thinking / assistant prefill are all rejected with a 400 — build_request_body
-# holds those guards by construction.
-SMOKE_MODEL = "claude-sonnet-5"
+# The live model (D2, W2.5), named for the Unit 2b smoke call: every gated entrypoint and the
+# daemon's `select_brain_for` run on it. Claude Sonnet 5.5: a request with no `thinking` field
+# runs adaptive thinking (so the response carries `thinking` blocks), and sampling params, thinking
+# budgets, assistant prefill, forced tool choice and `thinking: {type: "disabled"}` are all
+# rejected with a 400. build_request_body sends no sampling params and adds no prefill, no caller
+# passes a thinking budget, HUNT_TOOL_CHOICE is `auto`, and a thinking-off hunt sends
+# `thinking_floor(SMOKE_MODEL)`. The recorded Sonnet 5 runs replay on their own model
+# (RECORDED_MODEL in each replay test).
+SMOKE_MODEL = "claude-sonnet-5-5"
 
 # The hunt directive as a stable system prompt (the thing the P2.2 stub brain never needed). It
 # tells the model what sniff/hunt_complete/needs_help mean AND encodes Tiny Arms (invariant 4) in
@@ -336,7 +340,7 @@ def parse_decision(raw: bytes) -> Decision:
 
 
 # ── The streaming transport (Unit 3a): hand-rolled SSE, fed the SDK's raw stream since W2.0 ────
-# Sonnet 5 streams its response as SSE events. We assemble them into the SAME `_ProviderResponse`
+# The API streams its response as SSE events. We assemble them into the SAME `_ProviderResponse`
 # shape parse_decision consumes — no vendor SDK (ADR §What point 1), and the raw signed thinking
 # block stays in hand (invariants 3 + 6), which the SDK's typed-delta layer would hide. (W2.0 kept
 # this assembler and puts only the transport on the SDK, raw mode: the D9 probe confirmed the typed
@@ -482,10 +486,11 @@ def build_request_body(
     is ONE request shape (no drift). Core keys are model / max_tokens / messages / tools; `system`,
     `thinking`, and `tool_choice` are OPTIONAL and only added when passed, so the Unit 2b smoke
     (passing none) keeps its captured shape and its guard (tests/test_smoke_offline.py) stays green.
-    The always-omitted Sonnet 5 guards still hold by construction: never `temperature`/
-    `top_p`/`top_k` (any non-default → 400), never MANUAL thinking `{type:"enabled",budget_tokens}`
-    (→ 400 — but `{type:"disabled"}` IS accepted on Sonnet 5, which the loop path uses), and
-    `messages` is passed through unchanged (no assistant prefill → 400)."""
+    The always-omitted guards hold by construction, on Sonnet 5 and Sonnet 5.5 alike: never
+    `temperature`/`top_p`/`top_k` (→ 400 at any value under `anthropic-version: 2026-10-21`), never
+    MANUAL thinking `{type:"enabled",budget_tokens}` (→ 400), and `messages` is passed through
+    unchanged (no assistant prefill → 400). The thinking-off value is per model (`thinking_floor`):
+    `{type:"disabled"}` on Sonnet 5; Sonnet 5.5 400s it, its lowest is `{type:"between_tools"}`."""
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,

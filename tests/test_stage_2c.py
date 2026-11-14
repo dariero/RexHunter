@@ -173,9 +173,9 @@ async def test_adapter_sends_system_prompt_and_disables_thinking(
 
     body = json.loads(captured["req"].content)
     assert body["system"] == brain.HUNT_SYSTEM_PROMPT
-    # Bare tool_use replay turns (no thinking sibling) until capture lands in Unit 3; Sonnet 5
-    # accepts an explicit disabled, sidestepping the thinking-block replay rule.
-    assert body["thinking"] == {"type": "disabled"}
+    # The thinking-off hunt sends the live model's lowest setting (W2.2): on Sonnet 5.5 that is
+    # `between_tools`, since it rejects `disabled` with a 400.
+    assert body["thinking"] == {"type": "between_tools"}
 
 
 # ── 3. Retryable HTTP classification (extend the taxonomy, don't fork it) ──────
@@ -697,7 +697,7 @@ async def test_live_request_shape(mock_anthropic: MockAnthropic) -> None:
     body = await _capture_adapter_body(mock_anthropic, _sniff_registry())
     for param in ("temperature", "top_p", "top_k"):
         assert param not in body  # any non-default sampling param → 400 on Sonnet 5
-    assert body["thinking"] == {"type": "disabled"}  # accepted on Sonnet 5; only "enabled" 400s
+    assert body["thinking"] == {"type": "between_tools"}  # Sonnet 5.5's lowest; "disabled" 400s
     assert body["tool_choice"]["disable_parallel_tool_use"] is True  # one tool per iteration
     assert body["max_tokens"] >= 1024
 
@@ -743,7 +743,7 @@ async def test_count_tokens_preflight_posts_exact_payload_and_returns_count(
     count_body = json.loads(seen["req"].content)
     assert "max_tokens" not in count_body  # count_tokens takes no max_tokens
     assert count_body["system"] == brain.HUNT_SYSTEM_PROMPT
-    assert count_body["thinking"] == {"type": "disabled"}
+    assert count_body["thinking"] == {"type": "between_tools"}
     assert count_body["tool_choice"]["disable_parallel_tool_use"] is True
 
 

@@ -10,7 +10,7 @@ Sequence (persist-first, one call, no retry — the hard one-call guard):
      `thinking` sibling blocks the lenient scan must skip);
   2. FREE `count_tokens` pre-flight against the EXACT payload — gate on 200 (validates egress,
      auth, and that Anthropic accepts our schema keys); a non-200 STOPS before any paid call;
-  3. ONE `messages` call on `SMOKE_MODEL` (Sonnet 5) via the shared adapter request shape;
+  3. ONE `messages` call on `SMOKE_MODEL` (the live model) via the shared adapter request shape;
   4. on 200, persist the raw response bytes (inv 6) BEFORE parse/assert can throw, the money-analog
      of "make the deliverable durable first", into a NEW `smoke_<model>_<UTC time>.json` reserved
      with "xb" before step 2 (F8: an existing name refuses at $0; smoke_sonnet5.json stays the
@@ -55,10 +55,11 @@ def fixture_path(fixture_dir: Path, model: str, now: datetime) -> Path:
 
 
 def _smoke_messages(territory: str) -> list[dict[str, Any]]:
-    """A directive prompt biasing Sonnet 5 toward a real `sniff` tool_use (a ToolCallDecision).
+    """A directive prompt biasing the model toward a real `sniff` tool_use (a ToolCallDecision).
     `tool_choice` is left AUTO (never forced) so adaptive thinking still runs and the response
-    carries `thinking` siblings — forcing tool_choice would suppress thinking, and then the fixture
-    would not exercise the 2a lenient scan, which is the whole reason for a real fixture."""
+    carries `thinking` siblings — forcing tool_choice would suppress thinking on Sonnet 5 and is a
+    400 on Sonnet 5.5, and either way the fixture would not exercise the 2a lenient scan, which is
+    the whole reason for a real fixture."""
     return [
         {
             "role": "user",
