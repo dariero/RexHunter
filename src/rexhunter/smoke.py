@@ -2,7 +2,7 @@
 
 NOT a test — pytest must never spend. Run manually once, with the key exported:
 
-    ANTHROPIC_API_KEY=... uv run python -m rexhunter.smoke
+    ANTHROPIC_API_KEY=... PYTHONPATH=src uv run python -m rexhunter.smoke
 
 Sequence (persist-first, one call, no retry — the hard one-call guard):
   1. build the title-stripped tools + a directive message (bias toward a real `sniff` tool_use,

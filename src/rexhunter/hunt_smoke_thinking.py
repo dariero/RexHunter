@@ -2,8 +2,10 @@
 
 NOT a test — pytest must never spend. Like `hunt_smoke` (2c.2) but with thinking ON and STREAMING:
 
-    ANTHROPIC_API_KEY=... uv run python -m rexhunter.hunt_smoke_thinking --count-only   # FREE $0
-    ANTHROPIC_API_KEY=... REXHUNTER_BRAIN=live uv run python -m rexhunter.hunt_smoke_thinking  # $
+    ANTHROPIC_API_KEY=... PYTHONPATH=src \
+        uv run python -m rexhunter.hunt_smoke_thinking --count-only   # FREE $0
+    ANTHROPIC_API_KEY=... REXHUNTER_BRAIN=live PYTHONPATH=src \
+        uv run python -m rexhunter.hunt_smoke_thinking  # $
 
 Sonnet 5 runs adaptive thinking (summarized), streamed as SSE. Two differences from 2c.2 that are
 load-bearing at spend time:

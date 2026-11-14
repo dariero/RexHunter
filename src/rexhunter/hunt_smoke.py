@@ -2,8 +2,10 @@
 
 NOT a test — pytest must never spend. Two modes:
 
-    ANTHROPIC_API_KEY=... uv run python -m rexhunter.hunt_smoke --count-only   # FREE pre-flight, $0
-    ANTHROPIC_API_KEY=... REXHUNTER_BRAIN=live uv run python -m rexhunter.hunt_smoke   # paid hunt
+    ANTHROPIC_API_KEY=... PYTHONPATH=src \
+        uv run python -m rexhunter.hunt_smoke --count-only   # FREE pre-flight, $0
+    ANTHROPIC_API_KEY=... REXHUNTER_BRAIN=live PYTHONPATH=src \
+        uv run python -m rexhunter.hunt_smoke   # paid hunt
 
 `--count-only` runs just the free `count_tokens` pre-flight against the EXACT iteration-1 payload.
 The default paid path is opt-in twice over — it refuses to spend unless `REXHUNTER_BRAIN=live` and a
