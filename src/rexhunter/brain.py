@@ -207,6 +207,37 @@ HUNT_THINKING: dict[str, Any] = {"type": "adaptive", "display": "summarized"}
 # stop_reason=max_tokens (an incomplete tool_use the assembler can't finalize). 4096 clears both.
 HUNT_MAX_TOKENS = 4096
 
+# The lowest thinking setting per model (W2.2, F5, fork F1): what a thinking-off hunt sends, keyed
+# by API model id like `cost.PRICE_PER_MTOK`, one row per model a hunt runs with thinking off.
+# Claude Sonnet 5 turns thinking off with `disabled`. On Claude Sonnet 5.5, "`disabled` returns a
+# 400 `invalid_request_error`"; its lowest setting is `between_tools` (up-front thinking off;
+# progress updates between tool calls still come back as thinking blocks), and "`between_tools`
+# takes no other field: `display`, `budget_tokens`, or `block_binding` sent with it returns a 400
+# error". A model with no row fails closed in `thinking_floor`, before any request is built: it
+# has no off setting (Opus 5.5 and the Fable models reject both values), or its row is not added
+# yet. Read 14 Nov 2026:
+#   https://platform.claude.com/docs/en/build-with-claude/thinking ("Configuring thinking" table,
+#   "Turning thinking off", #progress-updates)
+#   https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide#thinking-on-by-default
+#   https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide#turn-off-up-front-thinking
+THINKING_FLOOR: dict[str, dict[str, str]] = {
+    "claude-sonnet-5": {"type": "disabled"},
+    "claude-sonnet-5-5": {"type": "between_tools"},
+}
+
+
+def thinking_floor(model: str) -> dict[str, Any]:
+    """The model's lowest thinking setting, as a fresh copy of its `THINKING_FLOOR` row (so no
+    caller can edit the table). A model with no row raises ValueError: fail closed, never a guess
+    that the API would answer with a 400."""
+    row = THINKING_FLOOR.get(model)
+    if row is None:
+        raise ValueError(
+            f"no lowest thinking setting for model {model!r} in brain.THINKING_FLOOR: add its row "
+            "from the thinking docs before running it with thinking off"
+        )
+    return dict(row)
+
 
 class _ToolUseBlock(BaseModel):
     """The one content block we consume, validated strictly on the fields we read. Extra keys are
@@ -659,8 +690,10 @@ def adapter_brain_for(
     call, a `MockTransport` in tests), the same single-owner discipline the run connections follow.
 
     Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), thread the
-    `HUNT_SYSTEM_PROMPT`. `thinking` defaults to `{type:"disabled"}` (2c's thinking-off hunt; since
-    W2.3 its echoed turn is the whole stored turn, e.g. text then the tool_use); `P5` Unit 3 passes
+    `HUNT_SYSTEM_PROMPT`. `thinking` defaults to the model's lowest setting, `thinking_floor(model)`
+    (W2.2: `{type:"disabled"}` on Sonnet 5, `{type:"between_tools"}` on Sonnet 5.5; a model with no
+    row raises here, before any request is built), 2c's thinking-off hunt (since W2.3 its echoed
+    turn is the whole stored turn, e.g. text then the tool_use); `P5` Unit 3 passes
     `{type:"adaptive", display:"summarized"}` + `stream=True`. The SDK runs in
     RAW mode (W2.0, D9a): on the streaming path `with_streaming_response` hands the SSE body line by
     line to our assembler, which relays the deltas live via the `sink`; on the plain path
@@ -670,7 +703,8 @@ def adapter_brain_for(
     fatal); the parsed `UsageEvent` rides onto the Decision (invariant 5).
     """
     tools = build_tools(registry)  # derived once — stable across the run
-    thinking = {"type": "disabled"} if thinking is None else thinking
+    # Fail closed at factory time (W2.2): a model with no floor row raises here, before any run.
+    thinking = thinking_floor(model) if thinking is None else thinking
 
     def brain_for(territory: str) -> Brain:
         async def brain(context: Context, sink: ThinkingSink) -> Decision:

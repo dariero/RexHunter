@@ -48,7 +48,7 @@ def _hunt_body(registry: ToolRegistry, *, territory: str = TERRITORY) -> dict[st
         messages=brain.project_messages(territory, []),
         tools=brain.build_tools(registry),
         system=brain.HUNT_SYSTEM_PROMPT,
-        thinking={"type": "disabled"},
+        thinking=brain.thinking_floor(brain.SMOKE_MODEL),  # the adapter's default, same lookup
         tool_choice=brain.HUNT_TOOL_CHOICE,
     )
 
