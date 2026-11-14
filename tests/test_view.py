@@ -61,6 +61,7 @@ def _producible_event(draw: st.DrawFn) -> events.TrajectoryEvent:
             tool=draw(st.sampled_from(_TOOLS)),
             raw_request=draw(_small_bytes),
             tool_use_id=draw(_tool_use_ids),
+            assistant_content=draw(_small_bytes),
             thinking=draw(_small_bytes),
         )
     if kind == 1:

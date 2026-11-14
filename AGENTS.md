@@ -77,6 +77,8 @@ the ADR.
   spelling added to it after the factory ran is not covered on the copy and can reach the wire, a
   second spelling of a pinned name included; src/ never copies the client. Native tool calling,
   constrained decoding where available, `ThinkingDelta` event relay, per-event cost accounting.
+  Each `ToolCallEvent` the live brain writes stores the whole assistant turn (`assistant_content`,
+  W2.3), and the next call sends it back as stored, every block in order.
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
   `pytest-anyio` dep). Config and version floors in `pyproject.toml`; exact pins in `uv.lock`.
@@ -281,6 +283,30 @@ them (a test fakes one); the SDK defaults alone (W1b) would fail open under H1a.
 this run: `claude-fable-5-2` priced at $8/$40 (PR #3) and the branch + PR workflow (PR #2).
 Keychain trust: not adopted – Darie, 13 Nov 2026 (the trust store stays certifi). 295 tests pass
 at `2a2a322`. *Next: W2.2 (`between_tools`).*
+**▶ W2.3 · The whole assistant turn, stored and echoed – ✅ done on branch `w2.3-verbatim-turn`
+(`22c95b6`→`3c6269f`, 2026-11-14), PR #6.** One paid run, no model change (`SMOKE_MODEL` stays
+`claude-sonnet-5`). D7 with forks V1, E1 and W1 (chosen 14 Nov under Darie's delegation): the new
+`ToolCallEvent.assistant_content` holds the JSON bytes of the response's `content` array, every
+block in order (V1). `parse_decision` fills it from the validated envelope on both the plain and the
+streaming path; before, the plain path kept no block and the streaming path only its first
+`thinking` block (F6). `project_messages` echoes it exactly as stored, the `tool_use` included with
+its `caller` and the model's own `input` (E1: the docs say to send each assistant turn back exactly
+as the API returned it, and on models with preserved thinking the prefix check compares every
+earlier message). W1: new events fill only `assistant_content`; an event whose field is empty (every
+event written before W2.3) keeps the old reconstruction – its `thinking` block, if any, then a
+`tool_use` rebuilt from `id`, `name` and `raw_request`. `ToolCallDecision.thinking` and
+`_extract_thinking_block` are gone. Free probe P (`count_tokens` on call two of the W2.1b hunt as
+W2.3 builds it): P1 200 and P1b (P1 without `caller`) 200, both 1817 input tokens; the control P2
+(an unknown key on the text block) 400, so `count_tokens` checks content blocks and the thinking-off
+echo `[text, tool_use]` is accepted. Paid check (Darie): run `c1b41835-9206-4878-896f-fa13601a1f91`
+on `claude-sonnet-5`, thinking on, streamed: 3 brain calls, `aborted` / `max iterations` (three
+`sniff` calls, no `hunt_complete`), $0.0269. Call one is the first streamed response under
+`2026-10-21`; call two, the first live request built from a stored whole turn (the signed thinking
+block, then the `tool_use` with `caller`), was accepted; call three sent back two stored turns and
+was accepted. Its three streams are the new fixtures (`tests/test_verbatim_turn_hunt_replay.py`,
+DoD #5); every earlier fixture file is unchanged and still replays; in the three earlier hunt
+replays, call two now carries the W2.3 echo, pinned offline. 325 tests pass at `3c6269f`. *Next: the
+switch to Sonnet 5.5 (W2.2 + W2.5, plan B, Darie 14 Nov).*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
