@@ -14,7 +14,12 @@ reason" (agents-and-tools/tool-use/how-tool-use-works), and a turn cut by `max_t
 incomplete tool use needs a retry with a higher `max_tokens`
 (build-with-claude/handling-stop-reasons), both read 15 Nov 2026.
 
-Every stream here is built in the test, from literals; no file under tests/fixtures/ is written.
+Fork T3 (W3.1): only a whole stream is a turn. A body that ends before `message_stop` is a
+transport cut, retried within the budget like a reset mid-stream; a body that reached
+`message_stop` with a block left open or no stop reason is malformed, and the run ends.
+
+Every stream here is built in the test, from literals or by cutting the read-only
+`fixtures/stream_thinking.sse` at a frame boundary; no file under tests/fixtures/ is written.
 The request model is `brain.SMOKE_MODEL`. Zero network: a `MockTransport` answers every call.
 """
 
@@ -31,6 +36,7 @@ from rexhunter import brain, db
 from rexhunter.events import (
     ErrorEvent,
     PreyCapturedEvent,
+    ThinkingDelta,
     ToolCallEvent,
     ToolResultEvent,
     TrajectoryEvent,
@@ -43,6 +49,10 @@ pytestmark = pytest.mark.anyio
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 RETRY_BUDGET = 2  # run_hunt's default, passed explicitly: a retried call makes 3 requests
 MALFORMED = ("aborted", "malformed provider response")
+BRAIN_CALL_FAILED = ("aborted", "brain call failed")
+# The hand-authored stream test_stream_transport.py cuts: a thinking block (index 0, two
+# thinking deltas), then a sniff tool_use (index 1), message_delta(tool_use), message_stop.
+STREAM_THINKING = Path(__file__).parent / "fixtures" / "stream_thinking.sse"
 
 SNIFF: dict[str, Any] = {
     "type": "tool_use",
@@ -147,7 +157,7 @@ def _frame(data: dict[str, Any]) -> bytes:
 def _stream(
     content: list[dict[str, Any]],
     *,
-    stop_reason: str = "tool_use",
+    stop_reason: str | None = "tool_use",
     partial_json: str | None = None,
     close_tool_use: bool = True,
 ) -> list[bytes]:
@@ -316,4 +326,94 @@ async def test_a_cut_hunt_complete_never_completes_the_hunt_on_the_stream(
         raw=_assembled(body),
         cause="stop_reason='max_tokens'",
         content=[CUT_HUNT_COMPLETE],  # the block keeps its start input: the partial catch is unused
+    )
+
+
+# ── T3: a stream that did not finish is never a turn ────────────────────────────────
+
+
+def _cut_before(raw: bytes, marker: bytes) -> bytes:
+    """`raw` cut at the frame boundary before `marker`: whole frames only, as a body that closes
+    cleanly before its end would arrive."""
+    at = raw.index(marker)
+    return raw[: raw.rindex(b"\n\n", 0, at) + 2]
+
+
+@pytest.mark.parametrize(
+    ("marker", "stop_reason", "open_blocks", "tool_input"),
+    [
+        (b'data: {"type":"content_block_stop","index":1}', None, [1], {}),
+        (b'data: {"type":"message_delta"', None, [], {"prey": "mock-gym"}),
+        (b'data: {"type":"message_stop"}', "tool_use", [], {"prey": "mock-gym"}),
+    ],
+    ids=["before-the-tool-use-stop", "before-message-delta", "before-message-stop"],
+)
+async def test_a_stream_cut_before_message_stop_is_retried_and_never_dispatched(
+    marker: bytes,
+    stop_reason: str | None,
+    open_blocks: list[int],
+    tool_input: dict[str, Any],
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+) -> None:
+    # H2: before W3.1 the first cut dispatched `sniff` with its start input `{}` ("invalid tool
+    # args", no response bytes) and the other two dispatched it outright. A body that ends before
+    # `message_stop` is a transport cut: retried within the budget, like a reset mid-stream.
+    body = _cut_before(STREAM_THINKING.read_bytes(), marker)
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    _assert_nothing_dispatched(hunt)
+    assert hunt.requests == RETRY_BUDGET + 1
+    errors = _errors(hunt)
+    assert len(errors) == RETRY_BUDGET + 1, errors
+    for error in errors:
+        assert (error.tool, error.retryable) == ("<brain>", True)
+        assert error.raw_response is not None
+        assert error.raw_response == _assembled(body)
+        stored = json.loads(error.raw_response)  # what was kept is what arrived before the cut
+        assert stored["stop_reason"] == stop_reason
+        assert stored["content"][1]["input"] == tool_input
+        cause = f"stream cut before message_stop (stop_reason={stop_reason!r}, open blocks "
+        assert f"{cause}{open_blocks})" in (error.detail or "")
+    assert hunt.row == BRAIN_CALL_FAILED
+    # The thinking each attempt relayed before its cut stays in the log, before its error.
+    relayed = [
+        e.text if isinstance(e, ThinkingDelta) else "<error>"
+        for e in hunt.events
+        if isinstance(e, ThinkingDelta | ErrorEvent)
+    ]
+    assert relayed == [
+        "The user wants me to scout ",
+        "the mock-gym territory. I'll call sniff.",
+        "<error>",
+    ] * (RETRY_BUDGET + 1)
+
+
+async def test_a_stream_that_ended_with_a_block_left_open_is_malformed_not_retried(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # The T3 split: `message_stop` arrived, so the provider sent the whole body, but the tool_use
+    # never got its `content_block_stop`. That is a malformed response (fatal, one request), not
+    # a network blip to retry; before W3.1 it dispatched `sniff` with its start input `{}`.
+    body = b"".join(_stream([SNIFF], close_tool_use=False))
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    _assert_one_malformed_turn(
+        hunt,
+        raw=_assembled(body),
+        cause="open blocks [0]",
+        content=[{**SNIFF, "input": {}}],  # the open block keeps its start input
+    )
+
+
+async def test_a_stream_that_ended_with_no_stop_reason_is_malformed_not_retried(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # The other T3 arm: every block closed and `message_stop` arrived, but no `message_delta`
+    # carried a stop reason. The stream ended without a whole turn, so the T3 check ends it.
+    body = b"".join(_stream([SNIFF], stop_reason=None))
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    _assert_one_malformed_turn(
+        hunt,
+        raw=_assembled(body),
+        cause="stream ended without a whole turn: open blocks [], stop_reason=None",
+        content=[SNIFF],
     )

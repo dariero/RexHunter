@@ -42,7 +42,8 @@ class BrainCallError(Exception):
     D1a) the adapter translates its SDK / transport errors into, so the loop never imports a vendor
     SDK. `retryable` is the adapter's verdict (a transport blip, a 429 or a 5xx is transient);
     `status` is the HTTP status (None for a transport failure); `raw_response` is the provider's
-    error body (invariant 6), or None when no response arrived."""
+    error body (invariant 6); for a stream whose body ended before `message_stop`, the bytes
+    assembled from it (W3.1); None when no response arrived (a reset mid-body included)."""
 
     def __init__(
         self,
@@ -297,7 +298,9 @@ async def _call_brain(
             return await brain(context, sink)
         except BrainCallError as exc:
             retryable = classify(exc)
-            raw_response = exc.raw_response  # the provider's error body (inv 6), None if none came
+            # the provider's error body, or the bytes assembled before a stream ended short (inv 6);
+            # None if none came
+            raw_response = exc.raw_response
             await db.append_event(
                 conn,
                 run_id,

@@ -397,8 +397,10 @@ class StreamAssembler:
     deltas as they arrive; pure and offline-testable by feeding fixture events.
 
     Display streams, execution waits (ADR §What point 5): a `tool_use` block's `input` is parsed
-    from its accumulated `input_json_delta` only at `content_block_stop`, so a partial stream leaves
-    the block un-dispatchable (its start `input` — `{}` — stands until the block is complete).
+    from its accumulated `input_json_delta` only at `content_block_stop`; until then its start
+    `input` (`{}`) stands. A partial stream is un-dispatchable because `_drive_stream` hands a turn
+    on only when the stream is `finished` (W3.1, fork T3): every started block got its
+    `content_block_stop`, a `message_delta` carried a stop reason, and `message_stop` arrived.
     """
 
     def __init__(self) -> None:
@@ -407,6 +409,8 @@ class StreamAssembler:
         self._model: str | None = None
         self._stop_reason: str | None = None
         self._usage: dict[str, Any] = {}
+        self._stopped: set[int] = set()  # the block indexes that got their content_block_stop
+        self._message_stopped = False  # message_stop arrived (W3.1)
         self.complete = False  # True once message_stop / a stop_reason has arrived
 
     def feed(self, event: dict[str, Any]) -> str | None:
@@ -422,7 +426,9 @@ class StreamAssembler:
         elif etype == "content_block_delta":
             return self._apply_delta(int(event["index"]), event["delta"])
         elif etype == "content_block_stop":
-            self._finalize(int(event["index"]))
+            index = int(event["index"])
+            self._stopped.add(index)
+            self._finalize(index)
         elif etype == "message_delta":
             delta = event.get("delta", {})
             if delta.get("stop_reason") is not None:
@@ -431,7 +437,32 @@ class StreamAssembler:
             self._usage.update(event.get("usage", {}))  # cumulative output_tokens
         elif etype == "message_stop":
             self.complete = True
+            self._message_stopped = True
         return None
+
+    @property
+    def stop_reason(self) -> str | None:
+        """The stop reason the stream's `message_delta` carried, or None if none arrived."""
+        return self._stop_reason
+
+    @property
+    def ended(self) -> bool:
+        """`message_stop` arrived: the provider sent the whole body (W3.1, T3). A stream that did
+        not end was cut on the way (a transport failure)."""
+        return self._message_stopped
+
+    @property
+    def open_blocks(self) -> list[int]:
+        """The started blocks that never got their `content_block_stop`, in index order."""
+        return sorted(set(self._blocks) - self._stopped)
+
+    @property
+    def finished(self) -> bool:
+        """The stream is a whole turn (W3.1, T3): every started content block got its
+        `content_block_stop`, a `message_delta` carried a stop reason, and `message_stop` arrived
+        (the event flow in https://platform.claude.com/docs/en/build-with-claude/streaming, read
+        15 Nov 2026). `complete` is looser: a stop reason alone sets it."""
+        return self.ended and not self.open_blocks and self._stop_reason is not None
 
     def _apply_delta(self, index: int, delta: dict[str, Any]) -> str | None:
         block = self._blocks.get(index)
@@ -655,7 +686,11 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     `parse_decision`. `lines` is the provider's raw SSE body, line by line (the SDK's raw-mode
     `iter_lines`, W2.0); a non-2xx never gets here, the SDK raises it as a status error first. The
     `data:` framing mirrors `iter_sse_events` over the live line iterator; the assembler (`feed`)
-    is the shared logic."""
+    is the shared logic. Only a `finished` stream is returned (W3.1, T3): a body that ends on a
+    frame boundary before `message_stop` raises a retryable BrainCallError, and a body that
+    reached `message_stop` but is not whole raises a BrainParseError, each carrying the assembled
+    bytes. (A body cut inside a `data:` line still fails `json.loads` and reaches the loop's
+    `<loop>` backstop: O1, not in W3.1.)"""
     assembler = StreamAssembler()
     data_buf: list[str] = []
     async for line in lines:
@@ -669,7 +704,27 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
                     await sink(text)  # inline await — single writer (inv 7), live (inv 1)
     if data_buf:  # a final frame not terminated by a trailing blank line
         assembler.feed(json.loads("".join(data_buf)))
-    return json.dumps(assembler.assembled()).encode()
+    raw = json.dumps(assembler.assembled()).encode()
+    # A stream is a turn only when it is whole (W3.1, T3). The body ended before `message_stop`:
+    # the connection was cut on the way, the class a reset mid-stream is, so the loop retries it.
+    if not assembler.ended:
+        raise BrainCallError(
+            f"stream cut before message_stop (stop_reason={assembler.stop_reason!r}, open "
+            f"blocks {assembler.open_blocks})",
+            retryable=True,
+            raw_response=raw,
+        )
+    # `message_stop` arrived, so the provider sent the whole body, yet a block was left open or no
+    # stop reason came: a malformed response (fatal, ADR Pillar 2 taxonomy), not a blip to retry.
+    if not assembler.finished:
+        raise BrainParseError(
+            raw=raw,
+            detail=(
+                f"stream ended without a whole turn: open blocks {assembler.open_blocks}, "
+                f"stop_reason={assembler.stop_reason!r}"
+            ),
+        )
+    return raw
 
 
 def brain_call_error(
