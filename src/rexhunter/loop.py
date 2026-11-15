@@ -45,7 +45,11 @@ class BrainCallError(Exception):
     stands for (`brain.STREAM_ERROR_STATUS`, None for a type with no row; W3.1), and None for a
     transport failure; `raw_response` is the provider's error body (invariant 6): the frame's own
     `data` bytes for an SSE error frame; for a stream whose body ended before `message_stop`, the
-    bytes assembled from it (W3.1); None when no response arrived (a reset mid-body included)."""
+    bytes assembled from it (W3.1); None when no response arrived (a reset mid-body included).
+    `usage` (W3.2-U2a) is the token count a 200 stream reported before the adapter refused it (an
+    error frame, a body cut before `message_stop`), when it reads cleanly: `_call_brain` appends it
+    as a UsageEvent before the ErrorEvent, once per attempt. None for a status error (its body
+    carries no count) and for a transport failure (the stream's state is lost, W3.2-U2b)."""
 
     def __init__(
         self,
@@ -54,11 +58,13 @@ class BrainCallError(Exception):
         retryable: bool,
         status: int | None = None,
         raw_response: bytes | None = None,
+        usage: events.UsageEvent | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status = status
         self.raw_response = raw_response
+        self.usage = usage
 
 
 def classify(exc: BaseException) -> bool:
@@ -285,7 +291,10 @@ async def _call_brain(
     fatal one (a 4xx) logs once and aborts. Everything else propagates unchanged: BrainParseError
     to run_hunt's clause (invariant 6, raw bytes preserved) and any genuinely unforeseen exception
     to run_hunt's `<loop>` backstop (DoD #2) - `_call_brain` narrows to BrainCallError so it never
-    swallows a brain bug.
+    swallows a brain bug. An attempt the adapter refused after a 200 (W3.2-U2a) can still be
+    billed: when its error carries a usage, that usage is appended as a UsageEvent before the
+    ErrorEvent, so the spend folds count every attempt whose error carries one (a transport failure
+    mid-stream carries none, W3.2-U2b).
     """
 
     async def sink(text: str) -> None:
@@ -300,6 +309,9 @@ async def _call_brain(
             return await brain(context, sink)
         except BrainCallError as exc:
             retryable = classify(exc)
+            if exc.usage is not None:
+                # the refused 200's usage, counted write-ahead before its error (inv 1, 5; W3.2-U2a)
+                await db.append_event(conn, run_id, exc.usage, publish=publish)
             # the provider's error body, or the bytes assembled before a stream ended short (inv 6);
             # None if none came
             raw_response = exc.raw_response
@@ -447,7 +459,11 @@ async def run_hunt(
         # The provider->Decision boundary (P5) rejected a payload. The generic backstop below
         # would drop the bytes (raw_request=b""); this specific clause, placed first, preserves
         # the raw payload (invariant 6) so the malformed response is a ghost-replay fixture, then
-        # ends the run in a typed outcome - never an unhandled escape (DoD #5).
+        # ends the run in a typed outcome - never an unhandled escape (DoD #5). A refused 200 can
+        # still be billed: its usage, when the error carries one, is counted first (inv 1, 5;
+        # W3.2-U2a).
+        if exc.usage is not None:
+            await db.append_event(conn, run_id, exc.usage, publish=publish)
         await db.append_event(
             conn,
             run_id,

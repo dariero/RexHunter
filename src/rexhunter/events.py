@@ -164,12 +164,17 @@ class BrainParseError(Exception):
     loop can attach them to an ErrorEvent - a malformed response is diagnosable from the ghost
     replay, never a mystery string. Raised by brain.parse_decision and by brain's stream reader
     (`_drive_stream`); caught by run_hunt, which records it and ends the run in a typed
-    outcome."""
+    outcome. `usage` (W3.2-U2a) is the response's own token count when the refusal came after the
+    envelope validated and the count reads cleanly: a refused 200 can still be billed, so run_hunt
+    appends it as a UsageEvent before the ErrorEvent (invariants 1 and 5), the safe direction for a
+    guard. None otherwise: no count, a count that does not read, or a body that fails the
+    envelope."""
 
-    def __init__(self, raw: bytes, detail: str) -> None:
+    def __init__(self, raw: bytes, detail: str, *, usage: UsageEvent | None = None) -> None:
         super().__init__(detail)
         self.raw = raw
         self.detail = detail
+        self.usage = usage
 
 
 # ── The pen log: verdict events (ADR pillar 4) ────────────────────────────────

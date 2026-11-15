@@ -42,6 +42,7 @@ from anthropic import AsyncAPIResponse
 from anthropic.types import Message
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from rexhunter import cost
 from rexhunter.events import (
     BrainParseError,
     ErrorEvent,
@@ -273,7 +274,8 @@ class _ProviderResponse(BaseModel):
 def _extract_usage(response: _ProviderResponse) -> UsageEvent | None:
     """Read the envelope's token counts into a typed `UsageEvent` (P5 Unit 2c). None when the
     payload carries no `usage` (hand-authored fixtures) — the loop then records no spend for that
-    call. Reads the SAME validated envelope as the decision, not a second inv-3 crossing."""
+    call. Reads the SAME validated envelope as the decision, not a second inv-3 crossing. Used for
+    an accepted turn only (W3.2-U2a): a refused one reads its count with `_refused_usage`."""
     if response.usage is None:
         return None
     return UsageEvent(
@@ -281,6 +283,39 @@ def _extract_usage(response: _ProviderResponse) -> UsageEvent | None:
         input_tokens=int(response.usage.get("input_tokens", 0)),
         output_tokens=int(response.usage.get("output_tokens", 0)),
     )
+
+
+def _refused_usage(model: object, usage: object) -> tuple[UsageEvent | None, str]:
+    """The token count of a 200 the boundary refuses (W3.2-U2a), and a note for the error.
+
+    Read so it never raises: the refusal must still end typed, with its bytes. Returns (None, "")
+    when the response carries no count (no `usage`, or an empty one: a stream cut before its
+    `message_start`), and (None, a note) when a count does not read as tokens or cannot be priced
+    (a float overflow in `cost.cost_of`); that call is not counted, and the note says so in the
+    ErrorEvent. A model that is not a string prices at the
+    fallback (`cost.py`), the safe direction for a guard. The accepted path keeps
+    `_extract_usage`, which raises on such a count (W3.1-O5)."""
+    if not isinstance(usage, dict) or not usage:
+        return None, ""
+    counts = cast("dict[str, Any]", usage)
+    try:
+        counted = UsageEvent(
+            model=model if isinstance(model, str) else "",
+            input_tokens=int(counts.get("input_tokens", 0)),
+            output_tokens=int(counts.get("output_tokens", 0)),
+        )
+        # Priced once here: a count int() reads but the fold cannot price (its float overflows)
+        # would make every later fold of the log raise, so it is not counted either.
+        cost.cost_of(counted)
+    except TypeError, ValueError, OverflowError:
+        return None, f"; usage not counted, it does not read as a priceable token count: {counts!r}"
+    return counted, ""
+
+
+def _refusal(raw: bytes, detail: str, *, model: object, usage: object) -> BrainParseError:
+    """A BrainParseError for a 200 the boundary refuses, carrying its usage (W3.2-U2a)."""
+    counted, note = _refused_usage(model, usage)
+    return BrainParseError(raw=raw, detail=detail + note, usage=counted)
 
 
 def parse_decision(raw: bytes) -> Decision:
@@ -294,7 +329,10 @@ def parse_decision(raw: bytes) -> Decision:
     is acted on only when it stopped for its tool call (W3.1, fork S1): any other `stop_reason`,
     `None` included, is a BrainParseError, so a turn that stopped for another reason (a
     `max_tokens` cut, a refusal, a stream cut before its `message_delta`) is never dispatched or
-    stored."""
+    stored. A refused turn can still be billed (W3.2-U2a): every BrainParseError raised once the
+    envelope validates carries the envelope's usage (`_refusal`), which the loop counts before the
+    ErrorEvent, the safe direction for a guard; the accepted turn's usage is read last, so a
+    refusal never fails on its count."""
     try:
         response = _ProviderResponse.model_validate_json(raw)
     except ValidationError as exc:
@@ -312,33 +350,37 @@ def parse_decision(raw: bytes) -> Decision:
     # `None` too: "The `stop_reason` field is part of every successful Messages API response", and
     # a stream sets it in `message_delta`, so a stream cut before that frame carries none. Checked
     # before the usage is read, so such a turn ends here whatever its usage holds.
+    # Every refusal from here on is a 200 that can still be billed (W3.2-U2a): it carries the
+    # envelope's usage, read by `_refused_usage`, which never raises, so the loop counts it first.
     if response.stop_reason != _TOOL_USE:
-        raise BrainParseError(
-            raw=raw,
-            detail=(
+        raise _refusal(
+            raw,
+            (
                 f"stop_reason={response.stop_reason!r}: the loop acts only on a turn that "
                 "stopped for its tool call"
             ),
+            model=response.model,
+            usage=response.usage,
         )
-
-    usage = _extract_usage(response)
 
     # Exactly one actionable block. We count `tool_use`-typed blocks only, so a `thinking` (or
     # other) sibling doesn't count against the total — zero means nothing to act on, more than one
     # is ambiguous for a one-tool-per-iteration loop; neither is a silent first-wins.
     tool_use_blocks = [b for b in response.content if b.get("type") == _TOOL_USE]
     if len(tool_use_blocks) != 1:
-        raise BrainParseError(
-            raw=raw,
-            detail=(
+        raise _refusal(
+            raw,
+            (
                 f"expected exactly one tool_use block, found {len(tool_use_blocks)}: the loop acts "
                 "on one native tool call per iteration, never on free text or a batch"
             ),
+            model=response.model,
+            usage=response.usage,
         )
     try:
         block = _ToolUseBlock.model_validate(tool_use_blocks[0])
     except ValidationError as exc:
-        raise BrainParseError(raw=raw, detail=str(exc)) from exc
+        raise _refusal(raw, str(exc), model=response.model, usage=response.usage) from exc
 
     # Reserved names are terminal decisions (they have no registry handler, so this parser is
     # their only boundary — hence `catch` IS validated here, unlike regular-tool args).
@@ -347,7 +389,7 @@ def parse_decision(raw: bytes) -> Decision:
         try:
             decision = HuntComplete.model_validate(block.input)
         except ValidationError as exc:
-            raise BrainParseError(raw=raw, detail=str(exc)) from exc
+            raise _refusal(raw, str(exc), model=response.model, usage=response.usage) from exc
     elif block.name == NEEDS_HELP:
         decision = NeedsHelp()
     else:
@@ -360,7 +402,9 @@ def parse_decision(raw: bytes) -> Decision:
             # compares, so re-serialising it here keeps the turn exactly as returned.
             assistant_content=json.dumps(response.content).encode(),
         )
-    decision.usage = usage  # every Decision carries the call's cost (None for a no-usage payload)
+    # every Decision carries the call's cost (None for a no-usage payload); read only once the turn
+    # is accepted, with `_extract_usage`, so a count that is not a number still raises (W3.1-O5)
+    decision.usage = _extract_usage(response)
     return decision
 
 
@@ -737,18 +781,22 @@ def _retryable_status(code: int) -> bool:
     return code == 429 or 500 <= code < 600
 
 
-def _stream_error(frame: dict[str, Any], data: str) -> BrainCallError:
+def _stream_error(
+    frame: dict[str, Any], data: str, *, usage: UsageEvent | None, note: str
+) -> BrainCallError:
     """The verdict on a stream that carried an SSE `error` frame (W3.1, Z1): the status its type
     stands for (`STREAM_ERROR_STATUS`, None for a type with no row), retryable by the status rule,
-    and the frame's own `data` text as the raw response (invariant 6)."""
+    and the frame's own `data` text as the raw response (invariant 6). `usage` and `note` are what
+    the stream reported before the frame (W3.2-U2a, `_refused_usage`)."""
     error = frame.get("error")
     error_type = cast("dict[str, Any]", error).get("type") if isinstance(error, dict) else None
     status = STREAM_ERROR_STATUS.get(error_type) if isinstance(error_type, str) else None
     return BrainCallError(
-        f"stream error frame: {error_type!r}",
+        f"stream error frame: {error_type!r}{note}",
         retryable=status is not None and _retryable_status(status),
         status=status,
         raw_response=data.encode(),
+        usage=usage,
     )
 
 
@@ -763,9 +811,10 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     Only a `finished` stream is returned (W3.1, T3): a body that ends on a frame boundary before
     `message_stop` raises a retryable BrainCallError, and a body that reached `message_stop` but
     is not whole raises a BrainParseError, each carrying the assembled bytes; so does a whole
-    stream whose closed tool_use input does not parse as JSON (W3.1, P1). (A body cut inside a
-    `data:` line still fails `json.loads` and reaches the loop's `<loop>` backstop: O1, not in
-    W3.1.)"""
+    stream whose closed tool_use input does not parse as JSON (W3.1, P1). Each of these errors also
+    carries the usage the stream reported before it ended (W3.2-U2a), for the loop to count. (A
+    body cut inside a `data:` line still fails `json.loads` and reaches the loop's `<loop>`
+    backstop: O1, not in W3.1; a transport failure mid-stream carries no usage, W3.2-U2b.)"""
     assembler = StreamAssembler()
     data_buf: list[str] = []
     error_data: str | None = None  # the first SSE error frame's own `data` text (W3.1, Z1)
@@ -796,19 +845,25 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
                     await sink(text)  # inline await — single writer (inv 7), live (inv 1)
     if data_buf:  # a final frame not terminated by a trailing blank line
         fold("".join(data_buf))
-    raw = json.dumps(assembler.assembled()).encode()
+    assembled = assembler.assembled()
+    raw = json.dumps(assembled).encode()
+    # What the stream reported it spent before it ended (W3.2-U2a): `message_start`'s counts, as
+    # updated by any `message_delta`. Each refusal below carries it, so the loop counts the refused
+    # 200 (it can still be billed) before its ErrorEvent; `_refused_usage` never raises.
+    usage, note = _refused_usage(assembled["model"], assembled["usage"])
     # An SSE error frame, wherever it sat, is the call's verdict (W3.1, Z1): it explains why the
     # stream is short, so it is checked before T.
     if error_data is not None and assembler.error_frame is not None:
-        raise _stream_error(assembler.error_frame, error_data)
+        raise _stream_error(assembler.error_frame, error_data, usage=usage, note=note)
     # A stream is a turn only when it is whole (W3.1, T3). The body ended before `message_stop`:
     # the connection was cut on the way, the class a reset mid-stream is, so the loop retries it.
     if not assembler.ended:
         raise BrainCallError(
             f"stream cut before message_stop (stop_reason={assembler.stop_reason!r}, open "
-            f"blocks {assembler.open_blocks})",
+            f"blocks {assembler.open_blocks}){note}",
             retryable=True,
             raw_response=raw,
+            usage=usage,
         )
     # `message_stop` arrived, so the provider sent the whole body, yet a block was left open or no
     # stop reason came: a malformed response (fatal, ADR Pillar 2 taxonomy), not a blip to retry.
@@ -817,8 +872,9 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
             raw=raw,
             detail=(
                 f"stream ended without a whole turn: open blocks {assembler.open_blocks}, "
-                f"stop_reason={assembler.stop_reason!r}"
+                f"stop_reason={assembler.stop_reason!r}{note}"
             ),
+            usage=usage,
         )
     # A whole stream whose closed tool_use input does not parse (W3.1, P1): a `max_tokens` cut can
     # end a parameter midway, or the response is malformed. Never run, never guessed at: fatal,
@@ -829,8 +885,9 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
             detail=(
                 f"tool_use input does not parse as JSON at content_block_stop: "
                 f"{assembler.failed_inputs!r}, "
-                f"stop_reason={assembler.stop_reason!r}"
+                f"stop_reason={assembler.stop_reason!r}{note}"
             ),
+            usage=usage,
         )
     return raw
 
