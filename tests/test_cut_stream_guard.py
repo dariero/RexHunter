@@ -42,7 +42,7 @@ from rexhunter.events import (
     ToolResultEvent,
     TrajectoryEvent,
 )
-from rexhunter.loop import run_hunt
+from rexhunter.loop import BrainCallError, run_hunt
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
@@ -88,14 +88,19 @@ class Hunt(NamedTuple):
 
 
 async def _hunt(
-    tmp_path: Path, mock_anthropic: MockAnthropic, body: bytes, *, stream: bool
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+    body: bytes,
+    *,
+    stream: bool,
+    respond: Callable[[], httpx2.Response] | None = None,
 ) -> Hunt:
-    """One run_hunt whose every brain call is answered with `body`."""
+    """One run_hunt whose every brain call is answered with `body` (or by `respond()`)."""
     requests: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
-        return httpx2.Response(200, content=body)
+        return httpx2.Response(200, content=body) if respond is None else respond()
 
     reg = ToolRegistry()
     reg.tool(sniff)
@@ -520,3 +525,292 @@ async def test_a_bad_tool_input_in_a_stream_cut_short_is_retried_as_a_cut(
         assert error.raw_response == _assembled(body)
         assert "stream cut before message_stop" in (error.detail or "")
     assert hunt.row == BRAIN_CALL_FAILED
+
+
+# ── Z1: an SSE error frame fails the brain call, with the verdict its type stands for ─────
+
+
+def _error_frame(error_type: str) -> dict[str, Any]:
+    """An SSE `error` event's data, in the shape the streaming docs show."""
+    return {"type": "error", "error": {"type": error_type, "message": "An error mid-stream"}}
+
+
+def _error_data(frame: dict[str, Any]) -> bytes:
+    """The frame's `data` bytes as this test sends them: uneven spacing and a `\\u` escape in the
+    message, bytes no `json.dumps` call reproduces (spaced or compact). So `raw_response` can match
+    only if it is the frame's own text, never a re-serialisation of the parsed frame. (No error
+    frame is recorded; the streaming docs' example is spaced.)"""
+    error = frame["error"]
+    message = str(error["message"]).replace("-", "\\u002d")
+    return (
+        f'{{"type":"{frame["type"]}", "error":{{"type": "{error["type"]}","message":"{message}"}}}}'
+    ).encode()
+
+
+def _error_event(frame: dict[str, Any]) -> bytes:
+    return b"event: error\ndata: " + _error_data(frame) + b"\n\n"
+
+
+def _error_after_the_tool_use(frame: dict[str, Any]) -> bytes:
+    """A sniff tool_use that closed, then the error frame in place of message_delta/stop."""
+    return b"".join(_stream([SNIFF])[:-2]) + _error_event(frame)
+
+
+def _assert_the_frames_verdict(hunt: Hunt, *, frame: dict[str, Any], retryable: bool) -> None:
+    """Nothing dispatched; one `<brain>` ErrorEvent per attempt carrying the frame's own data
+    bytes and naming its type; retried within the budget only when the type is retryable."""
+    _assert_nothing_dispatched(hunt)
+    attempts = RETRY_BUDGET + 1 if retryable else 1
+    assert hunt.requests == attempts
+    errors = _errors(hunt)
+    assert len(errors) == attempts, errors
+    for error in errors:
+        assert (error.tool, error.retryable) == ("<brain>", retryable)
+        assert error.raw_response == _error_data(frame)  # the frame's own `data` bytes, as sent
+        assert f"stream error frame: {frame['error']['type']!r}" in (error.detail or "")
+    assert hunt.row == BRAIN_CALL_FAILED
+
+
+async def test_an_overloaded_error_frame_after_the_tool_call_is_retried_never_dispatched(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # H4: before W3.1 `feed` ignored the error frame and the closed tool_use was dispatched. An
+    # `overloaded_error` "would normally correspond to an HTTP 529": retried, like a 529.
+    frame = _error_frame("overloaded_error")
+    hunt = await _hunt(tmp_path, mock_anthropic, _error_after_the_tool_use(frame), stream=True)
+    _assert_the_frames_verdict(hunt, frame=frame, retryable=True)
+
+
+@pytest.mark.parametrize("error_type", ["invalid_request_error", "teapot_error"])
+async def test_a_fatal_error_frame_is_not_retried(
+    error_type: str, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # A 400-class type is fatal, as its status is; a type with no row fails closed (fatal).
+    frame = _error_frame(error_type)
+    hunt = await _hunt(tmp_path, mock_anthropic, _error_after_the_tool_use(frame), stream=True)
+    _assert_the_frames_verdict(hunt, frame=frame, retryable=False)
+
+
+async def test_a_fatal_error_frame_before_the_tool_use_closes_is_not_retried(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # The frame's verdict wins wherever it sits: here the body is also unfinished, which T alone
+    # would retry.
+    frame = _error_frame("invalid_request_error")
+    body = b"".join(_stream([SNIFF])[:3]) + _error_event(frame)  # message_start, block, a delta
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    _assert_the_frames_verdict(hunt, frame=frame, retryable=False)
+
+
+async def test_an_error_frame_that_ends_the_body_without_a_blank_line_is_still_seen(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # `_drive_stream` folds a final frame with no trailing blank line on a second path; the error
+    # frame is caught on that path too.
+    frame = _error_frame("invalid_request_error")
+    body = _error_after_the_tool_use(frame).rstrip(b"\n")
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    _assert_the_frames_verdict(hunt, frame=frame, retryable=False)
+
+
+async def test_a_conflict_error_frame_is_fatal(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # 409 `conflict_error`: fatal under the 429-or-5xx rule, as a 409 status already is.
+    frame = _error_frame("conflict_error")
+    hunt = await _hunt(tmp_path, mock_anthropic, _error_after_the_tool_use(frame), stream=True)
+    _assert_the_frames_verdict(hunt, frame=frame, retryable=False)
+
+
+def test_the_error_type_table_has_the_rows_of_the_errors_page() -> None:
+    # https://platform.claude.com/docs/en/api/errors ("HTTP errors"), read 15 Nov 2026, in the
+    # page's order.
+    assert brain.STREAM_ERROR_STATUS == {
+        "invalid_request_error": 400,
+        "authentication_error": 401,
+        "billing_error": 402,
+        "permission_error": 403,
+        "not_found_error": 404,
+        "conflict_error": 409,
+        "request_too_large": 413,
+        "rate_limit_error": 429,
+        "api_error": 500,
+        "timeout_error": 504,
+        "overloaded_error": 529,
+    }
+
+
+async def _drop(_text: str) -> None:
+    """A thinking sink that keeps nothing (the adapter-level tests read only the error)."""
+
+
+async def _the_brain_call_error(mock_anthropic: MockAnthropic, body: bytes) -> BrainCallError:
+    """One streamed adapter call answered with `body`; the BrainCallError it raises."""
+
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=body)
+
+    reg = ToolRegistry()
+    reg.tool(sniff)
+    async with mock_anthropic(handler, api_key="offline") as client:
+        brain_for = brain.adapter_brain_for(
+            client=client,
+            model=brain.SMOKE_MODEL,
+            registry=reg,
+            thinking=brain.HUNT_THINKING,
+            stream=True,
+        )
+        with pytest.raises(BrainCallError) as raised:
+            await brain_for("mock-gym")([], _drop)
+    return raised.value
+
+
+@pytest.mark.parametrize(
+    ("error_type", "status", "retryable"),
+    [("overloaded_error", 529, True), ("teapot_error", None, False)],
+)
+async def test_a_stream_error_carries_the_status_its_type_stands_for(
+    error_type: str, status: int | None, retryable: bool, mock_anthropic: MockAnthropic
+) -> None:
+    # ErrorEvent keeps no status, so this reads the BrainCallError the adapter raises.
+    frame = _error_frame(error_type)
+    error = await _the_brain_call_error(mock_anthropic, _error_after_the_tool_use(frame))
+    assert (error.status, error.retryable, error.raw_response) == (
+        status,
+        retryable,
+        _error_data(frame),
+    )
+
+
+@pytest.mark.parametrize(
+    ("error_type", "status", "retryable"),
+    [
+        ("rate_limit_error", 429, True),
+        ("api_error", 500, True),
+        ("timeout_error", 504, True),
+        ("overloaded_error", 529, True),
+        ("invalid_request_error", 400, False),
+        ("authentication_error", 401, False),
+        ("conflict_error", 409, False),
+        ("request_too_large", 413, False),
+    ],
+)
+async def test_an_error_frame_is_retryable_exactly_when_its_status_is(
+    error_type: str, status: int, retryable: bool, mock_anthropic: MockAnthropic
+) -> None:
+    # The rule `brain_call_error` applies to a status: 429 or 5xx is transient, any other fatal.
+    error = await _the_brain_call_error(
+        mock_anthropic, _error_after_the_tool_use(_error_frame(error_type))
+    )
+    assert (error.status, error.retryable) == (status, retryable)
+
+
+class _ErrorFrameThenReset(httpx2.AsyncByteStream):
+    """A 200 body that sends `head`, then the connection resets."""
+
+    def __init__(self, head: bytes) -> None:
+        self._head = head
+
+    async def __aiter__(self):  # type: ignore[override]
+        yield self._head
+        raise httpx2.ReadError("connection reset after the error frame")
+
+    async def aclose(self) -> None:
+        pass
+
+
+async def test_the_first_error_frame_ends_the_read(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # Z-stop: nothing after an error frame can make the turn usable, and the docs do not say what
+    # follows one. Reading on would let a later transport failure (here a reset) replace the
+    # frame's verdict with a transport retry.
+    frame = _error_frame("invalid_request_error")
+    head = _error_after_the_tool_use(frame)
+    hunt = await _hunt(
+        tmp_path,
+        mock_anthropic,
+        b"",
+        stream=True,
+        respond=lambda: httpx2.Response(200, stream=_ErrorFrameThenReset(head)),
+    )
+    _assert_the_frames_verdict(hunt, frame=frame, retryable=False)
+
+
+@pytest.mark.parametrize("where", ["after-message-stop", "inside-a-whole-turn"])
+async def test_an_error_frame_in_a_stream_that_reached_message_stop_is_never_dispatched(
+    where: str, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # H4's own dispatch shape: the turn is whole, so T passes it and only Z keeps it from running.
+    # Either after `message_stop`, or between the tool_use's stop and a `message_delta(tool_use)`
+    # and `message_stop`.
+    frame = _error_frame("invalid_request_error")
+    frames = _stream([SNIFF])
+    if where == "after-message-stop":
+        body = b"".join(frames) + _error_event(frame)
+    else:
+        body = b"".join(frames[:-2]) + _error_event(frame) + b"".join(frames[-2:])
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    _assert_the_frames_verdict(hunt, frame=frame, retryable=False)
+
+
+async def test_the_thinking_harness_keeps_its_fixture_when_a_stream_carries_an_error_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `feed` records an error frame and never raises, so hunt_smoke_thinking's reporter, which
+    # re-folds every captured stream, still reaches `write_fixtures`. Offline, under tmp_path.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    body = _error_after_the_tool_use(_error_frame("invalid_request_error"))
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url) == brain.COUNT_TOKENS_URL:
+            return httpx2.Response(200, json={"input_tokens": 1})  # the free pre-flight
+        return httpx2.Response(200, content=body)
+
+    summary = await hunt_smoke_thinking.run_live_hunt(
+        "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=tmp_path
+    )
+    fixtures = sorted((tmp_path / f"hunt_{summary['run_id']}").glob("call_*.json"))
+    assert [p.read_bytes() for p in fixtures] == [body]  # the raw stream, kept
+    assert (summary["outcome"], summary["reason"], summary["brain_calls"]) == (
+        *BRAIN_CALL_FAILED,
+        1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "named"),
+    [
+        (b'{"type":"error"}', "None"),
+        (b'{"type":"error", "error":"boom"}', "None"),
+        (b'{"type":"error", "error":{"type": ["x"]}}', "['x']"),
+    ],
+    ids=["no-error-object", "error-not-an-object", "type-not-a-string"],
+)
+async def test_a_malformed_error_frame_is_fatal_with_its_bytes(
+    data: bytes, named: str, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # Untrusted input (invariant 3): an error frame whose `error` is missing, not an object, or
+    # names a type that is not a string fails closed (fatal, status None), never `<loop>`.
+    body = b"".join(_stream([SNIFF])[:-2]) + b"event: error\ndata: " + data + b"\n\n"
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    _assert_nothing_dispatched(hunt)
+    assert hunt.requests == 1
+    errors = _errors(hunt)
+    assert len(errors) == 1, errors
+    (error,) = errors
+    assert (error.tool, error.retryable, error.raw_response) == ("<brain>", False, data)
+    assert f"stream error frame: {named}" in (error.detail or "")
+    assert hunt.row == BRAIN_CALL_FAILED
+    raised = await _the_brain_call_error(mock_anthropic, body)
+    assert (raised.status, raised.retryable, raised.raw_response) == (None, False, data)
+
+
+def test_the_assembler_keeps_the_first_error_frame() -> None:
+    # The verdict and `raw_response` must come from the same frame: `_drive_stream` keeps the first
+    # frame's bytes, so the assembler keeps the first frame too, even with Z-stop out of the way.
+    first, second = _error_frame("overloaded_error"), _error_frame("api_error")
+    assembler = brain.StreamAssembler()
+    assert assembler.feed(first) is None
+    assert assembler.feed(second) is None
+    assert assembler.error_frame == first

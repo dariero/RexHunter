@@ -412,6 +412,7 @@ class StreamAssembler:
         self._stopped: set[int] = set()  # the block indexes that got their content_block_stop
         self._message_stopped = False  # message_stop arrived (W3.1)
         self._failed_inputs: dict[int, str] = {}  # tool_use input that was not JSON (W3.1)
+        self._error_frame: dict[str, Any] | None = None  # the first SSE `error` event (W3.1)
         self.complete = False  # True once message_stop / a stop_reason has arrived
 
     def feed(self, event: dict[str, Any]) -> str | None:
@@ -439,7 +440,16 @@ class StreamAssembler:
         elif etype == "message_stop":
             self.complete = True
             self._message_stopped = True
+        elif etype == "error" and self._error_frame is None:
+            # Recorded, never raised (W3.1, fork Z1): `_drive_stream` turns it into the call's
+            # verdict, and an offline reader of the bytes (the smoke reporters) folds on.
+            self._error_frame = event
         return None
+
+    @property
+    def error_frame(self) -> dict[str, Any] | None:
+        """The first SSE `error` event the stream carried (its parsed `data`), or None."""
+        return self._error_frame
 
     @property
     def stop_reason(self) -> str | None:
@@ -696,32 +706,101 @@ def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list
     return messages
 
 
+# The Messages API's error types and the HTTP status each stands for (W3.1, fork Z1), so an SSE
+# `error` frame on a 200 stream gets the verdict its status would: "an `overloaded_error`, which
+# would normally correspond to an HTTP 529 in a non-streaming context". The 11 rows of "HTTP
+# errors", in the page's order. The mapping is not one-to-one on the HTTP side (the API "might also
+# use" `invalid_request_error` "for other 4XX status codes", and returns `timeout_error` "with
+# other status codes, such as a 500"), and "new `type` values can appear": a type with no row
+# fails closed (fatal, status None) until it gets one. Read 15 Nov 2026:
+#   https://platform.claude.com/docs/en/api/errors
+#   https://platform.claude.com/docs/en/build-with-claude/streaming (#error-events)
+STREAM_ERROR_STATUS: dict[str, int] = {
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "billing_error": 402,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "conflict_error": 409,
+    "request_too_large": 413,
+    "rate_limit_error": 429,
+    "api_error": 500,
+    "timeout_error": 504,
+    "overloaded_error": 529,
+}
+
+
+def _retryable_status(code: int) -> bool:
+    """The taxonomy's rule for a status, kept in one place: a 429 or a 5xx is transient (retried
+    within budget), any other status fatal. `brain_call_error` and the stream's error frame both
+    apply it."""
+    return code == 429 or 500 <= code < 600
+
+
+def _stream_error(frame: dict[str, Any], data: str) -> BrainCallError:
+    """The verdict on a stream that carried an SSE `error` frame (W3.1, Z1): the status its type
+    stands for (`STREAM_ERROR_STATUS`, None for a type with no row), retryable by the status rule,
+    and the frame's own `data` text as the raw response (invariant 6)."""
+    error = frame.get("error")
+    error_type = cast("dict[str, Any]", error).get("type") if isinstance(error, dict) else None
+    status = STREAM_ERROR_STATUS.get(error_type) if isinstance(error_type, str) else None
+    return BrainCallError(
+        f"stream error frame: {error_type!r}",
+        retryable=status is not None and _retryable_status(status),
+        status=status,
+        raw_response=data.encode(),
+    )
+
+
 async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     """Consume a streaming Messages response: relay each thinking delta via `sink` (write-ahead,
     live — Unit 3b), assemble the blocks, and return the assembled response bytes for
     `parse_decision`. `lines` is the provider's raw SSE body, line by line (the SDK's raw-mode
     `iter_lines`, W2.0); a non-2xx never gets here, the SDK raises it as a status error first. The
     `data:` framing mirrors `iter_sse_events` over the live line iterator; the assembler (`feed`)
-    is the shared logic. Only a `finished` stream is returned (W3.1, T3): a body that ends on a
-    frame boundary before `message_stop` raises a retryable BrainCallError, and a body that
-    reached `message_stop` but is not whole raises a BrainParseError, each carrying the assembled
-    bytes; so does a whole stream whose closed tool_use input does not parse as JSON (W3.1, P1).
-    (A body cut inside a `data:` line still fails `json.loads` and reaches the loop's `<loop>`
-    backstop: O1, not in W3.1.)"""
+    is the shared logic. An SSE `error` frame ends the read and raises a BrainCallError with the
+    verdict its type stands for and the frame's own bytes (W3.1, Z1), before any other check.
+    Only a `finished` stream is returned (W3.1, T3): a body that ends on a frame boundary before
+    `message_stop` raises a retryable BrainCallError, and a body that reached `message_stop` but
+    is not whole raises a BrainParseError, each carrying the assembled bytes; so does a whole
+    stream whose closed tool_use input does not parse as JSON (W3.1, P1). (A body cut inside a
+    `data:` line still fails `json.loads` and reaches the loop's `<loop>` backstop: O1, not in
+    W3.1.)"""
     assembler = StreamAssembler()
     data_buf: list[str] = []
+    error_data: str | None = None  # the first SSE error frame's own `data` text (W3.1, Z1)
+
+    def fold(data: str) -> str | None:
+        # One frame path for the in-loop and the final frame, so an error frame is seen on both.
+        nonlocal error_data
+        text = assembler.feed(json.loads(data))
+        if error_data is None and assembler.error_frame is not None:
+            error_data = data
+        return text
+
     async for line in lines:
         if line.startswith("data:"):
             data_buf.append(line.removeprefix("data:").strip())
         elif not line.strip():  # a blank line closes the frame
             if data_buf:
-                text = assembler.feed(json.loads("".join(data_buf)))
+                text = fold("".join(data_buf))
                 data_buf = []
+                if error_data is not None:
+                    # Z-stop: the first error frame ends the read. Nothing after it can make the
+                    # turn usable, and what follows one is undocumented; reading on would let a
+                    # later transport failure replace the frame's verdict. It holds where `lines`
+                    # is the live body: a transport that buffers the whole response first (the
+                    # smoke harness's CapturingTransport) has finished its read before this runs.
+                    break
                 if text:
                     await sink(text)  # inline await — single writer (inv 7), live (inv 1)
     if data_buf:  # a final frame not terminated by a trailing blank line
-        assembler.feed(json.loads("".join(data_buf)))
+        fold("".join(data_buf))
     raw = json.dumps(assembler.assembled()).encode()
+    # An SSE error frame, wherever it sat, is the call's verdict (W3.1, Z1): it explains why the
+    # stream is short, so it is checked before T.
+    if error_data is not None and assembler.error_frame is not None:
+        raise _stream_error(assembler.error_frame, error_data)
     # A stream is a turn only when it is whole (W3.1, T3). The body ended before `message_stop`:
     # the connection was cut on the way, the class a reset mid-stream is, so the loop retries it.
     if not assembler.ended:
@@ -765,13 +844,15 @@ def brain_call_error(
     is an `httpx2.TransportError`; the adapter re-raises any other cause before calling this), a
     transport error while the body streams (the SDK does not wrap those, so it arrives as a bare
     `httpx2.TransportError`, timeouts included) and a 429 / 5xx status are transient; any other
-    status is fatal. The error body rides along (invariant 6). The message names the real cause,
-    not the SDK's generic wrapper text, as HEAD's ErrorEvent did."""
+    status is fatal (`_retryable_status`, the rule an SSE error frame's status gets too, W3.1).
+    The error body rides along (invariant 6). The message names the real cause, not the SDK's
+    generic wrapper text, as HEAD's ErrorEvent did. The stream checks in `_drive_stream` raise
+    their BrainCallError directly; this translates only what the SDK and the transport raise."""
     if isinstance(exc, anthropic.APIStatusError):
         code = exc.status_code
         return BrainCallError(
             repr(exc),
-            retryable=code == 429 or 500 <= code < 600,
+            retryable=_retryable_status(code),
             status=code,
             raw_response=exc.response.content,
         )

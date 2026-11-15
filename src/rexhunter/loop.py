@@ -41,9 +41,11 @@ class BrainCallError(Exception):
     """A brain call failed at the provider/transport layer: the ONE provider-neutral shape (W2.0
     D1a) the adapter translates its SDK / transport errors into, so the loop never imports a vendor
     SDK. `retryable` is the adapter's verdict (a transport blip, a 429 or a 5xx is transient);
-    `status` is the HTTP status (None for a transport failure); `raw_response` is the provider's
-    error body (invariant 6); for a stream whose body ended before `message_stop`, the bytes
-    assembled from it (W3.1); None when no response arrived (a reset mid-body included)."""
+    `status` is the HTTP status, or for an SSE error frame on a 200 stream the status its type
+    stands for (`brain.STREAM_ERROR_STATUS`, None for a type with no row; W3.1), and None for a
+    transport failure; `raw_response` is the provider's error body (invariant 6): the frame's own
+    `data` bytes for an SSE error frame; for a stream whose body ended before `message_stop`, the
+    bytes assembled from it (W3.1); None when no response arrived (a reset mid-body included)."""
 
     def __init__(
         self,
