@@ -4,7 +4,7 @@ import anthropic
 import httpx2
 import pytest
 
-from rexhunter import brain
+from rexhunter import brain, loop
 from rexhunter.events import TrajectoryEvent
 from rexhunter.loop import Brain, Decision, ThinkingSink
 
@@ -15,6 +15,21 @@ type MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def retry_waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Every retry's backoff wait, recorded and never slept, in every test (W3.2-Y1): the loop's
+    own seam (`loop.retry_wait`) is replaced, never `asyncio.sleep`, which the scheduler's interval
+    and the hub's heartbeat still use (tool timeouts run on `asyncio.timeout`). A test that reads
+    the waits takes this fixture by name."""
+    waits: list[float] = []
+
+    async def record(delay: float) -> None:
+        waits.append(delay)
+
+    monkeypatch.setattr(loop, "retry_wait", record)
+    return waits
 
 
 @pytest.fixture

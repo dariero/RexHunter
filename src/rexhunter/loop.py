@@ -12,6 +12,8 @@ unhandled exception escaping the loop.
 
 import asyncio
 import json
+import logging
+import random
 import traceback
 from collections.abc import Awaitable, Callable
 from typing import Any, assert_never
@@ -22,8 +24,11 @@ from pydantic import BaseModel, ValidationError
 from rexhunter import cost, db, events, verdicts
 from rexhunter.tools import ToolFn, ToolRegistry
 
+logger = logging.getLogger("rexhunter")
+
 # The default per-run spend guard (USD). The stub/scripted brains carry no usage (cost folds to 0),
-# so this never bites them; the paid smoke (`P5` Unit 2c.2) overrides it low. Enforced in `_drive`.
+# so this never bites them; the paid smoke (`P5` Unit 2c.2) overrides it low. Enforced in
+# `_call_brain`, before every brain attempt (W3.2-C1).
 COST_CEILING_USD = 1.0
 
 # ── Error taxonomy + single-attempt execution (Unit C) ───────────────────────
@@ -45,7 +50,14 @@ class BrainCallError(Exception):
     stands for (`brain.STREAM_ERROR_STATUS`, None for a type with no row; W3.1), and None for a
     transport failure; `raw_response` is the provider's error body (invariant 6): the frame's own
     `data` bytes for an SSE error frame; for a stream whose body ended before `message_stop`, the
-    bytes assembled from it (W3.1); None when no response arrived (a reset mid-body included)."""
+    bytes assembled from it (W3.1); None when no response arrived (a reset mid-body included).
+    `usage` (W3.2-U2a) is the token count a 200 stream reported before the adapter refused it (an
+    error frame, a body cut before `message_stop`), when it reads cleanly: `_call_brain` appends it
+    as a UsageEvent before the ErrorEvent, once per attempt. None for a status error (its body
+    carries no count) and for a transport failure (the stream's state is lost, W3.2-U2b).
+    `retry_after` (W3.2-B2) is a status response's `retry-after` header in seconds, None when it
+    was absent or not a finite, non-negative number of seconds; the retry waits at least that
+    long, cut to BACKOFF_CAP_S (`backoff_delay`)."""
 
     def __init__(
         self,
@@ -54,11 +66,15 @@ class BrainCallError(Exception):
         retryable: bool,
         status: int | None = None,
         raw_response: bytes | None = None,
+        usage: events.UsageEvent | None = None,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status = status
         self.raw_response = raw_response
+        self.usage = usage
+        self.retry_after = retry_after
 
 
 def classify(exc: BaseException) -> bool:
@@ -77,6 +93,32 @@ def classify(exc: BaseException) -> bool:
     if isinstance(exc, BrainCallError):
         return exc.retryable
     return isinstance(exc, TimeoutError | RetryableToolError)
+
+
+# ── Retry backoff (W3.2-B2, fragility #2) ────────────────────────────────────
+# A retried brain call or tool waits before it runs again. The SDK's own retries are off (D1b,
+# `max_retries=0`), so the loop owns the wait, shaped like the one it replaces: a 0.5 s base that
+# doubles per retry up to an 8 s cap (`INITIAL_RETRY_DELAY`, `MAX_RETRY_DELAY`, anthropic 2.6.0
+# `_constants.py`), drawn with full jitter. A brain retry after a status response that carried
+# `retry-after` waits at least that many seconds, capped at the same cap.
+BACKOFF_BASE_S = 0.5
+BACKOFF_CAP_S = 8.0
+
+# The two seams the tests replace (W3.2-Y1), looked up at call time: the wait itself and the
+# jitter's random source. tests/conftest.py records every wait instead of sleeping.
+retry_wait: Callable[[float], Awaitable[None]] = asyncio.sleep
+jitter_source = random.Random()
+
+
+def backoff_delay(retry: int, *, retry_after: float | None = None) -> float:
+    """Seconds to wait before retry number `retry` (1 = the first retry): full jitter, a uniform
+    draw in [0, min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2 ** (retry - 1))], and at least `retry_after`
+    (cut to BACKOFF_CAP_S) when the failed response carried one."""
+    bound = min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2.0 ** min(retry - 1, 16))  # no float overflow
+    delay = jitter_source.uniform(0.0, bound)
+    if retry_after is not None:
+        delay = max(delay, min(retry_after, BACKOFF_CAP_S))
+    return delay
 
 
 def _to_bytes(result: object) -> bytes:
@@ -175,10 +217,11 @@ async def _run_tool(
     """Dispatch one ToolCallDecision. ``True`` = continue the hunt; ``False`` = abort (fatal).
 
     resolve -> validate -> ToolCallEvent (write-ahead) -> attempt loop. A success appends a
-    ToolResultEvent; each retryable failure appends ErrorEvent(retryable=True) and re-tries
-    within budget; a fatal failure or an exhausted budget appends a final ErrorEvent and
-    aborts. Every append happens here, in the owning task (single writer, invariant 7). The raw
-    request rides on every event so a dead attempt is a pytest fixture for free (invariant 6).
+    ToolResultEvent; each retryable failure appends ErrorEvent(retryable=True), waits a backoff
+    (`backoff_delay`, W3.2-B2) and re-tries within budget; a fatal failure or an exhausted budget
+    appends a final ErrorEvent and aborts. Every append happens here, in the owning task (single
+    writer, invariant 7). The raw request rides on every event so a dead attempt is a pytest
+    fixture for free (invariant 6).
     """
     tool_name, args, tool_use_id = decision.tool, decision.args, decision.tool_use_id
 
@@ -249,7 +292,9 @@ async def _run_tool(
                 publish=publish,
             )
             if retryable and attempt < attempts - 1:
-                continue  # re-try within budget
+                # back off once the ErrorEvent is committed (inv 1), then re-try within budget
+                await retry_wait(backoff_delay(attempt + 1))
+                continue
             return False  # fatal, or retryable budget exhausted -> abort
         else:
             await db.append_event(
@@ -271,21 +316,36 @@ async def _call_brain(
     conn: aiosqlite.Connection,
     run_id: str,
     brain: Brain,
-    context: list[events.TrajectoryEvent],
     *,
     retry_budget: int,
+    cost_ceiling_usd: float,
+    daemon_spend_ceiling_usd: float | None,
     publish: db.PublishFn | None = None,
-) -> Decision | None:
-    """One brain call, retrying the brain's HTTP transport failures; ``None`` = abort.
+) -> Decision | str:
+    """One brain call, retrying the brain's HTTP transport failures; returns the Decision, or the
+    abort reason ("cost ceiling", "daemon spend ceiling", "brain call failed").
+
+    Both spend ceilings are checked before EVERY attempt, a retry included (W3.2-C1, fragility #4),
+    each a fold over the log as it stands at that moment (invariant 5, never a counter): this run's
+    UsageEvents against `cost_ceiling_usd` first, then every run's (`db.read_usage`, the fold
+    `scheduler.daemon_spend_usd` makes) against `daemon_spend_ceiling_usd` (None = ungated). So a
+    run, or the daemon, goes past its ceiling by at most the one call each hunt has in flight, of
+    the calls the log counts. The context the brain projects is read at the same point: what a
+    failed attempt left in the log (its ThinkingDeltas, UsageEvent and `<brain>` ErrorEvent) is not
+    conversation, so a retry sends the same request.
 
     Owns exactly one error shape: the provider-neutral BrainCallError (W2.0 D1a), which the adapter
     raises for every transport + status failure, so the loop knows no vendor or transport types. A
-    transient blip (`classify` True: timeout / 429 / 5xx) is re-tried within budget, each attempt
-    appending its own ErrorEvent(tool="<brain>") in the owning task (single writer, invariant 7); a
-    fatal one (a 4xx) logs once and aborts. Everything else propagates unchanged: BrainParseError
-    to run_hunt's clause (invariant 6, raw bytes preserved) and any genuinely unforeseen exception
-    to run_hunt's `<loop>` backstop (DoD #2) - `_call_brain` narrows to BrainCallError so it never
-    swallows a brain bug.
+    transient blip (`classify` True: timeout / 429 / 5xx) is re-tried within budget after a backoff
+    wait (`backoff_delay`: at least its `retry-after`, up to the 8 s cap; W3.2-B2), each attempt
+    appending its own ErrorEvent(tool="<brain>") in the owning task (single writer, invariant 7)
+    before the wait; a fatal one (a 4xx) logs once and aborts. Everything else propagates
+    unchanged: BrainParseError to run_hunt's clause (invariant 6, raw bytes preserved) and any
+    genuinely unforeseen exception to run_hunt's `<loop>` backstop (DoD #2) - `_call_brain`
+    narrows to BrainCallError so it never swallows a brain bug. An attempt the adapter refused
+    after a 200 (W3.2-U2a) can still be billed: when its error carries a usage, that usage is
+    appended as a UsageEvent before the ErrorEvent, so the spend folds count every attempt whose
+    error carries one (a transport failure mid-stream carries none, W3.2-U2b).
     """
 
     async def sink(text: str) -> None:
@@ -296,10 +356,21 @@ async def _call_brain(
 
     attempts = retry_budget + 1
     for attempt in range(attempts):
+        context = await db.read_events(conn, run_id)  # the window the brain projects into messages
+        if cost.fold_cost(context) >= cost_ceiling_usd:
+            return "cost ceiling"
+        if (
+            daemon_spend_ceiling_usd is not None
+            and cost.fold_cost(await db.read_usage(conn)) >= daemon_spend_ceiling_usd
+        ):
+            return "daemon spend ceiling"
         try:
             return await brain(context, sink)
         except BrainCallError as exc:
             retryable = classify(exc)
+            if exc.usage is not None:
+                # the refused 200's usage, counted write-ahead before its error (inv 1, 5; W3.2-U2a)
+                await db.append_event(conn, run_id, exc.usage, publish=publish)
             # the provider's error body, or the bytes assembled before a stream ended short (inv 6);
             # None if none came
             raw_response = exc.raw_response
@@ -317,9 +388,13 @@ async def _call_brain(
                 publish=publish,
             )
             if retryable and attempt < attempts - 1:
-                continue  # transient blip -> re-try within budget
-            return None  # fatal 4xx, or retryable budget exhausted -> abort
-    return None  # pragma: no cover - range(attempts >= 1) always returns inside the loop
+                # A transient blip: back off once the UsageEvent and ErrorEvent are committed
+                # (inv 1), at least `retry-after` (up to the cap) if the response carried one, then
+                # re-try within budget; the ceilings are checked again at the top, after the wait.
+                await retry_wait(backoff_delay(attempt + 1, retry_after=exc.retry_after))
+                continue
+            return "brain call failed"  # fatal 4xx, or retryable budget exhausted -> abort
+    return "brain call failed"  # pragma: no cover - range(attempts >= 1) returns inside the loop
 
 
 async def _drive(
@@ -333,27 +408,33 @@ async def _drive(
     retry_budget: int,
     max_iterations: int,
     cost_ceiling_usd: float,
+    daemon_spend_ceiling_usd: float | None = None,
     publish: db.PublishFn | None = None,
 ) -> tuple[str, str | None]:
     """plan -> act -> observe until a terminal decision, a breaker, or a brain failure.
 
-    Returns (outcome, abort_reason). Two circuit breakers guard the loop (ADR §Budget guards):
-    max_iterations bounds the turn count, and the cost ceiling - folded from the run's UsageEvents
-    (invariant 5, no stored counter) - aborts BEFORE the next paid call once spend crosses it. Each
-    iteration projects the log into the brain's context, records the call's UsageEvent (if the brain
-    reported one), then acts. NeedsHelp is terminal and appends no event; HuntComplete captures its
-    catch into the prey pen (each a PreyCapturedEvent + row, P4) THEN closes via runs.outcome. A
-    tool failure or an exhausted brain retry budget aborts.
+    Returns (outcome, abort_reason). Three circuit breakers guard the loop: the two of ADR §Budget
+    guards (ADR:262), max_iterations bounding the turn count and the per-run cost ceiling, and the
+    daemon spend ceiling the scheduler injects (W.1). Both spend ceilings - each folded from
+    UsageEvents (invariant 5, no stored counter) - abort BEFORE the next paid attempt once spend
+    crosses them (`_call_brain`, W3.2-C1). Each iteration calls the brain on the log projected
+    into its context, records the call's UsageEvent (if the brain reported one), then acts.
+    NeedsHelp is terminal and appends no event; HuntComplete captures its catch into the prey pen
+    (each a PreyCapturedEvent + row, P4) THEN closes via runs.outcome. A tool failure or an
+    exhausted brain retry budget aborts.
     """
     for _ in range(max_iterations):
-        context = await db.read_events(conn, run_id)  # the window the brain projects into messages
-        if cost.fold_cost(context) >= cost_ceiling_usd:
-            return "aborted", "cost ceiling"
         decision = await _call_brain(
-            conn, run_id, brain, context, retry_budget=retry_budget, publish=publish
+            conn,
+            run_id,
+            brain,
+            retry_budget=retry_budget,
+            cost_ceiling_usd=cost_ceiling_usd,
+            daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+            publish=publish,
         )
-        if decision is None:
-            return "aborted", "brain call failed"
+        if isinstance(decision, str):
+            return "aborted", decision  # a spend ceiling, or the brain call failed
         if decision.usage is not None:
             # per-call spend, folded next iter
             await db.append_event(conn, run_id, decision.usage, publish=publish)
@@ -393,6 +474,7 @@ async def run_hunt(
     retry_budget: int = 2,
     max_iterations: int = 50,
     cost_ceiling_usd: float = COST_CEILING_USD,
+    daemon_spend_ceiling_usd: float | None = None,
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
 ) -> str:
@@ -405,9 +487,12 @@ async def run_hunt(
     shutdown path closes the run (P2.3), exactly as the prototype sniff loop does today.
     `notify` (Step 2a) fires one id-less run-finished pulse after the closing commit — LIVE
     closures only (the cancel path re-raises before the pulse; boot's sweep never sees it).
+    `daemon_spend_ceiling_usd` (W3.2-C1) is the scheduler's id-scoped ceiling, checked before
+    every brain attempt alongside the per-run one; None (the default) leaves the run ungated by it.
     """
-    # Record the caps this run runs under (4a): the same two values _drive enforces, snapshotted
-    # write-once onto the runs row — the frontend's per-run HP/stamina denominators.
+    # Record the run's own caps (4a): the per-run ceiling and max_iterations _drive enforces,
+    # snapshotted write-once onto the runs row — the frontend's per-run HP/stamina denominators.
+    # The daemon ceiling is the scheduler's, injected (4b), never recorded here.
     run_id = await db.start_run(
         conn,
         territory=territory,
@@ -425,15 +510,19 @@ async def run_hunt(
             retry_budget=retry_budget,
             max_iterations=max_iterations,
             cost_ceiling_usd=cost_ceiling_usd,
+            daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
             publish=publish,
         )
     except asyncio.CancelledError as cancel:
         # Graceful shutdown (P2.3) closes the run HERE, not via the boot crash-sweep - that
         # conflates a clean stop with a kill -9 (DoD #1). The mark-aborted write must complete
         # even if a SECOND cancel lands mid-flight (aggressive shutdown, a double cancel from the
-        # task group): we shield it and drive it to done before re-raising, so the run can never
-        # be left outcome IS NULL. CancelledError still propagates - the group tears down on
-        # purpose. (Tested adversarially in test_cancelled_cleanup_survives_a_second_cancel.)
+        # task group): we shield it and drive it to done before re-raising, so the run is not
+        # left outcome IS NULL unless the write itself fails (a lock held past busy_timeout, an
+        # I/O error; R2-RV1). Then the failure is logged, the cancel still propagates, and the
+        # boot sweep closes the run 'crashed' (DoD #1). CancelledError always propagates - the
+        # group tears down on purpose. (Tested adversarially in
+        # test_cancelled_cleanup_survives_a_second_cancel and tests/test_retries_and_ceilings.py.)
         cleanup = asyncio.ensure_future(
             db.finish_run(conn, run_id, outcome="aborted", abort_reason="daemon shutdown")
         )
@@ -442,12 +531,24 @@ async def run_hunt(
                 await asyncio.shield(cleanup)
             except asyncio.CancelledError:
                 pass  # a re-cancel hit our frame; the shielded write runs on - wait it out
-        raise cancel
+            except Exception:
+                break  # the write itself failed (R2-RV1): logged below, and the cancel goes on
+        if not cleanup.cancelled() and (failure := cleanup.exception()) is not None:
+            logger.error(
+                "run %s: the shutdown write failed (%r); the boot sweep will close it",
+                run_id,
+                failure,
+            )
+        raise cancel  # always: the daemon's teardown must not stop at a failed write
     except events.BrainParseError as exc:
         # The provider->Decision boundary (P5) rejected a payload. The generic backstop below
         # would drop the bytes (raw_request=b""); this specific clause, placed first, preserves
         # the raw payload (invariant 6) so the malformed response is a ghost-replay fixture, then
-        # ends the run in a typed outcome - never an unhandled escape (DoD #5).
+        # ends the run in a typed outcome - never an unhandled escape (DoD #5). A refused 200 can
+        # still be billed: its usage, when the error carries one, is counted first (inv 1, 5;
+        # W3.2-U2a).
+        if exc.usage is not None:
+            await db.append_event(conn, run_id, exc.usage, publish=publish)
         await db.append_event(
             conn,
             run_id,

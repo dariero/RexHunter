@@ -5,8 +5,9 @@ W.1 (offline, no spend): the lifespan must select its brain by `REXHUNTER_BRAIN`
 be bounded by an **id-scoped** daemon spend ceiling — the seq-scoped per-run ceiling's analogue,
 folded from ALL runs' `UsageEvent`s along the global `id` cursor (inv 5: a fold over the log, never
 a second counter). Over the ceiling, the scheduler refuses to LAUNCH a new hunt (pauses, never
-crashes); an in-flight hunt is untouched. This is Tiny Arms for money (inv 4's spirit): the daemon
-structurally cannot exceed its budget.
+crashes); since W3.2-C1 an in-flight hunt stops at its next brain attempt too
+(tests/test_retries_and_ceilings.py). This is Tiny Arms for money (inv 4's spirit): the daemon goes
+past its budget by at most the one call each hunt has in flight, of the calls the log counts.
 
 W.2 (offline): the loop-built `ThinkingSink` closure, exercised under the REAL lifespan.
 """

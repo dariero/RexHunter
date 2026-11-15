@@ -180,10 +180,9 @@ async def read_events(conn: aiosqlite.Connection, run_id: str) -> list[events.Tr
     rather than leaking an untyped string into the system. Ordered by the per-run `seq`
     cursor - the ghost-replay ordering.
     """
-    async with conn.execute(
+    rows = await conn.execute_fetchall(
         "SELECT payload FROM trajectory_events WHERE run_id = ? ORDER BY seq", (run_id,)
-    ) as cursor:
-        rows = await cursor.fetchall()
+    )
     return [events.decode_event(str(row[0])) for row in rows]
 
 
@@ -193,10 +192,9 @@ async def read_usage(conn: aiosqlite.Connection) -> list[events.TrajectoryEvent]
     read half of the daemon spend ceiling — the seq-scoped per-run read (`read_events`) folds one
     run; this folds them into a cumulative spend (inv 5, a projection of the log, not a counter).
     """
-    async with conn.execute(
+    rows = await conn.execute_fetchall(
         "SELECT payload FROM trajectory_events WHERE type = 'usage' ORDER BY id"
-    ) as cursor:
-        rows = await cursor.fetchall()
+    )
     return [events.decode_event(str(row[0])) for row in rows]
 
 

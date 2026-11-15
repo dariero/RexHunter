@@ -103,7 +103,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # Graceful shutdown: cancel every daemon task, then AWAIT to drain. run_hunt's shielded
         # cleanup marks every in-flight run aborted/"daemon shutdown" before the group tears down,
         # and the worker closes its connection in its finally - no run left outcome IS NULL (which
-        # the next boot would mislabel 'crashed', breaking DoD #1), no orphaned task, no leak.
+        # the next boot would mislabel 'crashed', breaking DoD #1), no orphaned task, no leak. If
+        # a run's own shutdown write fails, the cancel still propagates and that run alone is left
+        # for the boot sweep (R2-RV1).
         for task in tasks:
             task.cancel()
         for task in tasks:

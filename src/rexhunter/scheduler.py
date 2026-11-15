@@ -14,7 +14,9 @@ Failure isolation: `run_hunt` is a total backstop (DoD #2) — it returns normal
 `Exception`, so the `TaskGroup` never sees a child raise, so its cancel-all-siblings behaviour
 never triggers. `_bounded_hunt` adds defence in depth: it catches `Exception` (never
 `CancelledError`, which must still propagate so daemon shutdown tears the group down on
-purpose). One hunt's failure marks only its own run; siblings run to completion untouched.
+purpose). One hunt's failure marks only its own run; siblings run on untouched by it. Spend is
+shared: with a daemon ceiling set, one hunt's spend can stop a sibling at its next brain attempt
+(W3.2-C1).
 
 Timing reads the monotonic event-loop clock (`asyncio.sleep`), never wall-clock, and persists
 NO "next fire" anywhere (invariant 5, derive don't store): a missed tick is simply the next
@@ -37,11 +39,13 @@ logger = logging.getLogger("rexhunter")
 # The id-scoped daemon spend ceiling (USD): the seq-scoped per-run `COST_CEILING_USD`'s analogue.
 # The per-run ceiling folds ONE run's UsageEvents (seq-window); this bounds spend across a day of
 # scheduled hunts by folding EVERY run's UsageEvents along the global `id` cursor, consulted before
-# each launch. Stub/scripted brains carry no usage (fold → $0), so — like COST_CEILING_USD — this
-# never bites them; the gated live daemon overrides it low. Tiny Arms for money (inv 4's spirit):
-# the daemon structurally cannot exceed its budget. Fail-closed by design: the id-window is the
-# whole log, so cumulative spend only latches the daemon OFF (never under-counts); a rolling
-# day-window is a later refinement.
+# each launch and, inside run_hunt, before every brain attempt (W3.2-C1). Stub/scripted brains
+# carry no usage (fold → $0), so — like COST_CEILING_USD — this never bites them; the gated live
+# daemon overrides it low. Tiny Arms for money (inv 4's spirit): the daemon goes past its budget by
+# at most the one brain call each hunt has in flight, of the calls the log counts (W3.2-C1; with
+# the launch gate alone, one hunt could spend to its own ceiling). Fail-closed by design: the
+# id-window is the whole log, so cumulative spend only latches the daemon OFF (never under-counts);
+# a rolling day-window is a later refinement.
 DAEMON_SPEND_CEILING_USD = 1.0
 
 
@@ -78,8 +82,9 @@ async def _bounded_hunt(
         try:
             # The id-scoped budget gate (Tiny Arms for money, inv 4): fold EVERY run's spend from
             # the log (inv 5) BEFORE starting this run. Over the ceiling → refuse to launch (no
-            # run_hunt, no start_run, no spend); in-flight hunts on their own connections finish
-            # untouched. The per-run seq-scoped ceiling still guards inside run_hunt.
+            # run_hunt, no start_run, no spend). Inside run_hunt the same fold runs again before
+            # every brain attempt (W3.2-C1), so an in-flight hunt stops at the ceiling too, after
+            # at most the one call it has in flight; the per-run ceiling is checked there as well.
             if (
                 daemon_spend_ceiling_usd is not None
                 and await daemon_spend_usd(conn) >= daemon_spend_ceiling_usd
@@ -99,10 +104,17 @@ async def _bounded_hunt(
                 retry_budget=retry_budget,
                 max_iterations=max_iterations,
                 cost_ceiling_usd=cost_ceiling_usd,
+                daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
                 publish=publish,
                 notify=notify,
             )
-        except Exception:  # defence in depth over run_hunt's own backstop — never expected
+        except Exception as exc:  # defence in depth over run_hunt's own backstop — never expected
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                # Being cancelled (daemon shutdown): never swallow, or the territory loop would
+                # relaunch a hunt after its own cancel (R2-RV1).
+                logger.exception("hunt for %r failed while being cancelled", territory)
+                raise asyncio.CancelledError from exc
             logger.exception("hunt for %r escaped run_hunt's backstop", territory)
             return None
         finally:
@@ -187,8 +199,9 @@ async def run_scheduler(
     Budget guards: `cost_ceiling_usd` bounds ONE hunt (per-run, seq-scoped);
     `daemon_spend_ceiling_usd` bounds the daemon's cumulative spend across ALL hunts (id-scoped,
     folded from the log). Over the daemon ceiling, `_bounded_hunt` refuses to launch — the territory
-    loop keeps ticking (a clean pause), never crashes, and any in-flight hunt finishes. Set the
-    daemon ceiling `None` to disarm."""
+    loop keeps ticking (a clean pause), never crashes — and an in-flight hunt stops at its next
+    brain attempt, "daemon spend ceiling" ("cost ceiling" when its own ceiling is crossed too,
+    checked first; W3.2-C1). Set the daemon ceiling `None` to disarm."""
     boot = await db.connect(db_path)
     await boot.close()
 
