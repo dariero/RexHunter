@@ -24,6 +24,7 @@ The request model is `brain.SMOKE_MODEL`. Zero network: a `MockTransport` answer
 """
 
 import json
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -32,7 +33,7 @@ import anthropic
 import httpx2
 import pytest
 
-from rexhunter import brain, db
+from rexhunter import brain, db, hunt_smoke_thinking
 from rexhunter.events import (
     ErrorEvent,
     PreyCapturedEvent,
@@ -417,3 +418,105 @@ async def test_a_stream_that_ended_with_no_stop_reason_is_malformed_not_retried(
         cause="stream ended without a whole turn: open blocks [], stop_reason=None",
         content=[SNIFF],
     )
+
+
+# ── P1: a closed tool_use whose input is not JSON ends the run with its bytes ──────────
+
+# A closed block whose input does not parse: a complete key, then a value cut short (the shape
+# fine-grained streaming can send). Under default buffering a cut more likely leaves a whole
+# pair without its closing brace; both fail `json.loads` the same way.
+BAD_INPUT = '{"prey": "mo'
+
+
+@pytest.mark.parametrize(
+    ("stop_reason", "cause"),
+    [
+        # A cut by max_tokens. S names it too, so this case holds without P's check (M7).
+        ("max_tokens", "stop_reason='max_tokens'"),
+        # A whole stream that says `tool_use` yet closed a block with broken input: P alone.
+        ("tool_use", BAD_INPUT),
+    ],
+    ids=["max_tokens", "tool_use"],
+)
+async def test_a_tool_use_input_that_is_not_json_ends_the_run_with_its_bytes(
+    stop_reason: str, cause: str, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # H3: before W3.1 `_finalize` raised `json.JSONDecodeError` at the block's stop, which is not
+    # a BrainParseError, so the run ended in the `<loop>` catch-all with no response bytes.
+    body = b"".join(_stream([SNIFF], stop_reason=stop_reason, partial_json=BAD_INPUT))
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    assert [(e.tool, e.error) for e in _errors(hunt)] == [
+        ("<brain>", "malformed provider response")
+    ]
+    _assert_one_malformed_turn(
+        hunt,
+        raw=_assembled(body),
+        cause=cause,
+        content=[{**SNIFF, "input": {}}],  # the failed block keeps its start input
+    )
+
+
+async def test_the_thinking_harness_keeps_its_fixtures_when_a_tool_input_is_not_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # H3's second half: hunt_smoke_thinking re-assembles every captured stream in
+    # `_report_findings` before `write_fixtures`, so a raising fold cost a paid run its
+    # fixtures. Offline: a MockTransport answers, the fixtures go to `tmp_path`.
+    # run_live_hunt makes its run DB with `tempfile.mkdtemp()`: under tmp_path here, so this test
+    # adds no `rexhunter-think-*` dir to the system temp dir.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    body = b"".join(_stream([SNIFF], stop_reason="max_tokens", partial_json=BAD_INPUT))
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url) == brain.COUNT_TOKENS_URL:
+            return httpx2.Response(200, json={"input_tokens": 1})  # the free pre-flight
+        return httpx2.Response(200, content=body)
+
+    summary = await hunt_smoke_thinking.run_live_hunt(
+        "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=tmp_path
+    )
+    fixtures = sorted((tmp_path / f"hunt_{summary['run_id']}").glob("call_*.json"))
+    assert [p.read_bytes() for p in fixtures] == [body]  # the raw stream, kept
+    assert "[truncation] call 1" in capsys.readouterr().out  # the reporter ran to its end
+    assert (summary["outcome"], summary["reason"], summary["brain_calls"]) == (
+        "aborted",
+        "malformed provider response",
+        1,
+    )
+
+
+async def test_a_tool_use_input_that_json_loads_refuses_with_a_value_error_ends_typed(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # Valid JSON that `json.loads` still refuses: an integer over 4300 digits raises a plain
+    # ValueError (CPython's int max-str-digits limit), not a JSONDecodeError. P catches it too.
+    huge = '{"prey": ' + "1" * 4301 + "}"
+    body = b"".join(_stream([SNIFF], partial_json=huge))
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    assert [(e.tool, e.error) for e in _errors(hunt)] == [
+        ("<brain>", "malformed provider response")
+    ]
+    _assert_one_malformed_turn(
+        hunt,
+        raw=_assembled(body),
+        cause="does not parse as JSON",
+        content=[{**SNIFF, "input": {}}],
+    )
+
+
+async def test_a_bad_tool_input_in_a_stream_cut_short_is_retried_as_a_cut(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # The order of the checks: T runs before P. A body that ends before `message_stop` is a cut,
+    # retried within the budget, even when a block it did close holds input that does not parse.
+    body = b"".join(_stream([SNIFF], partial_json=BAD_INPUT)[:-2])  # no message_delta, message_stop
+    hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
+    _assert_nothing_dispatched(hunt)
+    assert hunt.requests == RETRY_BUDGET + 1
+    errors = _errors(hunt)
+    assert len(errors) == RETRY_BUDGET + 1, errors
+    for error in errors:
+        assert (error.tool, error.retryable) == ("<brain>", True)
+        assert error.raw_response == _assembled(body)
+        assert "stream cut before message_stop" in (error.detail or "")
+    assert hunt.row == BRAIN_CALL_FAILED

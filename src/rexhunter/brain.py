@@ -411,6 +411,7 @@ class StreamAssembler:
         self._usage: dict[str, Any] = {}
         self._stopped: set[int] = set()  # the block indexes that got their content_block_stop
         self._message_stopped = False  # message_stop arrived (W3.1)
+        self._failed_inputs: dict[int, str] = {}  # tool_use input that was not JSON (W3.1)
         self.complete = False  # True once message_stop / a stop_reason has arrived
 
     def feed(self, event: dict[str, Any]) -> str | None:
@@ -489,7 +490,22 @@ class StreamAssembler:
         block = self._blocks.get(index)
         if block is not None and block.get("type") == _TOOL_USE:
             buf = self._json_buf.get(index, "")
-            block["input"] = json.loads(buf) if buf else {}  # complete + validated only now
+            # Parsed only now; the tool's own schema validates it at dispatch (`tool.validate`).
+            # Parsing the tool input never raises here (W3.1, fork P1): input that does not parse
+            # keeps the block's start `input` and is recorded in `failed_inputs`, which
+            # `_drive_stream` refuses, so a reader of the captured bytes (hunt_smoke_thinking's
+            # reporter) still gets to `write_fixtures`. ValueError, not only JSONDecodeError (its
+            # subclass): `json.loads` raises a plain ValueError for an integer over 4300 digits.
+            try:
+                block["input"] = json.loads(buf) if buf else {}
+            except ValueError:
+                self._failed_inputs[index] = buf
+
+    @property
+    def failed_inputs(self) -> dict[int, str]:
+        """The tool_use blocks whose input did not parse as JSON at their `content_block_stop`:
+        index -> the accumulated `input_json_delta` text, as the model sent it."""
+        return dict(self._failed_inputs)
 
     def assembled(self) -> dict[str, Any]:
         """The assembled response in `_ProviderResponse` shape. Blocks in content-index order; an
@@ -689,8 +705,9 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     is the shared logic. Only a `finished` stream is returned (W3.1, T3): a body that ends on a
     frame boundary before `message_stop` raises a retryable BrainCallError, and a body that
     reached `message_stop` but is not whole raises a BrainParseError, each carrying the assembled
-    bytes. (A body cut inside a `data:` line still fails `json.loads` and reaches the loop's
-    `<loop>` backstop: O1, not in W3.1.)"""
+    bytes; so does a whole stream whose closed tool_use input does not parse as JSON (W3.1, P1).
+    (A body cut inside a `data:` line still fails `json.loads` and reaches the loop's `<loop>`
+    backstop: O1, not in W3.1.)"""
     assembler = StreamAssembler()
     data_buf: list[str] = []
     async for line in lines:
@@ -721,6 +738,18 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
             raw=raw,
             detail=(
                 f"stream ended without a whole turn: open blocks {assembler.open_blocks}, "
+                f"stop_reason={assembler.stop_reason!r}"
+            ),
+        )
+    # A whole stream whose closed tool_use input does not parse (W3.1, P1): a `max_tokens` cut can
+    # end a parameter midway, or the response is malformed. Never run, never guessed at: fatal,
+    # with the model's own text in `detail` (the block in `raw` keeps its start input).
+    if assembler.failed_inputs:
+        raise BrainParseError(
+            raw=raw,
+            detail=(
+                f"tool_use input does not parse as JSON at content_block_stop: "
+                f"{assembler.failed_inputs!r}, "
                 f"stop_reason={assembler.stop_reason!r}"
             ),
         )
