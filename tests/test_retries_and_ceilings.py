@@ -1,4 +1,5 @@
-"""W3.2 — a brain call the boundary refuses is counted (H4, W3.2-U2a).
+"""W3.2 — a brain call the boundary refuses is counted (H4, W3.2-U2a); both spend ceilings are
+checked before every brain attempt (H3, H5, W3.2-C1).
 
 H4 (W3.1-U): before W3.2 a brain call the boundary refused appended no UsageEvent, so a 200 that can
 still be billed (a turn refused for its stop reason, a stream cut before `message_stop`, an error
@@ -8,10 +9,17 @@ refusal carries the response's own usage, and the loop appends it as a UsageEven
 ErrorEvent. A count that does not read is not counted, and the ErrorEvent says so; a stream cut by
 a transport failure (W3.2-U2b), a status error and an envelope-invalid body carry no usage.
 
+H3 and H5 (fragility #4): the daemon ceiling was checked once per hunt, at launch, and the per-run
+ceiling once per iteration, so a running hunt never saw the daemon ceiling and a retried call made
+`retry_budget + 1` requests with no check between them. W3.2-C1: both are checked before every
+brain attempt, each a fold over the log, so a run or the daemon goes past its ceiling by at most
+the one call each hunt has in flight, of the calls the log counts.
+
 Every response is built here from literals; nothing under tests/fixtures/ is read or written. The
 request model is `brain.SMOKE_MODEL`. Zero network: a `MockTransport` answers every call.
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
@@ -23,7 +31,7 @@ import pytest
 
 from rexhunter import brain, cost, db, scheduler
 from rexhunter.events import ErrorEvent, TrajectoryEvent, UsageEvent
-from rexhunter.loop import run_hunt
+from rexhunter.loop import Brain, Context, Decision, ThinkingSink, ToolCallDecision, run_hunt
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
@@ -35,6 +43,8 @@ MODEL = brain.SMOKE_MODEL
 RETRY_BUDGET = 2  # run_hunt's default, passed explicitly: a retried call makes 3 requests
 MALFORMED = ("aborted", "malformed provider response")
 BRAIN_CALL_FAILED = ("aborted", "brain call failed")
+COST_CEILING = ("aborted", "cost ceiling")
+DAEMON_CEILING = ("aborted", "daemon spend ceiling")
 
 SNIFF: dict[str, Any] = {
     "type": "tool_use",
@@ -543,3 +553,256 @@ async def test_an_accepted_turn_whose_usage_does_not_read_still_fails_closed(
     assert _types(hunt.events) == ["error"]
     assert _errors(hunt.events)[0].tool == "<loop>"
     assert hunt.row == ("aborted", "unhandled exception in loop")
+
+
+# ── C1: both ceilings before every brain attempt (H3, H5) ──────────────────────────────
+
+PER_CALL = _usage(4000, 0)  # $0.008 at SMOKE_MODEL's $2/MTok input
+PER_CALL_USD = 0.008
+DAEMON_CEILING_USD = 0.01  # one call fits under it, two do not
+
+
+def _spending_brain(calls: list[int], *, gate: Callable[[], Any] | None = None) -> Brain:
+    """A brain that sniffs forever, each call reporting PER_CALL; `gate` runs before it answers."""
+
+    async def spend(_context: Context, _sink: ThinkingSink) -> Decision:
+        calls.append(1)
+        if gate is not None:
+            await gate()
+        return ToolCallDecision(tool="sniff", args={"prey": "mock-gym"}, usage=PER_CALL)
+
+    return spend
+
+
+async def _spend_and_rows(db_path: Path, run_ids: Sequence[str | None]) -> tuple[float, list[Any]]:
+    conn = await db.connect(db_path)
+    try:
+        rows = [await _row(conn, rid) for rid in run_ids if rid is not None]
+        return await scheduler.daemon_spend_usd(conn), rows
+    finally:
+        await conn.close()
+
+
+async def test_one_hunt_stops_at_the_daemon_ceiling_mid_run(tmp_path: Path) -> None:
+    # H3: before W3.2 the launch gate was the daemon ceiling's only check, so this hunt ran its
+    # three calls ($0.024) past a $0.01 ceiling and ended on "max iterations".
+    db_path = tmp_path / "rex.db"
+    calls: list[int] = []
+    run_ids = await scheduler.run_hunts(
+        db_path,
+        ["mock-gym"],
+        brain_for=lambda _territory: _spending_brain(calls),
+        registry=_registry(),
+        max_concurrent=1,
+        retry_budget=0,
+        max_iterations=3,
+        daemon_spend_ceiling_usd=DAEMON_CEILING_USD,
+    )
+    spend, rows = await _spend_and_rows(db_path, run_ids)
+    assert spend <= DAEMON_CEILING_USD + PER_CALL_USD  # at most one call past the ceiling
+    assert spend == pytest.approx(2 * PER_CALL_USD)
+    assert len(calls) == 2  # $0.008 < $0.01 lets the second call go; $0.016 stops the third
+    assert rows == [DAEMON_CEILING]
+
+
+async def test_two_concurrent_hunts_stay_within_the_daemon_ceiling_plus_one_call_each(
+    tmp_path: Path,
+) -> None:
+    # H3: before W3.2, hunts that passed the launch gate together never met the daemon ceiling
+    # again: here each ran its three calls to max iterations ($0.048 for two). Both first calls
+    # are held until both are in flight, so both passed the check at $0: the bound is the ceiling
+    # plus one call per hunt, whatever the order after that.
+    db_path = tmp_path / "rex.db"
+    calls: list[int] = []
+    in_first_call = 0
+    both_in = asyncio.Event()
+
+    async def hold_first_calls() -> None:
+        nonlocal in_first_call
+        if len(calls) <= 2:
+            in_first_call += 1
+            if in_first_call == 2:
+                both_in.set()
+            await asyncio.wait_for(both_in.wait(), timeout=5)
+
+    run_ids = await scheduler.run_hunts(
+        db_path,
+        ["a", "b"],
+        brain_for=lambda _territory: _spending_brain(calls, gate=hold_first_calls),
+        registry=_registry(),
+        max_concurrent=2,
+        retry_budget=0,
+        max_iterations=3,
+        daemon_spend_ceiling_usd=DAEMON_CEILING_USD,
+    )
+    spend, rows = await _spend_and_rows(db_path, run_ids)
+    assert both_in.is_set()  # the two first calls overlapped
+    assert spend <= DAEMON_CEILING_USD + 2 * PER_CALL_USD + 1e-12  # one call past it per hunt
+    assert rows == [DAEMON_CEILING, DAEMON_CEILING]
+
+
+def _cut_stream() -> bytes:
+    """A stream cut before message_stop: a retryable refusal whose usage ($0.0004) is counted."""
+    return b"".join(_stream([SNIFF])[:-1])
+
+
+async def test_the_per_run_ceiling_stops_a_retried_call_between_attempts(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # H5: before W3.2 the per-run ceiling was checked once per iteration, so a retried call made
+    # all three requests whatever the first one spent.
+    hunt = await _hunt(
+        tmp_path, mock_anthropic, _ok(_cut_stream()), stream=True, cost_ceiling_usd=1e-9
+    )
+    assert hunt.row == COST_CEILING
+    assert hunt.requests == 1
+    assert _types(hunt.events) == ["usage", "error"]
+
+
+async def test_the_daemon_ceiling_stops_a_retried_call_between_attempts(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # H5 for the daemon ceiling: the fresh log passes the launch gate ($0 < the ceiling), then the
+    # first refused attempt's usage stops the retry.
+    db_path = tmp_path / "rex.db"
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(200, content=_cut_stream())
+
+    reg = _registry()
+    async with mock_anthropic(handler, api_key="offline") as client:
+        brain_for = brain.adapter_brain_for(
+            client=client, model=MODEL, registry=reg, thinking=brain.HUNT_THINKING, stream=True
+        )
+        run_ids = await scheduler.run_hunts(
+            db_path,
+            ["mock-gym"],
+            brain_for=brain_for,
+            registry=reg,
+            max_concurrent=1,
+            retry_budget=RETRY_BUDGET,
+            max_iterations=3,
+            daemon_spend_ceiling_usd=1e-9,
+        )
+    _spend, rows = await _spend_and_rows(db_path, run_ids)
+    assert rows == [DAEMON_CEILING]
+    assert len(requests) == 1
+
+
+# Pins: no daemon ceiling leaves a run ungated by other runs' spend; the per-run one is named first.
+
+
+async def test_without_a_daemon_ceiling_a_hunt_ignores_the_spend_of_other_runs(
+    tmp_path: Path,
+) -> None:
+    # Pin: run_hunt's daemon ceiling defaults to None, ungated, as before W3.2; and the per-run
+    # fold counts this run's spend only ($1.00 ceiling, $2.00 spent in another run).
+    db_path = tmp_path / "rex.db"
+    conn = await db.connect(db_path)
+    try:
+        seed = await db.start_run(conn, territory="seed")
+        await db.append_event(conn, seed, _usage(1_000_000, 0))  # $2.00 in another run
+        calls: list[int] = []
+        run_id = await run_hunt(
+            conn,
+            territory="mock-gym",
+            brain=_spending_brain(calls),
+            registry=_registry(),
+            retry_budget=0,
+            max_iterations=3,
+            cost_ceiling_usd=1.0,
+        )
+        assert await _row(conn, run_id) == ("aborted", "max iterations")
+        assert len(calls) == 3
+    finally:
+        await conn.close()
+
+
+async def test_the_per_run_ceiling_is_named_when_both_ceilings_trip(tmp_path: Path) -> None:
+    # Pin: the per-run ceiling is checked first, so a run over both ends "cost ceiling".
+    db_path = tmp_path / "rex.db"
+    calls: list[int] = []
+    run_ids = await scheduler.run_hunts(
+        db_path,
+        ["mock-gym"],
+        brain_for=lambda _territory: _spending_brain(calls),
+        registry=_registry(),
+        max_concurrent=1,
+        retry_budget=0,
+        max_iterations=3,
+        cost_ceiling_usd=1e-9,
+        daemon_spend_ceiling_usd=1e-9,
+    )
+    _spend, rows = await _spend_and_rows(db_path, run_ids)
+    assert rows == [COST_CEILING]
+    assert len(calls) == 1
+
+
+async def test_a_hunt_started_over_the_daemon_ceiling_makes_no_brain_call(tmp_path: Path) -> None:
+    # The daemon check runs on a run's first attempt too, not only behind the launch gate: a
+    # sibling can cross the ceiling between this hunt's launch and its first call. Direct
+    # run_hunt, so no launch gate stands in front of the in-loop check.
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        seed = await db.start_run(conn, territory="seed")
+        await db.append_event(conn, seed, _usage(1_000_000, 0))  # $2.00 in another run
+        calls: list[int] = []
+        run_id = await run_hunt(
+            conn,
+            territory="mock-gym",
+            brain=_spending_brain(calls),
+            registry=_registry(),
+            retry_budget=0,
+            max_iterations=3,
+            cost_ceiling_usd=1000.0,
+            daemon_spend_ceiling_usd=1.0,
+        )
+        assert await _row(conn, run_id) == DAEMON_CEILING
+        assert calls == []
+    finally:
+        await conn.close()
+
+
+# Boundaries: each check is `>=` (and the daemon one an `is not None` test, not truthiness), so a
+# $0 ceiling allows no brain call at all.
+
+
+async def test_a_zero_per_run_ceiling_allows_no_brain_call(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        calls: list[int] = []
+        run_id = await run_hunt(
+            conn,
+            territory="mock-gym",
+            brain=_spending_brain(calls),
+            registry=_registry(),
+            retry_budget=0,
+            max_iterations=3,
+            cost_ceiling_usd=0.0,
+        )
+        assert await _row(conn, run_id) == COST_CEILING
+        assert calls == []
+    finally:
+        await conn.close()
+
+
+async def test_a_zero_daemon_ceiling_allows_no_brain_call(tmp_path: Path) -> None:
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        calls: list[int] = []
+        run_id = await run_hunt(
+            conn,
+            territory="mock-gym",
+            brain=_spending_brain(calls),
+            registry=_registry(),
+            retry_budget=0,
+            max_iterations=3,
+            cost_ceiling_usd=1000.0,
+            daemon_spend_ceiling_usd=0.0,
+        )
+        assert await _row(conn, run_id) == DAEMON_CEILING
+        assert calls == []
+    finally:
+        await conn.close()

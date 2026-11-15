@@ -856,7 +856,8 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     if error_data is not None and assembler.error_frame is not None:
         raise _stream_error(assembler.error_frame, error_data, usage=usage, note=note)
     # A stream is a turn only when it is whole (W3.1, T3). The body ended before `message_stop`:
-    # the connection was cut on the way, the class a reset mid-stream is, so the loop retries it.
+    # the connection was cut on the way, the class a reset mid-stream is, so the loop retries it
+    # (unless a spend ceiling stops the run first, W3.2-C1).
     if not assembler.ended:
         raise BrainCallError(
             f"stream cut before message_stop (stop_reason={assembler.stop_reason!r}, open "

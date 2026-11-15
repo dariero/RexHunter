@@ -23,7 +23,8 @@ from rexhunter import cost, db, events, verdicts
 from rexhunter.tools import ToolFn, ToolRegistry
 
 # The default per-run spend guard (USD). The stub/scripted brains carry no usage (cost folds to 0),
-# so this never bites them; the paid smoke (`P5` Unit 2c.2) overrides it low. Enforced in `_drive`.
+# so this never bites them; the paid smoke (`P5` Unit 2c.2) overrides it low. Enforced in
+# `_call_brain`, before every brain attempt (W3.2-C1).
 COST_CEILING_USD = 1.0
 
 # ── Error taxonomy + single-attempt execution (Unit C) ───────────────────────
@@ -277,12 +278,23 @@ async def _call_brain(
     conn: aiosqlite.Connection,
     run_id: str,
     brain: Brain,
-    context: list[events.TrajectoryEvent],
     *,
     retry_budget: int,
+    cost_ceiling_usd: float,
+    daemon_spend_ceiling_usd: float | None,
     publish: db.PublishFn | None = None,
-) -> Decision | None:
-    """One brain call, retrying the brain's HTTP transport failures; ``None`` = abort.
+) -> Decision | str:
+    """One brain call, retrying the brain's HTTP transport failures; returns the Decision, or the
+    abort reason ("cost ceiling", "daemon spend ceiling", "brain call failed").
+
+    Both spend ceilings are checked before EVERY attempt, a retry included (W3.2-C1, fragility #4),
+    each a fold over the log as it stands at that moment (invariant 5, never a counter): this run's
+    UsageEvents against `cost_ceiling_usd` first, then every run's (`db.read_usage`, the fold
+    `scheduler.daemon_spend_usd` makes) against `daemon_spend_ceiling_usd` (None = ungated). So a
+    run, or the daemon, goes past its ceiling by at most the one call each hunt has in flight, of
+    the calls the log counts. The context the brain projects is read at the same point: what a
+    failed attempt left in the log (its ThinkingDeltas, UsageEvent and `<brain>` ErrorEvent) is not
+    conversation, so a retry sends the same request.
 
     Owns exactly one error shape: the provider-neutral BrainCallError (W2.0 D1a), which the adapter
     raises for every transport + status failure, so the loop knows no vendor or transport types. A
@@ -305,6 +317,14 @@ async def _call_brain(
 
     attempts = retry_budget + 1
     for attempt in range(attempts):
+        context = await db.read_events(conn, run_id)  # the window the brain projects into messages
+        if cost.fold_cost(context) >= cost_ceiling_usd:
+            return "cost ceiling"
+        if (
+            daemon_spend_ceiling_usd is not None
+            and cost.fold_cost(await db.read_usage(conn)) >= daemon_spend_ceiling_usd
+        ):
+            return "daemon spend ceiling"
         try:
             return await brain(context, sink)
         except BrainCallError as exc:
@@ -330,8 +350,8 @@ async def _call_brain(
             )
             if retryable and attempt < attempts - 1:
                 continue  # transient blip -> re-try within budget
-            return None  # fatal 4xx, or retryable budget exhausted -> abort
-    return None  # pragma: no cover - range(attempts >= 1) always returns inside the loop
+            return "brain call failed"  # fatal 4xx, or retryable budget exhausted -> abort
+    return "brain call failed"  # pragma: no cover - range(attempts >= 1) returns inside the loop
 
 
 async def _drive(
@@ -345,27 +365,33 @@ async def _drive(
     retry_budget: int,
     max_iterations: int,
     cost_ceiling_usd: float,
+    daemon_spend_ceiling_usd: float | None = None,
     publish: db.PublishFn | None = None,
 ) -> tuple[str, str | None]:
     """plan -> act -> observe until a terminal decision, a breaker, or a brain failure.
 
-    Returns (outcome, abort_reason). Two circuit breakers guard the loop (ADR §Budget guards):
-    max_iterations bounds the turn count, and the cost ceiling - folded from the run's UsageEvents
-    (invariant 5, no stored counter) - aborts BEFORE the next paid call once spend crosses it. Each
-    iteration projects the log into the brain's context, records the call's UsageEvent (if the brain
-    reported one), then acts. NeedsHelp is terminal and appends no event; HuntComplete captures its
-    catch into the prey pen (each a PreyCapturedEvent + row, P4) THEN closes via runs.outcome. A
-    tool failure or an exhausted brain retry budget aborts.
+    Returns (outcome, abort_reason). Three circuit breakers guard the loop: the two of ADR §Budget
+    guards (ADR:262), max_iterations bounding the turn count and the per-run cost ceiling, and the
+    daemon spend ceiling the scheduler injects (W.1). Both spend ceilings - each folded from
+    UsageEvents (invariant 5, no stored counter) - abort BEFORE the next paid attempt once spend
+    crosses them (`_call_brain`, W3.2-C1). Each iteration calls the brain on the log projected
+    into its context, records the call's UsageEvent (if the brain reported one), then acts.
+    NeedsHelp is terminal and appends no event; HuntComplete captures its catch into the prey pen
+    (each a PreyCapturedEvent + row, P4) THEN closes via runs.outcome. A tool failure or an
+    exhausted brain retry budget aborts.
     """
     for _ in range(max_iterations):
-        context = await db.read_events(conn, run_id)  # the window the brain projects into messages
-        if cost.fold_cost(context) >= cost_ceiling_usd:
-            return "aborted", "cost ceiling"
         decision = await _call_brain(
-            conn, run_id, brain, context, retry_budget=retry_budget, publish=publish
+            conn,
+            run_id,
+            brain,
+            retry_budget=retry_budget,
+            cost_ceiling_usd=cost_ceiling_usd,
+            daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+            publish=publish,
         )
-        if decision is None:
-            return "aborted", "brain call failed"
+        if isinstance(decision, str):
+            return "aborted", decision  # a spend ceiling, or the brain call failed
         if decision.usage is not None:
             # per-call spend, folded next iter
             await db.append_event(conn, run_id, decision.usage, publish=publish)
@@ -405,6 +431,7 @@ async def run_hunt(
     retry_budget: int = 2,
     max_iterations: int = 50,
     cost_ceiling_usd: float = COST_CEILING_USD,
+    daemon_spend_ceiling_usd: float | None = None,
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
 ) -> str:
@@ -417,9 +444,12 @@ async def run_hunt(
     shutdown path closes the run (P2.3), exactly as the prototype sniff loop does today.
     `notify` (Step 2a) fires one id-less run-finished pulse after the closing commit — LIVE
     closures only (the cancel path re-raises before the pulse; boot's sweep never sees it).
+    `daemon_spend_ceiling_usd` (W3.2-C1) is the scheduler's id-scoped ceiling, checked before
+    every brain attempt alongside the per-run one; None (the default) leaves the run ungated by it.
     """
-    # Record the caps this run runs under (4a): the same two values _drive enforces, snapshotted
-    # write-once onto the runs row — the frontend's per-run HP/stamina denominators.
+    # Record the run's own caps (4a): the per-run ceiling and max_iterations _drive enforces,
+    # snapshotted write-once onto the runs row — the frontend's per-run HP/stamina denominators.
+    # The daemon ceiling is the scheduler's, injected (4b), never recorded here.
     run_id = await db.start_run(
         conn,
         territory=territory,
@@ -437,6 +467,7 @@ async def run_hunt(
             retry_budget=retry_budget,
             max_iterations=max_iterations,
             cost_ceiling_usd=cost_ceiling_usd,
+            daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
             publish=publish,
         )
     except asyncio.CancelledError as cancel:

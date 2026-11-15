@@ -87,10 +87,10 @@ class PreyCapturedEvent(_Event):
 class ErrorEvent(_Event):
     """A tool attempt failed: raised, timed out, unknown name, or invalid args.
 
-    `retryable` mirrors the loop's taxonomy (a retryable attempt is re-tried within budget; a
-    fatal one ends the run). `raw_response` is optional - an unknown tool or a timeout never
-    produced one. `detail` carries the traceback / classifier message; the raw payload makes a
-    dead run a pytest fixture for free (invariant 6).
+    `retryable` mirrors the loop's taxonomy (a retryable attempt is re-tried within budget, unless
+    a spend ceiling stops the run first, W3.2-C1; a fatal one ends the run). `raw_response` is
+    optional - an unknown tool or a timeout never produced one. `detail` carries the traceback /
+    classifier message; the raw payload makes a dead run a pytest fixture for free (invariant 6).
     """
 
     type: Literal["error"] = "error"
