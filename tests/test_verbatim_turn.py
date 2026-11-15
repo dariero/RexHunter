@@ -528,7 +528,9 @@ async def test_the_stored_tool_use_keeps_the_models_input_not_the_validated_args
 def test_parse_decision_stores_the_content_array_as_received(content: list[dict[str, Any]]) -> None:
     # The fill site itself, on a payload with no `usage` and no `model`: every block, in order,
     # whatever comes after the tool_use.
-    decision = brain.parse_decision(json.dumps({"content": content}).encode())
+    decision = brain.parse_decision(
+        json.dumps({"stop_reason": "tool_use", "content": content}).encode()
+    )
     assert decision.usage is None
     assert isinstance(decision, ToolCallDecision)
     assert json.loads(decision.assistant_content) == content

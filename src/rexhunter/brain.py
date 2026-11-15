@@ -290,11 +290,36 @@ def parse_decision(raw: bytes) -> Decision:
     the log (invariant 5) without a second crossing of the raw bytes. A `ToolCallDecision` also
     carries the whole turn (W2.3, D7): the validated envelope's `content` array, every block in
     order, as JSON bytes, which the loop stores on the ToolCallEvent for the next call's echo. Both
-    paths come through here, so the plain and the streaming turn are stored the same way."""
+    paths come through here, so the plain and the streaming turn are stored the same way. A turn
+    is acted on only when it stopped for its tool call (W3.1, fork S1): any other `stop_reason`,
+    `None` included, is a BrainParseError, so a turn that stopped for another reason (a
+    `max_tokens` cut, a refusal, a stream cut before its `message_delta`) is never dispatched or
+    stored."""
     try:
         response = _ProviderResponse.model_validate_json(raw)
     except ValidationError as exc:
         raise BrainParseError(raw=raw, detail=str(exc)) from exc
+
+    # Act only on a turn that stopped for its tool call (W3.1, S1). The canonical loop runs tools
+    # "while `stop_reason == "tool_use"`" and exits on any other stop reason, and a `max_tokens`
+    # cut can leave an incomplete tool use that needs a retry with a higher `max_tokens`. A turn
+    # whose tool use is whole but which stopped on `max_tokens` after it is declined too: the
+    # thinking docs' continue rule for it (a `tool_result` for each `tool_use`) is fork S2, not
+    # taken. Read 15 Nov 2026:
+    #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works
+    #   https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
+    #   https://platform.claude.com/docs/en/build-with-claude/thinking (progress updates)
+    # `None` too: "The `stop_reason` field is part of every successful Messages API response", and
+    # a stream sets it in `message_delta`, so a stream cut before that frame carries none. Checked
+    # before the usage is read, so such a turn ends here whatever its usage holds.
+    if response.stop_reason != _TOOL_USE:
+        raise BrainParseError(
+            raw=raw,
+            detail=(
+                f"stop_reason={response.stop_reason!r}: the loop acts only on a turn that "
+                "stopped for its tool call"
+            ),
+        )
 
     usage = _extract_usage(response)
 

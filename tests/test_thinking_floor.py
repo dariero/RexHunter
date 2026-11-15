@@ -44,7 +44,7 @@ async def _adapter_body(mock_anthropic: MockAnthropic, model: str) -> dict[str, 
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         sent.append(json.loads(request.content))
-        return httpx2.Response(200, json={"content": [_HUNT_COMPLETE]})
+        return httpx2.Response(200, json={"stop_reason": "tool_use", "content": [_HUNT_COMPLETE]})
 
     async with mock_anthropic(handler) as client:
         brain_for = brain.adapter_brain_for(
