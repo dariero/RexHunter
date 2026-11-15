@@ -158,10 +158,13 @@ def decode_event(payload: str) -> TrajectoryEvent:
 
 class BrainParseError(Exception):
     """The provider->Decision boundary (P5) rejected a payload: LLM output is untrusted input
-    (invariant 3), and this raw payload does not validate into the decision union. Carries the
-    raw bytes (invariant 6) so the loop can attach them to an ErrorEvent - a malformed response
-    is diagnosable from the ghost replay, never a mystery string. Raised by brain.parse_decision;
-    caught by run_hunt, which records it and ends the run in a typed outcome."""
+    (invariant 3), and this raw payload is not a turn the loop may act on: it does not validate
+    into the decision union, or (W3.1) a streamed response ended without a whole turn or closed
+    a tool_use whose input does not parse as JSON. Carries the raw bytes (invariant 6) so the
+    loop can attach them to an ErrorEvent - a malformed response is diagnosable from the ghost
+    replay, never a mystery string. Raised by brain.parse_decision and by brain's stream reader
+    (`_drive_stream`); caught by run_hunt, which records it and ends the run in a typed
+    outcome."""
 
     def __init__(self, raw: bytes, detail: str) -> None:
         super().__init__(detail)

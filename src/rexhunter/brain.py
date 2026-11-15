@@ -290,11 +290,36 @@ def parse_decision(raw: bytes) -> Decision:
     the log (invariant 5) without a second crossing of the raw bytes. A `ToolCallDecision` also
     carries the whole turn (W2.3, D7): the validated envelope's `content` array, every block in
     order, as JSON bytes, which the loop stores on the ToolCallEvent for the next call's echo. Both
-    paths come through here, so the plain and the streaming turn are stored the same way."""
+    paths come through here, so the plain and the streaming turn are stored the same way. A turn
+    is acted on only when it stopped for its tool call (W3.1, fork S1): any other `stop_reason`,
+    `None` included, is a BrainParseError, so a turn that stopped for another reason (a
+    `max_tokens` cut, a refusal, a stream cut before its `message_delta`) is never dispatched or
+    stored."""
     try:
         response = _ProviderResponse.model_validate_json(raw)
     except ValidationError as exc:
         raise BrainParseError(raw=raw, detail=str(exc)) from exc
+
+    # Act only on a turn that stopped for its tool call (W3.1, S1). The canonical loop runs tools
+    # "while `stop_reason == "tool_use"`" and exits on any other stop reason, and a `max_tokens`
+    # cut can leave an incomplete tool use that needs a retry with a higher `max_tokens`. A turn
+    # whose tool use is whole but which stopped on `max_tokens` after it is declined too: the
+    # thinking docs' continue rule for it (a `tool_result` for each `tool_use`) is fork S2, not
+    # taken. Read 15 Nov 2026:
+    #   https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works
+    #   https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
+    #   https://platform.claude.com/docs/en/build-with-claude/thinking (progress updates)
+    # `None` too: "The `stop_reason` field is part of every successful Messages API response", and
+    # a stream sets it in `message_delta`, so a stream cut before that frame carries none. Checked
+    # before the usage is read, so such a turn ends here whatever its usage holds.
+    if response.stop_reason != _TOOL_USE:
+        raise BrainParseError(
+            raw=raw,
+            detail=(
+                f"stop_reason={response.stop_reason!r}: the loop acts only on a turn that "
+                "stopped for its tool call"
+            ),
+        )
 
     usage = _extract_usage(response)
 
@@ -372,8 +397,10 @@ class StreamAssembler:
     deltas as they arrive; pure and offline-testable by feeding fixture events.
 
     Display streams, execution waits (ADR §What point 5): a `tool_use` block's `input` is parsed
-    from its accumulated `input_json_delta` only at `content_block_stop`, so a partial stream leaves
-    the block un-dispatchable (its start `input` — `{}` — stands until the block is complete).
+    from its accumulated `input_json_delta` only at `content_block_stop`; until then its start
+    `input` (`{}`) stands. A partial stream is un-dispatchable because `_drive_stream` hands a turn
+    on only when the stream is `finished` (W3.1, fork T3): every started block got its
+    `content_block_stop`, a `message_delta` carried a stop reason, and `message_stop` arrived.
     """
 
     def __init__(self) -> None:
@@ -382,6 +409,10 @@ class StreamAssembler:
         self._model: str | None = None
         self._stop_reason: str | None = None
         self._usage: dict[str, Any] = {}
+        self._stopped: set[int] = set()  # the block indexes that got their content_block_stop
+        self._message_stopped = False  # message_stop arrived (W3.1)
+        self._failed_inputs: dict[int, str] = {}  # tool_use input that was not JSON (W3.1)
+        self._error_frame: dict[str, Any] | None = None  # the first SSE `error` event (W3.1)
         self.complete = False  # True once message_stop / a stop_reason has arrived
 
     def feed(self, event: dict[str, Any]) -> str | None:
@@ -397,7 +428,9 @@ class StreamAssembler:
         elif etype == "content_block_delta":
             return self._apply_delta(int(event["index"]), event["delta"])
         elif etype == "content_block_stop":
-            self._finalize(int(event["index"]))
+            index = int(event["index"])
+            self._stopped.add(index)
+            self._finalize(index)
         elif etype == "message_delta":
             delta = event.get("delta", {})
             if delta.get("stop_reason") is not None:
@@ -406,7 +439,41 @@ class StreamAssembler:
             self._usage.update(event.get("usage", {}))  # cumulative output_tokens
         elif etype == "message_stop":
             self.complete = True
+            self._message_stopped = True
+        elif etype == "error" and self._error_frame is None:
+            # Recorded, never raised (W3.1, fork Z1): `_drive_stream` turns it into the call's
+            # verdict, and an offline reader of the bytes (the smoke reporters) folds on.
+            self._error_frame = event
         return None
+
+    @property
+    def error_frame(self) -> dict[str, Any] | None:
+        """The first SSE `error` event the stream carried (its parsed `data`), or None."""
+        return self._error_frame
+
+    @property
+    def stop_reason(self) -> str | None:
+        """The stop reason the stream's `message_delta` carried, or None if none arrived."""
+        return self._stop_reason
+
+    @property
+    def ended(self) -> bool:
+        """`message_stop` arrived: the provider sent the whole body (W3.1, T3). A stream that did
+        not end was cut on the way (a transport failure)."""
+        return self._message_stopped
+
+    @property
+    def open_blocks(self) -> list[int]:
+        """The started blocks that never got their `content_block_stop`, in index order."""
+        return sorted(set(self._blocks) - self._stopped)
+
+    @property
+    def finished(self) -> bool:
+        """The stream is a whole turn (W3.1, T3): every started content block got its
+        `content_block_stop`, a `message_delta` carried a stop reason, and `message_stop` arrived
+        (the event flow in https://platform.claude.com/docs/en/build-with-claude/streaming, read
+        15 Nov 2026). `complete` is looser: a stop reason alone sets it."""
+        return self.ended and not self.open_blocks and self._stop_reason is not None
 
     def _apply_delta(self, index: int, delta: dict[str, Any]) -> str | None:
         block = self._blocks.get(index)
@@ -433,7 +500,22 @@ class StreamAssembler:
         block = self._blocks.get(index)
         if block is not None and block.get("type") == _TOOL_USE:
             buf = self._json_buf.get(index, "")
-            block["input"] = json.loads(buf) if buf else {}  # complete + validated only now
+            # Parsed only now; the tool's own schema validates it at dispatch (`tool.validate`).
+            # Parsing the tool input never raises here (W3.1, fork P1): input that does not parse
+            # keeps the block's start `input` and is recorded in `failed_inputs`, which
+            # `_drive_stream` refuses, so a reader of the captured bytes (hunt_smoke_thinking's
+            # reporter) still gets to `write_fixtures`. ValueError, not only JSONDecodeError (its
+            # subclass): `json.loads` raises a plain ValueError for an integer over 4300 digits.
+            try:
+                block["input"] = json.loads(buf) if buf else {}
+            except ValueError:
+                self._failed_inputs[index] = buf
+
+    @property
+    def failed_inputs(self) -> dict[int, str]:
+        """The tool_use blocks whose input did not parse as JSON at their `content_block_stop`:
+        index -> the accumulated `input_json_delta` text, as the model sent it."""
+        return dict(self._failed_inputs)
 
     def assembled(self) -> dict[str, Any]:
         """The assembled response in `_ProviderResponse` shape. Blocks in content-index order; an
@@ -624,27 +706,133 @@ def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list
     return messages
 
 
+# The Messages API's error types and the HTTP status each stands for (W3.1, fork Z1), so an SSE
+# `error` frame on a 200 stream gets the verdict its status would: "an `overloaded_error`, which
+# would normally correspond to an HTTP 529 in a non-streaming context". The 11 rows of "HTTP
+# errors", in the page's order. The mapping is not one-to-one on the HTTP side (the API "might also
+# use" `invalid_request_error` "for other 4XX status codes", and returns `timeout_error` "with
+# other status codes, such as a 500"), and "new `type` values can appear": a type with no row
+# fails closed (fatal, status None) until it gets one. Read 15 Nov 2026:
+#   https://platform.claude.com/docs/en/api/errors
+#   https://platform.claude.com/docs/en/build-with-claude/streaming (#error-events)
+STREAM_ERROR_STATUS: dict[str, int] = {
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "billing_error": 402,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "conflict_error": 409,
+    "request_too_large": 413,
+    "rate_limit_error": 429,
+    "api_error": 500,
+    "timeout_error": 504,
+    "overloaded_error": 529,
+}
+
+
+def _retryable_status(code: int) -> bool:
+    """The taxonomy's rule for a status, kept in one place: a 429 or a 5xx is transient (retried
+    within budget), any other status fatal. `brain_call_error` and the stream's error frame both
+    apply it."""
+    return code == 429 or 500 <= code < 600
+
+
+def _stream_error(frame: dict[str, Any], data: str) -> BrainCallError:
+    """The verdict on a stream that carried an SSE `error` frame (W3.1, Z1): the status its type
+    stands for (`STREAM_ERROR_STATUS`, None for a type with no row), retryable by the status rule,
+    and the frame's own `data` text as the raw response (invariant 6)."""
+    error = frame.get("error")
+    error_type = cast("dict[str, Any]", error).get("type") if isinstance(error, dict) else None
+    status = STREAM_ERROR_STATUS.get(error_type) if isinstance(error_type, str) else None
+    return BrainCallError(
+        f"stream error frame: {error_type!r}",
+        retryable=status is not None and _retryable_status(status),
+        status=status,
+        raw_response=data.encode(),
+    )
+
+
 async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     """Consume a streaming Messages response: relay each thinking delta via `sink` (write-ahead,
     live — Unit 3b), assemble the blocks, and return the assembled response bytes for
     `parse_decision`. `lines` is the provider's raw SSE body, line by line (the SDK's raw-mode
     `iter_lines`, W2.0); a non-2xx never gets here, the SDK raises it as a status error first. The
     `data:` framing mirrors `iter_sse_events` over the live line iterator; the assembler (`feed`)
-    is the shared logic."""
+    is the shared logic. An SSE `error` frame ends the read and raises a BrainCallError with the
+    verdict its type stands for and the frame's own bytes (W3.1, Z1), before any other check.
+    Only a `finished` stream is returned (W3.1, T3): a body that ends on a frame boundary before
+    `message_stop` raises a retryable BrainCallError, and a body that reached `message_stop` but
+    is not whole raises a BrainParseError, each carrying the assembled bytes; so does a whole
+    stream whose closed tool_use input does not parse as JSON (W3.1, P1). (A body cut inside a
+    `data:` line still fails `json.loads` and reaches the loop's `<loop>` backstop: O1, not in
+    W3.1.)"""
     assembler = StreamAssembler()
     data_buf: list[str] = []
+    error_data: str | None = None  # the first SSE error frame's own `data` text (W3.1, Z1)
+
+    def fold(data: str) -> str | None:
+        # One frame path for the in-loop and the final frame, so an error frame is seen on both.
+        nonlocal error_data
+        text = assembler.feed(json.loads(data))
+        if error_data is None and assembler.error_frame is not None:
+            error_data = data
+        return text
+
     async for line in lines:
         if line.startswith("data:"):
             data_buf.append(line.removeprefix("data:").strip())
         elif not line.strip():  # a blank line closes the frame
             if data_buf:
-                text = assembler.feed(json.loads("".join(data_buf)))
+                text = fold("".join(data_buf))
                 data_buf = []
+                if error_data is not None:
+                    # Z-stop: the first error frame ends the read. Nothing after it can make the
+                    # turn usable, and what follows one is undocumented; reading on would let a
+                    # later transport failure replace the frame's verdict. It holds where `lines`
+                    # is the live body: a transport that buffers the whole response first (the
+                    # smoke harness's CapturingTransport) has finished its read before this runs.
+                    break
                 if text:
                     await sink(text)  # inline await — single writer (inv 7), live (inv 1)
     if data_buf:  # a final frame not terminated by a trailing blank line
-        assembler.feed(json.loads("".join(data_buf)))
-    return json.dumps(assembler.assembled()).encode()
+        fold("".join(data_buf))
+    raw = json.dumps(assembler.assembled()).encode()
+    # An SSE error frame, wherever it sat, is the call's verdict (W3.1, Z1): it explains why the
+    # stream is short, so it is checked before T.
+    if error_data is not None and assembler.error_frame is not None:
+        raise _stream_error(assembler.error_frame, error_data)
+    # A stream is a turn only when it is whole (W3.1, T3). The body ended before `message_stop`:
+    # the connection was cut on the way, the class a reset mid-stream is, so the loop retries it.
+    if not assembler.ended:
+        raise BrainCallError(
+            f"stream cut before message_stop (stop_reason={assembler.stop_reason!r}, open "
+            f"blocks {assembler.open_blocks})",
+            retryable=True,
+            raw_response=raw,
+        )
+    # `message_stop` arrived, so the provider sent the whole body, yet a block was left open or no
+    # stop reason came: a malformed response (fatal, ADR Pillar 2 taxonomy), not a blip to retry.
+    if not assembler.finished:
+        raise BrainParseError(
+            raw=raw,
+            detail=(
+                f"stream ended without a whole turn: open blocks {assembler.open_blocks}, "
+                f"stop_reason={assembler.stop_reason!r}"
+            ),
+        )
+    # A whole stream whose closed tool_use input does not parse (W3.1, P1): a `max_tokens` cut can
+    # end a parameter midway, or the response is malformed. Never run, never guessed at: fatal,
+    # with the model's own text in `detail` (the block in `raw` keeps its start input).
+    if assembler.failed_inputs:
+        raise BrainParseError(
+            raw=raw,
+            detail=(
+                f"tool_use input does not parse as JSON at content_block_stop: "
+                f"{assembler.failed_inputs!r}, "
+                f"stop_reason={assembler.stop_reason!r}"
+            ),
+        )
+    return raw
 
 
 def brain_call_error(
@@ -656,13 +844,15 @@ def brain_call_error(
     is an `httpx2.TransportError`; the adapter re-raises any other cause before calling this), a
     transport error while the body streams (the SDK does not wrap those, so it arrives as a bare
     `httpx2.TransportError`, timeouts included) and a 429 / 5xx status are transient; any other
-    status is fatal. The error body rides along (invariant 6). The message names the real cause,
-    not the SDK's generic wrapper text, as HEAD's ErrorEvent did."""
+    status is fatal (`_retryable_status`, the rule an SSE error frame's status gets too, W3.1).
+    The error body rides along (invariant 6). The message names the real cause, not the SDK's
+    generic wrapper text, as HEAD's ErrorEvent did. The stream checks in `_drive_stream` raise
+    their BrainCallError directly; this translates only what the SDK and the transport raise."""
     if isinstance(exc, anthropic.APIStatusError):
         code = exc.status_code
         return BrainCallError(
             repr(exc),
-            retryable=code == 429 or 500 <= code < 600,
+            retryable=_retryable_status(code),
             status=code,
             raw_response=exc.response.content,
         )

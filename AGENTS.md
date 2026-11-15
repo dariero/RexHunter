@@ -81,7 +81,11 @@ the ADR.
   W2.3), and the next call sends it back as stored, every block in order. The live model is
   `claude-sonnet-5-5` (`SMOKE_MODEL`, W2.5); a thinking-off hunt sends that model's row of
   `brain.THINKING_FLOOR` (`between_tools`; `disabled` on `claude-sonnet-5`), and a model with no
-  row fails closed with `ValueError` before any request (W2.2).
+  row fails closed with `ValueError` before any request (W2.2). The loop acts only on a whole turn
+  that stopped for its tool call (W3.1): `_drive_stream` ends a call on an SSE error frame, on a
+  stream that is not whole (cut before `message_stop`, a block left open, no stop reason) and on a
+  tool input that does not parse, and `parse_decision` on any `stop_reason` but `tool_use`, each
+  before any dispatch.
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
   `pytest-anyio` dep). Config and version floors in `pyproject.toml`; exact pins in `uv.lock`.
@@ -350,6 +354,59 @@ section that name `claude-sonnet-5` as `SMOKE_MODEL` or `disabled` as the live t
 describe the state before this entry. 350 tests pass at `8bed83c`. *Next: W3. New for it:
 `tests/test_hunt_smoke_thinking_offline.py` leaves two `rexhunter-think-*` temp directories per
 suite run, and `tests/test_stage5_gate.py` intermittently raises an aiosqlite
+`PytestUnhandledThreadExceptionWarning`.*
+**▶ W3.1 · The cut-stream guard – ✅ done on branch `w3.1-cut-stream-guard` (`6717f4b`→`2df2e20`,
+2026-11-15), PR #9.** Offline: no API call of any kind, no model change, no wire change (the four
+wire-check bodies, a plain turn, a streamed turn, the pre-flight and an echoed second turn, are
+byte-identical to `e1a22b4`'s; cp1 §8, cp5 §3.4). Labels are W3.1's (cp files: this run's
+checkpoint reports). Forks chosen 15 Nov by rex-orchestrator under Darie's delegation: W3.1-S1,
+W3.1-T3, W3.1-P1, W3.1-Z1 with Z-stop, W3.1-A1; W3.1-U1 by Darie herself. The hazards at `e1a22b4`
+(cp1 §4): W3.1-H1, a cut `hunt_complete` (its start `input` `{}`) closed the run `completed` with
+an empty catch; W3.1-H2, a cut `sniff` aborted as "invalid tool args" with no response bytes;
+W3.1-H3, a closed `tool_use` whose input was not JSON raised `JSONDecodeError` in `_finalize`,
+reaching the `<loop>` catch-all with no bytes, and hunt_smoke_thinking's reporter raised before
+`write_fixtures`; W3.1-H4, an SSE `error` frame was ignored and the closed `tool_use` dispatched;
+W3.1-H5, `stop_reason` was never read on the decision path (`parse_decision` acted on a `tool_use`
+whatever the stop reason). Now a turn that did not finish never reaches `_run_tool` or a terminal
+decision (`tests/test_cut_stream_guard.py`, 46 tests). `_drive_stream` checks, after the read:
+W3.1-Z, the first `error` frame ends the read (Z-stop) and fails the call with the status its type
+stands for (`brain.STREAM_ERROR_STATUS`, the 11 rows of the errors page, read 15 Nov 2026; a type
+with no row is fatal, status None), retryable iff 429 or 5xx (`_retryable_status`, shared with
+`brain_call_error`), its `raw_response` the frame's own `data` bytes; W3.1-T, a body that ends on a
+frame boundary before `message_stop` is a retryable `BrainCallError` with the assembled bytes,
+retried within `retry_budget` ("brain call failed"); W3.1-T3, a body that reached `message_stop`
+with a block left open or no stop reason is a `BrainParseError`; W3.1-P, a closed `tool_use` input
+that does not parse (`ValueError`, so an integer over 4300 digits too) keeps the block's start
+input and is a `BrainParseError`, and the fold never raises on it, so the reporter reaches
+`write_fixtures`. Then `parse_decision` (W3.1-S): any `stop_reason` but `tool_use`, `None`
+included, is a `BrainParseError`, checked before the usage is read. Each `BrainParseError` ends the
+run `aborted`, "malformed provider response" (W3.1-A1), with one `<brain>` ErrorEvent carrying the
+bytes and the cause in `detail` (`stop_reason='max_tokens'`, the open blocks, the unparsed text).
+Each check has its mutant, red then reverted (W3.1-M1 to W3.1-M22, cp2 to cp5b). The docs (stop
+reasons, streaming, thinking, errors and the tool-use pages, read 15 Nov 2026, saved with sha256 in
+cp1 §2): no page tells a client to run a tool when `stop_reason` is not `tool_use`, and none states
+where an error frame can arrive, what follows it, or whether a cut `tool_use` gets its
+`content_block_stop`. No cut shape has been seen live: there was no paid run, and every cut and
+error stream is built in the tests. The Unit 3a line above ("display streams, execution waits")
+holds for every cut shape only from W3.1 on. 396 tests pass at `2df2e20`. Open (cp1 §6-7, cp2 §2,
+cp5 §3.5, cp6): **W3.1-U** (Darie, W3.1-U1, 15 Nov): a call the guard refuses appends no
+UsageEvent, so `cost.fold_cost`, the per-run ceiling and `daemon_spend_usd` do not count it;
+measured with `retry_budget=2` and `max_iterations=3`, a plain or streamed `max_tokens` turn and a
+stream cut before `message_delta` each gave 3 UsageEvents at `e1a22b4` (one per dispatched
+iteration) and give 0 now, an error frame that ends the body after the `tool_use` gave 3 and gives
+0 from W3.1-S1 on, and one inside an otherwise finished stream gave 3 and gives 0 from W3.1-Z1 on;
+a 5xx or a reset mid-stream appended none before W3.1 either. **W3.1-O1 to W3.1-O5**, provider
+bytes that still reach `<loop>` without them: a `data:` line that is not JSON (a body cut inside a
+`data:` line too), a frame that is not an object, a frame missing `index`, `content_block` or
+`delta`, a value of the wrong type in those or in `message` or `usage` (a non-integer `index`, a
+non-object `content_block`, `delta`, `message` or `usage`), and a token count that is not a number
+on a `tool_use` turn (`int()` in `_extract_usage`); W3.1-O1 to W3.1-O4 also make the reporter raise
+before `write_fixtures`. **W3.1-K1**: Z-stop cannot act behind hunt_smoke's `CapturingTransport`,
+which reads the whole body first (`CapturingTransport.handle_async_request`). The new retries run
+with no backoff, like every brain retry (`loop._call_brain`). *Next: W3 run 2 (retries and backoff;
+W3.1-U and W3.1-K1 sit next to it). `tests/test_hunt_smoke_thinking_offline.py` still leaves two
+`rexhunter-think-*` temp directories per suite run (the two new harness tests leave none), and
+`tests/test_stage5_gate.py` still intermittently raises the aiosqlite
 `PytestUnhandledThreadExceptionWarning`.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
