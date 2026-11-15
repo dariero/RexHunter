@@ -30,6 +30,7 @@ SDK. `request_headers` is gone: the factory owns the headers.
 """
 
 import json
+import math
 import os
 import ssl
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
@@ -905,7 +906,9 @@ def brain_call_error(
     status is fatal (`_retryable_status`, the rule an SSE error frame's status gets too, W3.1).
     The error body rides along (invariant 6). The message names the real cause, not the SDK's
     generic wrapper text, as HEAD's ErrorEvent did. The stream checks in `_drive_stream` raise
-    their BrainCallError directly; this translates only what the SDK and the transport raise."""
+    their BrainCallError directly; this translates only what the SDK and the transport raise. A
+    status response's `retry-after` header rides along too (W3.2-B2, `_retry_after`), for the
+    loop's backoff."""
     if isinstance(exc, anthropic.APIStatusError):
         code = exc.status_code
         return BrainCallError(
@@ -913,8 +916,21 @@ def brain_call_error(
             retryable=_retryable_status(code),
             status=code,
             raw_response=exc.response.content,
+            retry_after=_retry_after(exc.response.headers.get("retry-after")),
         )
     return BrainCallError(repr(exc.__cause__ or exc), retryable=True)
+
+
+def _retry_after(value: str | None) -> float | None:
+    """A `retry-after` header as seconds (W3.2-B2), or None: absent, or not a finite number of
+    seconds that is not negative (an HTTP-date included), the header is ignored."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 # The failures `brain_call_error` translates; anything else (a BrainParseError, a bug) propagates.

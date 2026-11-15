@@ -1,5 +1,5 @@
 """W3.2 — a brain call the boundary refuses is counted (H4, W3.2-U2a); both spend ceilings are
-checked before every brain attempt (H3, H5, W3.2-C1).
+checked before every brain attempt (H3, H5, W3.2-C1); a retry waits (H1, H2, W3.2-B2).
 
 H4 (W3.1-U): before W3.2 a brain call the boundary refused appended no UsageEvent, so a 200 that can
 still be billed (a turn refused for its stop reason, a stream cut before `message_stop`, an error
@@ -15,12 +15,18 @@ ceiling once per iteration, so a running hunt never saw the daemon ceiling and a
 brain attempt, each a fold over the log, so a run or the daemon goes past its ceiling by at most
 the one call each hunt has in flight, of the calls the log counts.
 
+H1 and H2 (fragility #2): a retried brain call or tool ran again at once. W3.2-B2: each retry
+waits a jittered backoff, at least a status response's `retry-after` (cut to 8 s), after its
+events are committed. The waits are recorded, never slept: tests/conftest.py's autouse `retry_waits`
+(W3.2-Y1).
+
 Every response is built here from literals; nothing under tests/fixtures/ is read or written. The
 request model is `brain.SMOKE_MODEL`. Zero network: a `MockTransport` answers every call.
 """
 
 import asyncio
 import json
+import random
 from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -29,15 +35,25 @@ import anthropic
 import httpx2
 import pytest
 
-from rexhunter import brain, cost, db, scheduler
+from rexhunter import brain, cost, db, loop, scheduler
 from rexhunter.events import ErrorEvent, TrajectoryEvent, UsageEvent
-from rexhunter.loop import Brain, Context, Decision, ThinkingSink, ToolCallDecision, run_hunt
+from rexhunter.loop import (
+    Brain,
+    Context,
+    Decision,
+    HuntComplete,
+    RetryableToolError,
+    ThinkingSink,
+    ToolCallDecision,
+    run_hunt,
+)
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 Respond = Callable[[httpx2.Request], httpx2.Response]
+BrainFactory = Callable[[Sequence[Decision]], Brain]
 
 MODEL = brain.SMOKE_MODEL
 RETRY_BUDGET = 2  # run_hunt's default, passed explicitly: a retried call makes 3 requests
@@ -806,3 +822,371 @@ async def test_a_zero_daemon_ceiling_allows_no_brain_call(tmp_path: Path) -> Non
         assert calls == []
     finally:
         await conn.close()
+
+
+# ── B2 + Y1: a retry waits, after its events are committed (H1, H2) ─────────────────────
+
+
+async def test_a_retried_brain_call_waits_before_each_retry(
+    tmp_path: Path, mock_anthropic: MockAnthropic, retry_waits: list[float]
+) -> None:
+    # H1: before W3.2 a 503 was re-sent at once. Two retries, two waits, each within its bound.
+    hunt = await _hunt(tmp_path, mock_anthropic, _status(503), stream=False)
+    assert hunt.requests == RETRY_BUDGET + 1
+    assert len(retry_waits) == RETRY_BUDGET  # none before the first attempt, none after the last
+    assert 0.0 <= retry_waits[0] <= 0.5
+    assert 0.0 <= retry_waits[1] <= 1.0
+
+
+async def test_a_retried_tool_waits_before_each_retry(
+    tmp_path: Path, scripted_brain: BrainFactory, retry_waits: list[float]
+) -> None:
+    # H2: before W3.2 a RetryableToolError was re-run at once.
+    reg = ToolRegistry()
+    attempts = 0
+
+    @reg.tool
+    async def flaky(n: int) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise RetryableToolError(f"transient #{attempts}")
+        return "ok"
+
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        run_id = await run_hunt(
+            conn,
+            territory="gate",
+            brain=scripted_brain([ToolCallDecision(tool="flaky", args={"n": 1}), HuntComplete()]),
+            registry=reg,
+            retry_budget=3,
+        )
+        assert await _row(conn, run_id) == ("completed", None)
+    finally:
+        await conn.close()
+    assert len(retry_waits) == 2
+    assert 0.0 <= retry_waits[0] <= 0.5
+    assert 0.0 <= retry_waits[1] <= 1.0
+
+
+async def _tool_hunt(tmp_path: Path, scripted_brain: BrainFactory, tool: Any, **kw: Any) -> None:
+    reg = ToolRegistry()
+    reg.tool(tool)
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        await run_hunt(
+            conn,
+            territory="gate",
+            brain=scripted_brain([ToolCallDecision(tool=tool.__name__, args={}), HuntComplete()]),
+            registry=reg,
+            **kw,
+        )
+    finally:
+        await conn.close()
+
+
+async def test_no_wait_after_a_fatal_error_or_a_success(
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+    scripted_brain: BrainFactory,
+    retry_waits: list[float],
+) -> None:
+    # A fatal status, carrying retry-after: no wait, no retry.
+    hunt = await _hunt(tmp_path, mock_anthropic, _status(400, {"retry-after": "3"}), stream=False)
+    assert hunt.requests == 1
+
+    async def broken() -> str:
+        raise ValueError("a bug, fatal")
+
+    await _tool_hunt(tmp_path, scripted_brain, broken)  # a new run in the same log
+
+    async def fine() -> str:
+        return "ok"
+
+    await _tool_hunt(tmp_path, scripted_brain, fine)
+    assert retry_waits == []
+
+
+async def test_a_tool_timeout_waits_before_its_retry(
+    tmp_path: Path, scripted_brain: BrainFactory, retry_waits: list[float]
+) -> None:
+    async def hang() -> None:
+        await asyncio.sleep(10)  # the per-tool deadline fires; asyncio.sleep itself is not patched
+
+    await _tool_hunt(tmp_path, scripted_brain, hang, tool_timeout_s=0.05, retry_budget=1)
+    assert len(retry_waits) == 1
+
+
+@pytest.mark.parametrize("code", [429, 503, 529])
+async def test_a_retry_after_header_sets_the_least_wait(
+    code: int, tmp_path: Path, mock_anthropic: MockAnthropic, retry_waits: list[float]
+) -> None:
+    respond = _status(code, {"retry-after": "3"})
+    await _hunt(tmp_path, mock_anthropic, respond, stream=False)
+    assert retry_waits == [3.0, 3.0]  # above both jitter bounds (0.5 s, 1 s), under the cap
+
+
+async def test_a_retry_after_above_the_cap_is_cut_to_the_cap(
+    tmp_path: Path, mock_anthropic: MockAnthropic, retry_waits: list[float]
+) -> None:
+    await _hunt(tmp_path, mock_anthropic, _status(429, {"retry-after": "30"}), stream=False)
+    assert retry_waits == [8.0, 8.0]  # the cap, BACKOFF_CAP_S
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"retry-after": "soon"},
+        {"retry-after": "Thu, 01 Jan 2099 00:00:00 GMT"},  # in the future: honoured, it would wait
+        {"retry-after": "-1"},
+        {"retry-after": "nan"},
+        {"retry-after": "inf"},
+        {"retry-after-ms": "3000"},  # the SDK's own header; not read (seconds only)
+    ],
+    ids=["word", "http-date", "negative", "nan", "inf", "retry-after-ms"],
+)
+async def test_a_retry_after_that_is_not_seconds_is_ignored(
+    headers: dict[str, str],
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+    retry_waits: list[float],
+) -> None:
+    await _hunt(tmp_path, mock_anthropic, _status(429, headers), stream=False)
+    assert len(retry_waits) == 2
+    assert retry_waits[0] <= 0.5 and retry_waits[1] <= 1.0  # the jitter alone
+
+
+async def test_each_attempt_is_in_the_log_before_its_wait_starts(
+    tmp_path: Path, mock_anthropic: MockAnthropic, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Write-ahead (inv 1): at each wait, a separate reader already sees that attempt's UsageEvent
+    # and ErrorEvent committed.
+    seen: list[tuple[int, int]] = []
+    db_path = tmp_path / "rex.db"
+
+    async def look(_delay: float) -> None:
+        reader = await db.connect(db_path)
+        try:
+            async with reader.execute(
+                "SELECT SUM(type = 'usage'), SUM(type = 'error') FROM trajectory_events"
+            ) as cur:
+                row = await cur.fetchone()
+            assert row is not None
+            seen.append((int(row[0]), int(row[1])))
+        finally:
+            await reader.close()
+
+    monkeypatch.setattr(loop, "retry_wait", look)
+    await _hunt(tmp_path, mock_anthropic, _ok(_cut_stream()), stream=True)
+    assert seen == [(1, 1), (2, 2)]
+
+
+async def test_a_tool_error_is_in_the_log_before_its_wait_starts(
+    tmp_path: Path, scripted_brain: BrainFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[int] = []
+    db_path = tmp_path / "rex.db"
+
+    async def look(_delay: float) -> None:
+        reader = await db.connect(db_path)
+        try:
+            async with reader.execute(
+                "SELECT COUNT(*) FROM trajectory_events WHERE type = 'error'"
+            ) as cur:
+                row = await cur.fetchone()
+            assert row is not None
+            seen.append(int(row[0]))
+        finally:
+            await reader.close()
+
+    monkeypatch.setattr(loop, "retry_wait", look)
+
+    async def flaky() -> str:
+        raise RetryableToolError("transient")
+
+    reg = ToolRegistry()
+    reg.tool(flaky)
+    conn = await db.connect(db_path)
+    try:
+        await run_hunt(
+            conn,
+            territory="gate",
+            brain=scripted_brain([ToolCallDecision(tool="flaky", args={})]),
+            registry=reg,
+            retry_budget=2,
+        )
+    finally:
+        await conn.close()
+    assert seen == [1, 2]
+
+
+@pytest.mark.parametrize("where", ["brain", "tool"])
+async def test_a_cancel_during_a_wait_ends_the_run_as_daemon_shutdown(
+    where: str,
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+    scripted_brain: BrainFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waiting = asyncio.Event()
+
+    async def block(_delay: float) -> None:
+        waiting.set()
+        await asyncio.Event().wait()  # a wait that only a cancel ends
+
+    monkeypatch.setattr(loop, "retry_wait", block)
+    db_path = tmp_path / "rex.db"
+    reg = _registry()
+
+    async def flaky() -> str:
+        raise RetryableToolError("transient")
+
+    reg.tool(flaky)
+    async with mock_anthropic(_status(503), api_key="offline") as client:
+        if where == "brain":
+            hunt_brain = brain.adapter_brain_for(client=client, model=MODEL, registry=reg)("g")
+        else:
+            hunt_brain = scripted_brain([ToolCallDecision(tool="flaky", args={})])
+        conn = await db.connect(db_path)
+        task = asyncio.create_task(
+            run_hunt(conn, territory="g", brain=hunt_brain, registry=reg, retry_budget=2)
+        )
+        try:
+            await asyncio.wait_for(waiting.wait(), timeout=2)
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=5)  # bounded: a swallowed cancel fails
+            assert task in done, "the cancel did not end the hunt"
+            with pytest.raises(asyncio.CancelledError):
+                task.result()
+            async with conn.execute("SELECT outcome, abort_reason FROM runs") as cur:
+                rows = list(await cur.fetchall())
+            assert [tuple(r) for r in rows] == [("aborted", "daemon shutdown")]
+            async with conn.execute(
+                "SELECT COUNT(*) FROM trajectory_events WHERE type = 'error'"
+            ) as cur:
+                count = await cur.fetchone()
+            assert count is not None and int(count[0]) == 1  # the first attempt's, then the wait
+        finally:
+            task.cancel()  # a no-op once the hunt has ended
+            await asyncio.wait({task}, timeout=5)
+            await conn.close()
+
+
+async def test_spend_committed_during_the_wait_stops_the_retry(
+    tmp_path: Path, mock_anthropic: MockAnthropic, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The wait comes BEFORE the next attempt's ceiling checks (B2 after C1): spend another hunt
+    # commits while this one waits is seen before the retry is sent. A 503 carries no usage, so
+    # only the sibling's $2.00 can cross the $1.00 daemon ceiling.
+    db_path = tmp_path / "rex.db"
+
+    async def sibling_spends(_delay: float) -> None:
+        other = await db.connect(db_path)  # another hunt's own connection (inv 7)
+        try:
+            sibling = await db.start_run(other, territory="sibling")
+            await db.append_event(other, sibling, _usage(1_000_000, 0))  # $2.00
+        finally:
+            await other.close()
+
+    monkeypatch.setattr(loop, "retry_wait", sibling_spends)
+    requests: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        return httpx2.Response(503, content=b"status body")
+
+    reg = _registry()
+    async with mock_anthropic(handler, api_key="offline") as client:
+        conn = await db.connect(db_path)
+        try:
+            run_id = await run_hunt(
+                conn,
+                territory="mock-gym",
+                brain=brain.adapter_brain_for(client=client, model=MODEL, registry=reg)("mock-gym"),
+                registry=reg,
+                retry_budget=RETRY_BUDGET,
+                max_iterations=3,
+                cost_ceiling_usd=1000.0,
+                daemon_spend_ceiling_usd=1.0,
+            )
+            assert await _row(conn, run_id) == DAEMON_CEILING
+        finally:
+            await conn.close()
+    assert len(requests) == 1
+
+
+def _status_error(retry_after: str | None) -> anthropic.APIStatusError:
+    headers = {} if retry_after is None else {"retry-after": retry_after}
+    request = httpx2.Request("POST", brain.MESSAGES_URL)
+    response = httpx2.Response(429, headers=headers, request=request)
+    return anthropic.APIStatusError("http 429", response=response, body=None)
+
+
+def test_retry_after_is_read_as_finite_non_negative_seconds() -> None:
+    # The reader's own guards, which no loop-level test can see: backoff_delay's max() already
+    # turns a negative or NaN floor into the jitter alone. The reader does not cap (30 stays 30).
+    cases: dict[str | None, float | None] = {
+        None: None,
+        "": None,
+        "soon": None,
+        "Thu, 01 Jan 2099 00:00:00 GMT": None,
+        "-1": None,
+        "nan": None,
+        "inf": None,
+        "1e309": None,
+        "0": 0.0,
+        "3": 3.0,
+        "3.5": 3.5,
+        "30": 30.0,
+    }
+    got = {value: brain.brain_call_error(_status_error(value)).retry_after for value in cases}
+    assert got == cases
+
+
+def test_the_default_wait_is_asyncio_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.undo()  # drop conftest's recorder for this test
+    assert loop.retry_wait is asyncio.sleep
+
+
+async def test_a_seeded_random_source_drives_the_jitter(
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+    retry_waits: list[float],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(loop, "jitter_source", random.Random(7))
+    await _hunt(tmp_path, mock_anthropic, _status(503), stream=False)
+    expected = random.Random(7)
+    assert retry_waits == [expected.uniform(0.0, 0.5), expected.uniform(0.0, 1.0)]
+
+
+class _Top:
+    """A jitter source that always draws the top of its range, to read the backoff's bounds."""
+
+    def uniform(self, a: float, b: float) -> float:
+        return b
+
+
+def test_the_backoff_bound_doubles_to_its_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(loop, "jitter_source", _Top())
+    assert [loop.backoff_delay(n) for n in range(1, 8)] == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0]
+    assert loop.backoff_delay(10_000) == loop.BACKOFF_CAP_S  # no float overflow on a long budget
+    assert loop.backoff_delay(1, retry_after=3.0) == 3.0
+    assert loop.backoff_delay(1, retry_after=30.0) == loop.BACKOFF_CAP_S
+    assert loop.backoff_delay(3, retry_after=0.1) == 2.0  # the jitter's draw when it is longer
+
+
+async def test_tool_retries_follow_the_backoff_bound(
+    tmp_path: Path,
+    scripted_brain: BrainFactory,
+    retry_waits: list[float],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(loop, "jitter_source", _Top())
+
+    async def always() -> str:
+        raise RetryableToolError("transient")
+
+    await _tool_hunt(tmp_path, scripted_brain, always, retry_budget=6)
+    assert retry_waits == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0]
