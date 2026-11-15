@@ -20,6 +20,12 @@ waits a jittered backoff, at least a status response's `retry-after` (cut to 8 s
 events are committed. The waits are recorded, never slept: tests/conftest.py's autouse `retry_waits`
 (W3.2-Y1).
 
+R2-RV1 (review 2, pre-existing, widened by C1): a shutdown cancel that landed inside an in-run
+read, with another connection committing, made the shielded `finish_run` fail, so the run
+was left `outcome IS NULL`, the cancel was lost and the scheduler relaunched hunts. Now the
+in-run reads never leave a statement open, the cancel always propagates, and `_bounded_hunt`
+never swallows an exception while it is being cancelled.
+
 Every response is built here from literals; nothing under tests/fixtures/ is read or written. The
 request model is `brain.SMOKE_MODEL`. Zero network: a `MockTransport` answers every call.
 """
@@ -27,7 +33,9 @@ request model is `brain.SMOKE_MODEL`. Zero network: a `MockTransport` answers ev
 import asyncio
 import json
 import random
-from collections.abc import AsyncIterator, Callable, Sequence
+import sqlite3
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -42,6 +50,7 @@ from rexhunter.loop import (
     Context,
     Decision,
     HuntComplete,
+    NeedsHelp,
     RetryableToolError,
     ThinkingSink,
     ToolCallDecision,
@@ -1190,3 +1199,230 @@ async def test_tool_retries_follow_the_backoff_bound(
 
     await _tool_hunt(tmp_path, scripted_brain, always, retry_budget=6)
     assert retry_waits == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0]
+
+
+# ── R2-RV1: a shutdown cancel during an in-run read still closes the run, and propagates ─────
+
+
+class _HeldRead:
+    """Holds one in-run SELECT (`db.read_usage` or `db.read_events`) inside the worker thread: a
+    progress handler blocks on `release` once the statement is stepping. So a cancel lands while
+    the read's worker call is still running, and the test can commit from another connection
+    before the read ends: the R2-RV1 shape, by gates, not timing. `skip` lets the first reads of
+    that kind through (the launch gate's, or the first iteration's), so the held one is a cached
+    statement, as on the daemon's connection."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, read: str, *, skip: int) -> None:
+        self.entered = asyncio.Event()
+        self.release = threading.Event()
+        self._armed = threading.Event()
+        self._skip = skip
+        real: Callable[..., Awaitable[list[TrajectoryEvent]]] = getattr(db, read)
+
+        async def gated(conn: Any, *args: Any) -> list[TrajectoryEvent]:
+            if self._skip > 0:
+                self._skip -= 1
+            elif not self._armed.is_set():
+                await conn.set_progress_handler(self._hold, 1)
+                self._armed.set()
+                self.entered.set()
+            return await real(conn, *args)
+
+        monkeypatch.setattr(db, read, gated)
+
+    def _hold(self) -> int:
+        if self._armed.is_set() and not self.release.is_set():
+            self.release.wait(timeout=10)
+        return 0
+
+
+async def _needs_help(_context: Context, _sink: ThinkingSink) -> Decision:
+    return NeedsHelp()
+
+
+async def _hunt_rows(conn: Any) -> list[tuple[Any, ...]]:
+    async with conn.execute(
+        "SELECT outcome, abort_reason FROM runs WHERE territory = 'mock-gym' ORDER BY started_at"
+    ) as cur:
+        return [tuple(r) for r in await cur.fetchall()]
+
+
+@pytest.mark.parametrize("read", ["read_usage", "read_events"])
+async def test_a_cancel_during_an_in_run_read_closes_the_run_and_propagates(
+    read: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # R2-RV1: the cancel lands inside an in-run SELECT and another connection commits; the
+    # shielded `finish_run` must still close the run, and `run_hunt` must re-raise the cancel,
+    # not the cleanup's error.
+    db_path = tmp_path / "rex.db"
+    conn = await db.connect(db_path)
+    other = await db.connect(db_path)
+    try:
+        seed = await db.start_run(other, territory="seed")
+        await db.append_event(other, seed, _usage(1, 0))  # one usage row: read_usage yields a row
+        held = _HeldRead(monkeypatch, read, skip=1)
+        brain_: Brain
+        daemon_ceiling: float | None
+        if read == "read_usage":
+            # The daemon's launch gate runs this SELECT on the hunt's connection before the hunt
+            # (scheduler.daemon_spend_usd); do the same, so the held read is the cached statement.
+            await db.read_usage(conn)
+            brain_, daemon_ceiling = _needs_help, 1000.0
+        else:
+            # The first iteration's read passes and caches the statement; its sniff leaves events
+            # in the run, so the second iteration's read yields rows and is the one held.
+            brain_, daemon_ceiling = _spending_brain([]), None
+        task = asyncio.create_task(
+            run_hunt(
+                conn,
+                territory="mock-gym",
+                brain=brain_,
+                registry=_registry(),
+                retry_budget=0,
+                max_iterations=3,
+                daemon_spend_ceiling_usd=daemon_ceiling,
+            )
+        )
+        try:
+            await asyncio.wait_for(held.entered.wait(), timeout=5)
+            task.cancel()
+            await db.append_event(other, seed, _usage(1, 0))  # a commit inside the read's window
+            held.release.set()
+            await asyncio.wait({task}, timeout=10)
+        finally:
+            held.release.set()
+            task.cancel()
+            await asyncio.wait({task}, timeout=10)
+        assert (task.cancelled(), await _hunt_rows(other)) == (
+            True,
+            [("aborted", "daemon shutdown")],
+        )
+    finally:
+        await other.close()
+        await conn.close()
+
+
+async def test_a_cancel_during_an_in_run_read_stops_the_scheduler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # R2-RV1 through the daemon's path: the cancel must leave `_bounded_hunt` as a CancelledError
+    # (not a None return), so the territory loop ends instead of relaunching hunts.
+    db_path = tmp_path / "rex.db"
+    other = await db.connect(db_path)
+    try:
+        seed = await db.start_run(other, territory="seed")
+        await db.append_event(other, seed, _usage(1, 0))
+        held = _HeldRead(monkeypatch, "read_usage", skip=1)  # the launch gate's read passes
+        sched = asyncio.create_task(
+            scheduler.run_scheduler(
+                db_path,
+                {"mock-gym": 0.01},
+                brain_for=lambda _territory: _needs_help,
+                registry=_registry(),
+                max_concurrent=1,
+                retry_budget=0,
+                max_iterations=1,
+                daemon_spend_ceiling_usd=1000.0,
+            )
+        )
+        done: set[asyncio.Task[None]] = set()
+        try:
+            await asyncio.wait_for(held.entered.wait(), timeout=5)
+            sched.cancel()
+            await db.append_event(other, seed, _usage(1, 0))
+            held.release.set()
+            done, _ = await asyncio.wait({sched}, timeout=5)
+        finally:
+            held.release.set()
+            sched.cancel()
+            await asyncio.wait({sched}, timeout=10)
+        assert (sched in done and sched.cancelled(), await _hunt_rows(other)) == (
+            True,
+            [("aborted", "daemon shutdown")],
+        )
+    finally:
+        await other.close()
+
+
+async def test_a_failed_shutdown_write_still_propagates_the_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Whatever the shutdown write does, the cancel propagates. A run whose write failed is left
+    # open, and the boot sweep closes it 'crashed' (DoD #1): never lost, never relaunched.
+    db_path = tmp_path / "rex.db"
+    conn = await db.connect(db_path)
+    other = await db.connect(db_path)
+    started = asyncio.Event()
+
+    async def blocked(_context: Context, _sink: ThinkingSink) -> Decision:
+        started.set()
+        await asyncio.Event().wait()  # only a cancel ends it
+        return NeedsHelp()
+
+    async def failing_finish_run(*_args: Any, **_kwargs: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")  # the R2-RV1 failure, forced
+
+    try:
+        task = asyncio.create_task(
+            run_hunt(conn, territory="mock-gym", brain=blocked, registry=_registry())
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            monkeypatch.setattr(db, "finish_run", failing_finish_run)
+            task.cancel()
+            await asyncio.wait({task}, timeout=10)
+        finally:
+            task.cancel()
+            await asyncio.wait({task}, timeout=10)
+        left_open = await _hunt_rows(other)
+        swept = await db.mark_crashed_runs(other)
+        assert (task.cancelled(), left_open, swept, await _hunt_rows(other)) == (
+            True,
+            [(None, None)],
+            1,
+            [("crashed", None)],
+        )
+    finally:
+        await other.close()
+        await conn.close()
+
+
+async def test_a_hunt_failing_while_cancelled_still_stops_the_scheduler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Defence in depth: if a hunt raises while it is being cancelled, `_bounded_hunt` must not
+    # swallow it, or the territory loop relaunches after its own cancel.
+    launched: list[int] = []
+    running = asyncio.Event()
+
+    async def fake_run_hunt(*_args: Any, **_kwargs: Any) -> str:
+        launched.append(1)
+        running.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if len(launched) == 1:
+                raise RuntimeError("the hunt's own cleanup failed while cancelled") from None
+            raise
+        return "unreachable"
+
+    monkeypatch.setattr(scheduler, "run_hunt", fake_run_hunt)
+    sched = asyncio.create_task(
+        scheduler.run_scheduler(
+            tmp_path / "rex.db",
+            {"mock-gym": 0.01},
+            brain_for=lambda _territory: _needs_help,
+            registry=_registry(),
+            max_concurrent=1,
+            daemon_spend_ceiling_usd=None,
+        )
+    )
+    done: set[asyncio.Task[None]] = set()
+    try:
+        await asyncio.wait_for(running.wait(), timeout=5)
+        sched.cancel()
+        done, _ = await asyncio.wait({sched}, timeout=5)
+    finally:
+        sched.cancel()
+        await asyncio.wait({sched}, timeout=10)
+    assert (sched in done and sched.cancelled(), len(launched)) == (True, 1)

@@ -12,6 +12,7 @@ unhandled exception escaping the loop.
 
 import asyncio
 import json
+import logging
 import random
 import traceback
 from collections.abc import Awaitable, Callable
@@ -22,6 +23,8 @@ from pydantic import BaseModel, ValidationError
 
 from rexhunter import cost, db, events, verdicts
 from rexhunter.tools import ToolFn, ToolRegistry
+
+logger = logging.getLogger("rexhunter")
 
 # The default per-run spend guard (USD). The stub/scripted brains carry no usage (cost folds to 0),
 # so this never bites them; the paid smoke (`P5` Unit 2c.2) overrides it low. Enforced in
@@ -514,9 +517,12 @@ async def run_hunt(
         # Graceful shutdown (P2.3) closes the run HERE, not via the boot crash-sweep - that
         # conflates a clean stop with a kill -9 (DoD #1). The mark-aborted write must complete
         # even if a SECOND cancel lands mid-flight (aggressive shutdown, a double cancel from the
-        # task group): we shield it and drive it to done before re-raising, so the run can never
-        # be left outcome IS NULL. CancelledError still propagates - the group tears down on
-        # purpose. (Tested adversarially in test_cancelled_cleanup_survives_a_second_cancel.)
+        # task group): we shield it and drive it to done before re-raising, so the run is not
+        # left outcome IS NULL unless the write itself fails (a lock held past busy_timeout, an
+        # I/O error; R2-RV1). Then the failure is logged, the cancel still propagates, and the
+        # boot sweep closes the run 'crashed' (DoD #1). CancelledError always propagates - the
+        # group tears down on purpose. (Tested adversarially in
+        # test_cancelled_cleanup_survives_a_second_cancel and tests/test_retries_and_ceilings.py.)
         cleanup = asyncio.ensure_future(
             db.finish_run(conn, run_id, outcome="aborted", abort_reason="daemon shutdown")
         )
@@ -525,7 +531,15 @@ async def run_hunt(
                 await asyncio.shield(cleanup)
             except asyncio.CancelledError:
                 pass  # a re-cancel hit our frame; the shielded write runs on - wait it out
-        raise cancel
+            except Exception:
+                break  # the write itself failed (R2-RV1): logged below, and the cancel goes on
+        if not cleanup.cancelled() and (failure := cleanup.exception()) is not None:
+            logger.error(
+                "run %s: the shutdown write failed (%r); the boot sweep will close it",
+                run_id,
+                failure,
+            )
+        raise cancel  # always: the daemon's teardown must not stop at a failed write
     except events.BrainParseError as exc:
         # The provider->Decision boundary (P5) rejected a payload. The generic backstop below
         # would drop the bytes (raw_request=b""); this specific clause, placed first, preserves

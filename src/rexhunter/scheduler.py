@@ -108,7 +108,13 @@ async def _bounded_hunt(
                 publish=publish,
                 notify=notify,
             )
-        except Exception:  # defence in depth over run_hunt's own backstop — never expected
+        except Exception as exc:  # defence in depth over run_hunt's own backstop — never expected
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                # Being cancelled (daemon shutdown): never swallow, or the territory loop would
+                # relaunch a hunt after its own cancel (R2-RV1).
+                logger.exception("hunt for %r failed while being cancelled", territory)
+                raise asyncio.CancelledError from exc
             logger.exception("hunt for %r escaped run_hunt's backstop", territory)
             return None
         finally:
