@@ -49,6 +49,7 @@ the ADR.
   column mirrors the discriminator.
 - **Agent loop:** hand-rolled async loop; `@rex_tool` decorator derives JSON schema from the
   typed signature (one definition = schema + validator + handler). **No agent framework.**
+  A retried brain call or tool waits a jittered backoff first (`loop.backoff_delay`, W3.2-B2).
 - **Transport:** SSE downstream (`EventSource`, `Last-Event-ID` resume); plain HTTP POST
   upstream for verdicts/config.
 - **LLM (`P5`):** provider-agnostic `brain()` – loop imports no vendor SDK. The adapter
@@ -85,7 +86,8 @@ the ADR.
   that stopped for its tool call (W3.1): `_drive_stream` ends a call on an SSE error frame, on a
   stream that is not whole (cut before `message_stop`, a block left open, no stop reason) and on a
   tool input that does not parse, and `parse_decision` on any `stop_reason` but `tool_use`, each
-  before any dispatch.
+  before any dispatch. A 200 it refuses is still counted, its UsageEvent before its ErrorEvent
+  (W3.2-U2a), and both spend ceilings are checked before every brain attempt (W3.2-C1).
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
   `pytest-anyio` dep). Config and version floors in `pyproject.toml`; exact pins in `uv.lock`.
@@ -408,6 +410,86 @@ W3.1-U and W3.1-K1 sit next to it). `tests/test_hunt_smoke_thinking_offline.py` 
 `rexhunter-think-*` temp directories per suite run (the two new harness tests leave none), and
 `tests/test_stage5_gate.py` still intermittently raises the aiosqlite
 `PytestUnhandledThreadExceptionWarning`.*
+**▶ W3.2 · Retries that wait, both ceilings before every brain attempt, refused calls counted – ✅
+done on branch `w3.2-retries-and-ceilings` (`4d72e82`→`8569e62`, 2026-11-15/16), PR #10.** Offline:
+no API call of any kind, no model change, no wire change (the four wire-check bodies are
+byte-identical to `8fdd92a`'s, and a retried body equals the first). Labels are W3.2's (cp files:
+this run's checkpoint reports). Forks chosen 15 Nov by rex-orchestrator under Darie's delegation:
+W3.2-U2a with X1-move, W3.2-C1, W3.2-B2 as written (Jfull + Cap8), W3.2-Y1; U2 and the R2-RV1 fix
+are Darie's own rulings. "Fragility #2" and "#4" are items of the W3 plan (D8, Darie 9 Nov: fix all
+four in W3): #2, a retry runs again at once; #4, the spend ceilings are checked too rarely (#1, the
+context window, and #3, raw SSE bytes, are W3 run 3). The hazards at `8fdd92a`: W3.2-H1 (#2),
+`_call_brain` re-sent a retryable BrainCallError at once; W3.2-H2 (#2), `_run_tool` re-ran a
+TimeoutError or RetryableToolError at once; W3.2-H3 (#4), the daemon ceiling was checked once per
+hunt, before `run_hunt`; W3.2-H4 (= W3.1-U), a 200 the boundary refused appended no UsageEvent;
+W3.2-H5 (#4), the per-run ceiling was checked once per iteration, so a retried call made
+`retry_budget + 1` requests with no check between them. **U2** (Darie, 15 Nov, replacing her W3.1-U1
+ruling: "a refused call's usage gets a UsageEvent before its ErrorEvent") closes the W3.1 entry's
+open W3.1-U. As built (W3.2-U2a, `4d72e82`): `BrainParseError` and `BrainCallError` carry `usage`;
+`brain._refused_usage` reads a refused 200's count and never raises, and a count that does not read,
+or that the fold cannot price (the W3.2-RV1 pricing check: `cost.cost_of` once, so an unpriceable
+count cannot make every later fold raise), is not counted and its ErrorEvent says "usage not
+counted"; `_call_brain` and `run_hunt`'s BrainParseError clause append it before the ErrorEvent
+(write-ahead). X1-move: the accepted turn's `_extract_usage` now runs after the three later
+refusals, so a refused turn with an unreadable count ends "malformed provider response" with its
+bytes, not `<loop>`. The U2a table (cp1 §7; `retry_budget=2`, 100 input and 20 output tokens per
+literal response): a plain or streamed `max_tokens` turn, W3.1-T3, W3.1-P, two or no `tool_use`
+blocks, a `tool_use` without `id` and a bad `hunt_complete` catch went 0 → 1 UsageEvent ($0 →
+$0.0004 each); a stream cut before `message_stop` ($0.0012) and a retryable error frame ($0.00063)
+0 → 3, one per attempt; a fatal error frame 0 → 1; still not counted: a reset mid-stream
+(W3.2-U2b), an error frame before `message_start`, a status error, an envelope-invalid body and a
+count that does not read; every other outcome is unchanged. **C1** (`3f421ff`): `_call_brain`
+re-reads the log and checks both ceilings before every attempt, a retry included: the run's fold
+against `cost_ceiling_usd`, then, when set, `cost.fold_cost(db.read_usage(conn))` against
+`daemon_spend_ceiling_usd`, which `run_hunt(daemon_spend_ceiling_usd=None)` gets from
+`_bounded_hunt` (injected, never recorded on the runs row, 4b). New abort reason "daemon spend
+ceiling" ("cost ceiling" when both trip: it is checked first). The bound: a run, or the daemon, goes
+past its ceiling by at most the one call each hunt has in flight, of the calls the log counts
+(W3.2-X16). Measured: a $0.01 daemon ceiling stops a hunt at 2 calls, $0.016 (3 calls, $0.024, at
+`8fdd92a`); two concurrent hunts stay within the ceiling plus one call each (≤ $0.026; $0.048 at
+`8fdd92a`). **B2 + Y1** (`a1ff3f5`): `loop.backoff_delay(retry, retry_after=None)` is full jitter, a
+uniform draw in [0, min(8, 0.5 × 2^(retry-1))] s, then at least `min(retry_after, 8)`;
+`BACKOFF_BASE_S = 0.5` and `BACKOFF_CAP_S = 8.0` are anthropic 2.6.0's `INITIAL_RETRY_DELAY` and
+`MAX_RETRY_DELAY` (`_constants.py:14-15`). `brain._retry_after` reads a status response's
+`retry-after` in seconds only (finite, ≥ 0; an HTTP-date, `retry-after-ms` and anything else are
+ignored). `_call_brain` and `_run_tool` await `loop.retry_wait` (default `asyncio.sleep`) after the
+attempt's events commit, only before a retry; the next attempt re-checks both ceilings. Y1:
+tests/conftest.py's autouse `retry_waits` records every wait and never sleeps. With the default
+`retry_budget=2` a failing brain call now waits at most 0.5 s + 1 s, 3 s + 3 s with `retry-after:
+3`, and at most 8 s + 8 s. Risk notes: a full-jitter wait can be near 0 s, so a retry can still
+follow almost at once; a `retry-after` above 8 s is cut to 8 s (W3.2-X6; the rate-limits docs say to
+wait that many seconds), so such a retry likely fails within the budget, and making it fatal
+instead is Darie's call (ADR:126). Parked, not taken: Jsdk (the SDK's own jitter) and Cap60.
+**R2-RV1** (`8569e62`): found by review 2 (on C1), pre-existing at `8fdd92a`, widened by C1 (an
+in-run `read_usage` before every attempt), fixed in W3.2 on Darie's ruling of 15 Nov (W3.2-F2a +
+W3.2-F3). A daemon-shutdown cancel that landed inside an in-run SELECT (`async with
+conn.execute(…)`'s `__aenter__`) while another connection committed left the stepped statement in
+aiosqlite's worker, so the shielded `finish_run` failed at once with `database is locked`
+(SQLITE_BUSY_SNAPSHOT): the run stayed `outcome IS NULL`, the cancel was lost, and `_bounded_hunt`
+swallowed the error, so the territory loop relaunched hunts. Now `db.read_events` and
+`db.read_usage` use `execute_fetchall` (one worker call, no statement left open); `run_hunt`'s
+cancel clause always re-raises the cancel and logs a failed write, and the boot sweep then closes
+that run 'crashed' (DoD #1); and `_bounded_hunt` re-raises a CancelledError for any exception
+raised while it is being cancelled. The red tests hold the read with a progress handler (gates, not
+timing); the F1 and F3 branches have their own tests. **Process:** reviews 1 to 3 ran as
+three-reviewer workflows with a refuter per finding; from 15 Nov 23:30 AEDT, Darie's ruling: no
+subagents, workflows or adversarial checks to the end of W3.2 (the rest self-reviewed in
+session). 466 tests pass at `8569e62` (396 at `8fdd92a`): the new
+tests/test_retries_and_ceilings.py and the fixture in tests/conftest.py; no existing assert
+changed. No live run was made. Open: W3.2-U2b (a reset
+mid-stream: billed, uncounted); W3.1-X9, W3.1-K1, W3.1-O1 to W3.1-O5 (the accepted-turn W3.1-O5
+included); W3.2-X17 (hunt_smoke's `CapturingTransport` drops `retry-after`); Jsdk and Cap60
+(parked); W3.2-N1 (a null `input_tokens` in `message_delta`); the count types: a negative count
+lowers the fold (W3.2-RV12), a bool, numeric-string or float count is read as a number, and a
+priceable huge count (313-314 digits) prices to inf and latches both ceilings (typed); W3.2-RV1b (an
+accepted turn's unpriceable count, 315-4300 digits, is written and every later fold raises; since C1
+a hunt under a daemon ceiling then ends `<loop>` at its next attempt); W3.2-X16 (the bound covers
+only the calls the log counts); W3.2-R2-RV14 (budget aborts append no event: an ADR:126 note,
+Darie's); W3.2-R2-M (the launch gate's `>=` unpinned); the `capture_prey` atomicity edge (a cancel
+between its two INSERTs; INFERRED, not probed); and the intermittent aiosqlite
+`PytestUnhandledThreadExceptionWarning` (tests/test_stage5_gate.py, as before W3.2). *Next: W3 run 3
+(fragility #1 and #3). `tests/test_hunt_smoke_thinking_offline.py` still leaves two
+`rexhunter-think-*` temp directories per suite run.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
