@@ -186,7 +186,9 @@ class HuntComplete(BaseModel):
     untouched: the human verdict, not Rex, is what later moves a captured row."""
 
     catch: list[str] = []
-    usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
+    # per-call token cost (P5 Unit 2c); None = no spend. Kept out of the JSON schema like
+    # `exchange` (W3.4, W3.3-F1): the model is never shown a `usage` input.
+    usage: SkipJsonSchema[events.UsageEvent | None] = None
     # the attempt's raw I/O (W3.3); None = none. Kept out of the JSON schema: HuntComplete and
     # NeedsHelp derive the terminal tools' `input_schema` the model sees (`brain.build_tools`).
     exchange: SkipJsonSchema[events.BrainExchangeEvent | None] = None
@@ -197,7 +199,9 @@ class NeedsHelp(BaseModel):
     outcome="needs_help"; the durable-pause machinery (awaiting_verdict, park-and-persist)
     is P4. needs_help collapses to aborted trivially later; aborted can't be split back."""
 
-    usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
+    # per-call token cost (P5 Unit 2c); None = no spend. Kept out of the JSON schema like
+    # `exchange` (W3.4, W3.3-F1): the model is never shown a `usage` input.
+    usage: SkipJsonSchema[events.UsageEvent | None] = None
     # the attempt's raw I/O (W3.3); None = none. Kept out of the JSON schema: HuntComplete and
     # NeedsHelp derive the terminal tools' `input_schema` the model sees (`brain.build_tools`).
     exchange: SkipJsonSchema[events.BrainExchangeEvent | None] = None

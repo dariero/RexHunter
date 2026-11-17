@@ -756,3 +756,31 @@ async def test_guard_a_tool_retry_waits_the_jitter_only(
     finally:
         await conn.close()
     assert retry_waits == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0]
+
+
+# ── F1: the terminal tools show the model no `usage` (W3.3-F1) ────────────────────────────
+# HuntComplete and NeedsHelp carry the call's usage and derive the `hunt_complete` and
+# `needs_help` tools' `input_schema` (`brain.build_tools`), so every request showed the model an
+# optional `usage` input, with UsageEvent's `$defs` entry and docstring. The field now leaves the
+# schema the way `exchange` did in W3.3 (`SkipJsonSchema`); it stays on the models, so a `usage`
+# key the model sends is validated as before (W3.3-F2 stays Darie's).
+
+
+def test_the_terminal_tools_show_the_model_no_usage() -> None:
+    tools = {tool["name"]: tool["input_schema"] for tool in brain.build_tools(_registry())}
+    assert set(tools["hunt_complete"].get("properties", {})) == {"catch"}
+    assert set(tools["needs_help"].get("properties", {})) == set()
+    assert "UsageEvent" not in json.dumps(list(tools.values()))
+
+
+async def test_guard_a_usage_key_the_model_sends_is_still_validated(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    catch: dict[str, Any] = {
+        **SNIFF,
+        "name": "hunt_complete",
+        "input": {"catch": [], "usage": "not a usage"},
+    }
+    body = _plain("tool_use", [catch], {"input_tokens": 100, "output_tokens": 20})
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=False)
+    _assert_malformed(hunt, types=[E, U, ERR], cause="usage")
