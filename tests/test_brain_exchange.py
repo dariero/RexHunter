@@ -376,7 +376,7 @@ OUTCOMES: list[tuple[str, list[Respond], bool, list[str], tuple[str, str | None]
     ),
     ("plain-status-529-retried", [_status(529)], False, [E, E_] * 3, BRAIN_CALL_FAILED),
     ("plain-connection-failure-retried", [_connect_error], False, [E, E_] * 3, BRAIN_CALL_FAILED),
-    ("stream-reset-mid-stream-retried", [_reset], True, [E, E_] * 3, BRAIN_CALL_FAILED),
+    ("stream-reset-mid-stream-retried", [_reset], True, [E, U, E_] * 3, BRAIN_CALL_FAILED),
 ]
 
 
@@ -411,18 +411,18 @@ async def test_a_calls_thinking_deltas_come_before_its_exchange(
 
 
 def test_the_exchange_never_reaches_the_tools_the_model_sees() -> None:
-    # HuntComplete and NeedsHelp carry the exchange and also derive the terminal tools'
-    # `input_schema` (`brain.build_tools`). The carrier stays out of it, so the request body is
-    # the one 070ed9a sent: the W3.3 wire check found it there before `SkipJsonSchema`. The
-    # property names are 070ed9a's, `usage` included (W3.3-F1, left for Darie).
+    # HuntComplete and NeedsHelp carry the exchange and the usage, and also derive the terminal
+    # tools' `input_schema` (`brain.build_tools`). Both carriers stay out of it: `exchange` since
+    # W3.3 (the wire check found it there before `SkipJsonSchema`), `usage` since W3.4 (W3.3-F1).
+    # So `catch` is the one property left, and no tool carries a `$defs` entry.
     tools = {tool["name"]: tool["input_schema"] for tool in brain.build_tools(_reg())}
     properties = {
         name: set(tools[name].get("properties", {})) for name in ("hunt_complete", "needs_help")
     }
-    assert properties == {"hunt_complete": {"catch", "usage"}, "needs_help": {"usage"}}
+    assert properties == {"hunt_complete": {"catch"}, "needs_help": set()}
     defs = {key for schema in tools.values() for key in schema.get("$defs", {})}
     assert "BrainExchangeEvent" not in defs
-    assert defs  # never vacuous: `UsageEvent` is a `$defs` entry, as at 070ed9a
+    assert defs == set()  # F1 (W3.3-F1): UsageEvent's entry left with `usage`
 
 
 async def test_a_brain_that_reports_no_bytes_writes_no_exchange(tmp_path: Path) -> None:

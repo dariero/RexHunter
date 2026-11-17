@@ -6,8 +6,9 @@ still be billed (a turn refused for its stop reason, a stream cut before `messag
 frame, an unfinished stream, a tool input that does not parse, a turn with no single tool_use) was
 missed by `cost.fold_cost`, the per-run ceiling and `scheduler.daemon_spend_usd`. W3.2-U2a: the
 refusal carries the response's own usage, and the loop appends it as a UsageEvent before the
-ErrorEvent. A count that does not read is not counted, and the ErrorEvent says so; a stream cut by
-a transport failure (W3.2-U2b), a status error and an envelope-invalid body carry no usage.
+ErrorEvent. A count that does not read is not counted, and the ErrorEvent says so; a status error
+and an envelope-invalid body carry no usage. A stream cut by a transport failure (W3.2-U2b) carried
+none either until W3.4, which counts what its frames reported.
 
 H3 and H5 (fragility #4): the daemon ceiling was checked once per hunt, at launch, and the per-run
 ceiling once per iteration, so a running hunt never saw the daemon ceiling and a retried call made
@@ -16,9 +17,9 @@ brain attempt, each a fold over the log, so a run or the daemon goes past its ce
 the one call each hunt has in flight, of the calls the log counts.
 
 H1 and H2 (fragility #2): a retried brain call or tool ran again at once. W3.2-B2: each retry
-waits a jittered backoff, at least a status response's `retry-after` (cut to 8 s), after its
-events are committed. The waits are recorded, never slept: tests/conftest.py's autouse `retry_waits`
-(W3.2-Y1).
+waits a jittered backoff, at least a status response's `retry-after` (cut to 8 s; 60 s since
+W3.4), after its events are committed. The waits are recorded, never slept: tests/conftest.py's
+autouse `retry_waits` (W3.2-Y1).
 
 R2-RV1 (review 2, pre-existing, widened by C1): a shutdown cancel that landed inside an in-run
 read, with another connection committing, made the shielded `finish_run` fail, so the run
@@ -473,8 +474,9 @@ async def test_a_refused_stream_whose_usage_does_not_read_says_so(
 async def test_a_refused_turn_whose_count_cannot_be_priced_is_not_counted(
     tmp_path: Path, mock_anthropic: MockAnthropic
 ) -> None:
-    # A count int() reads but the fold cannot price (its float overflows) must not reach the log:
-    # every later fold would raise, the run's ceiling check and the daemon's launch gate with it.
+    # A count the fold cannot price (its float overflows) must not reach the log: every later fold
+    # would raise, the run's ceiling check and the daemon's launch gate with it. Since W3.4 the
+    # bound (`brain.MAX_TOKEN_COUNT`) stops it.
     usage = {"input_tokens": int("9" * 400), "output_tokens": 20}
     body = _plain("max_tokens", [SNIFF], usage=usage)
     hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=False)
@@ -562,28 +564,26 @@ class _ResetAfterMessageStart(httpx2.AsyncByteStream):
         pass
 
 
-async def test_a_reset_mid_stream_is_not_counted(
-    tmp_path: Path, mock_anthropic: MockAnthropic
-) -> None:
-    # W3.2-U2b, Darie's: the assembler's state is lost with the stream, so nothing is counted.
+async def test_a_reset_mid_stream_is_counted(tmp_path: Path, mock_anthropic: MockAnthropic) -> None:
+    # W3.2-U2b, closed in W3.4 (reset): each attempt counts what its frames reported.
     def respond(_request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(200, stream=_ResetAfterMessageStart())
 
     hunt = await _hunt(tmp_path, mock_anthropic, respond, stream=True)
-    assert _types(hunt.events) == ["error"] * (RETRY_BUDGET + 1)
+    assert _types(hunt.events) == ["usage", "error"] * (RETRY_BUDGET + 1)
     assert hunt.row == BRAIN_CALL_FAILED
 
 
 async def test_an_accepted_turn_whose_usage_does_not_read_still_fails_closed(
     tmp_path: Path, mock_anthropic: MockAnthropic
 ) -> None:
-    # W3.1-O5, unchanged: the accepted path keeps `_extract_usage`, which raises, so the turn is
-    # never dispatched uncounted; it reaches the `<loop>` catch-all (without its bytes, O5).
+    # W3.1-O5, closed in W3.4 (counts): the accepted path reads its count through the one reader,
+    # so the turn is never dispatched uncounted; it is refused with its bytes, never `<loop>`.
     body = _plain("tool_use", [SNIFF], usage={"input_tokens": "x", "output_tokens": 20})
     hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=False)
     assert _types(hunt.events) == ["error"]
-    assert _errors(hunt.events)[0].tool == "<loop>"
-    assert hunt.row == ("aborted", "unhandled exception in loop")
+    assert _errors(hunt.events)[0].tool == "<brain>"
+    assert hunt.row == MALFORMED
 
 
 # ── C1: both ceilings before every brain attempt (H3, H5) ──────────────────────────────
@@ -945,8 +945,8 @@ async def test_a_retry_after_header_sets_the_least_wait(
 async def test_a_retry_after_above_the_cap_is_cut_to_the_cap(
     tmp_path: Path, mock_anthropic: MockAnthropic, retry_waits: list[float]
 ) -> None:
-    await _hunt(tmp_path, mock_anthropic, _status(429, {"retry-after": "30"}), stream=False)
-    assert retry_waits == [8.0, 8.0]  # the cap, BACKOFF_CAP_S
+    await _hunt(tmp_path, mock_anthropic, _status(429, {"retry-after": "90"}), stream=False)
+    assert retry_waits == [60.0, 60.0]  # the cap, RETRY_AFTER_CAP_S
 
 
 @pytest.mark.parametrize(
@@ -1188,7 +1188,7 @@ def test_the_backoff_bound_doubles_to_its_cap(monkeypatch: pytest.MonkeyPatch) -
     assert [loop.backoff_delay(n) for n in range(1, 8)] == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0]
     assert loop.backoff_delay(10_000) == loop.BACKOFF_CAP_S  # no float overflow on a long budget
     assert loop.backoff_delay(1, retry_after=3.0) == 3.0
-    assert loop.backoff_delay(1, retry_after=30.0) == loop.BACKOFF_CAP_S
+    assert loop.backoff_delay(1, retry_after=90.0) == loop.RETRY_AFTER_CAP_S
     assert loop.backoff_delay(3, retry_after=0.1) == 2.0  # the jitter's draw when it is longer
 
 
