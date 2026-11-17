@@ -173,6 +173,8 @@ class Accumulator:
 
 def _apply(acc: Accumulator, row: LogRow) -> None:
     """Fold one already-deduped row into the accumulator (mutating). Total over the whole union."""
+    if isinstance(row.event, events.BrainExchangeEvent):
+        return  # a brain attempt's raw I/O (W3.3): never displayed, folds to nothing (fork X2)
     run = acc.runs.get(row.run_id)
     if run is None:
         run = _RunAcc()

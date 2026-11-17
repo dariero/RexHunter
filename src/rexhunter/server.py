@@ -131,9 +131,13 @@ app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), na
 async def catch_up(conn: aiosqlite.Connection, last_seen: int) -> list[Envelope]:
     """Replay the log tail a viewer missed: WHERE id > last_seen, in global-id order — the SSE
     stream cursor (invariant 2). Monotonic ids make this a gapless backfill the caller can dedup
-    against its high-water mark."""
+    against its high-water mark. A `brain_exchange` row is left out (W3.3, fork X2): audit bytes
+    the hub never publishes either, so the backfill and the live splice carry the same events; the
+    ids skip it, and the dedup is by `>`, never by contiguity."""
     async with conn.execute(
-        "SELECT id, payload FROM trajectory_events WHERE id > ? ORDER BY id", (last_seen,)
+        "SELECT id, payload FROM trajectory_events"
+        " WHERE id > ? AND type != 'brain_exchange' ORDER BY id",
+        (last_seen,),
     ) as cur:
         rows = await cur.fetchall()
     return [Envelope(int(row[0]), str(row[1])) for row in rows]

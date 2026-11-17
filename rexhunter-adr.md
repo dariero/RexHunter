@@ -108,7 +108,7 @@ The agent loop is owned code, roughly:
 
 ```
 while not done:
-    context  = assemble_context(run_id)        # window over recent trajectory events
+    context  = assemble_context(run_id)        # the run's conversational events: every turn, no window
     decision = await brain(context)            # returns ToolCallDecision | HuntComplete | NeedsHelp
     match decision:
         case ToolCallDecision():
@@ -126,6 +126,8 @@ Tools are plain async Python functions registered through a `@rex_tool` decorato
 The harness owns an explicit error taxonomy: retryable (network blips, 429s, transient 5xx) versus fatal (validation failures, unknown tools, budget exhaustion), with per-tool timeout and retry budgets. Every transition – plan, dispatch, result, retry, damage, abort – is appended as a typed event before anything else happens (invariant 1). Concurrent hunts run inside a bounded task group; a hung tool is cancelled at its deadline and recorded, never silently awaited forever.
 
 > **Reconciliation note (logged in `P2.2`): terminal decisions and events.** The pseudocode above ends `HuntComplete` / `NeedsHelp` *without* appending an event, recording the outcome on `runs.outcome` (a transactionally-maintained companion, invariant 2) — matching Pillar 1's pattern of closing runs through the `runs` table. Pillar 4's prose, however, says "the hunt logs `HuntCompleted` and exits cleanly," implying a terminal *event*. These disagree. `P2.2` ships the **no-event** form (terminal decisions touch only `runs.outcome`; `NeedsHelp → outcome="needs_help"`, which collapses to `aborted` trivially later). **Settled in `P4`:** terminal decisions emit **no** event — the run closes through `runs.outcome`, and a completed hunt's durable trace is the `PreyCapturedEvent`(s) of its catch (an empty catch leaves only `runs.outcome`). Pillar 4's prose is corrected to match (see its `P4` reconciliation note).
+
+> **Reconciliation note (logged in `W3.3`): the whole conversation, read narrowly.** No window is taken: the model gets the whole conversation, every turn sent back as stored (Darie, 17 Nov 2026). Before each brain attempt the loop reads only the run's `tool_call`, `tool_result`, `error` and `usage` events (`db.read_context`, a type filter in SQL): the types `brain.project_messages` turns into `messages` and the per-run spend fold reads. Revisit when a hunt call's `input_tokens` exceeds 100,000 or `max_iterations` is raised above 50.
 
 ### The Justification (The Why)
 

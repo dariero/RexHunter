@@ -45,6 +45,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from rexhunter import cost
 from rexhunter.events import (
+    BrainExchangeEvent,
     BrainParseError,
     ErrorEvent,
     ToolCallEvent,
@@ -804,18 +805,20 @@ def _stream_error(
 async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     """Consume a streaming Messages response: relay each thinking delta via `sink` (write-ahead,
     live — Unit 3b), assemble the blocks, and return the assembled response bytes for
-    `parse_decision`. `lines` is the provider's raw SSE body, line by line (the SDK's raw-mode
-    `iter_lines`, W2.0); a non-2xx never gets here, the SDK raises it as a status error first. The
-    `data:` framing mirrors `iter_sse_events` over the live line iterator; the assembler (`feed`)
-    is the shared logic. An SSE `error` frame ends the read and raises a BrainCallError with the
-    verdict its type stands for and the frame's own bytes (W3.1, Z1), before any other check.
-    Only a `finished` stream is returned (W3.1, T3): a body that ends on a frame boundary before
-    `message_stop` raises a retryable BrainCallError, and a body that reached `message_stop` but
-    is not whole raises a BrainParseError, each carrying the assembled bytes; so does a whole
-    stream whose closed tool_use input does not parse as JSON (W3.1, P1). Each of these errors also
-    carries the usage the stream reported before it ended (W3.2-U2a), for the loop to count. (A
-    body cut inside a `data:` line still fails `json.loads` and reaches the loop's `<loop>`
-    backstop: O1, not in W3.1; a transport failure mid-stream carries no usage, W3.2-U2b.)"""
+    `parse_decision`. `lines` is the provider's raw SSE body, line by line (since W3.3 the adapter
+    frames them with `_received_lines` from the SDK's raw-mode `iter_bytes`, keeping the bytes, with
+    the framing `iter_lines` had; W2.0 to W3.2 passed `iter_lines`); a non-2xx never gets here, the
+    SDK raises it as a status error first. The `data:` framing mirrors `iter_sse_events` over the
+    live line iterator; the assembler (`feed`) is the shared logic. An SSE `error` frame ends the
+    read and raises a BrainCallError with the verdict its type stands for and the frame's own bytes
+    (W3.1, Z1), before any other check. Only a `finished` stream is returned (W3.1, T3): a body
+    that ends on a frame boundary before `message_stop` raises a retryable BrainCallError, and a
+    body that reached `message_stop` but is not whole raises a BrainParseError, each carrying the
+    assembled bytes; so does a whole stream whose closed tool_use input does not parse as JSON
+    (W3.1, P1). Each of these errors also carries the usage the stream reported before it ended
+    (W3.2-U2a), for the loop to count. (A body cut inside a `data:` line still fails `json.loads`
+    and reaches the loop's `<loop>` backstop: O1, not in W3.1; a transport failure mid-stream
+    carries no usage, W3.2-U2b.)"""
     assembler = StreamAssembler()
     data_buf: list[str] = []
     error_data: str | None = None  # the first SSE error frame's own `data` text (W3.1, Z1)
@@ -894,8 +897,31 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     return raw
 
 
+async def _tee(chunks: AsyncIterator[bytes], received: list[bytes]) -> AsyncIterator[bytes]:
+    """Pass the stream's body through unchanged, keeping every chunk as it arrives (W3.3, S1)."""
+    async for chunk in chunks:
+        received.append(chunk)
+        yield chunk
+
+
+def _received_lines(
+    chunks: AsyncIterator[bytes], received: list[bytes], *, encoding: str
+) -> AsyncIterator[str]:
+    """The stream's body as lines for `_drive_stream`, framed from the chunks `iter_bytes` gives,
+    each kept in `received` (W3.3, fork S1): the attempt stores the body as received, not a
+    re-encoded assembly. The framing is httpx2's own: a local `httpx2.Response` over the tee runs
+    the same TextDecoder (the response's encoding, `errors="replace"`) and LineDecoder that the
+    SDK's `iter_lines` ran before W3.3, so the lines are unchanged (pinned against `aiter_lines` at
+    every chunk size in tests/test_brain_exchange.py). The local response has no Content-Encoding,
+    so nothing is decoded twice: `iter_bytes` already gave the content-decoded body."""
+    framer = httpx2.Response(200, content=_tee(chunks, received), default_encoding=encoding)
+    return framer.aiter_lines()
+
+
 def brain_call_error(
     exc: anthropic.APIStatusError | anthropic.APIConnectionError | httpx2.TransportError,
+    *,
+    exchange: BrainExchangeEvent | None = None,
 ) -> BrainCallError:
     """Translate an SDK or transport failure into the loop's provider-neutral BrainCallError (W2.0
     D1a), so the loop never sees a vendor or transport type. The verdict is the taxonomy the loop
@@ -908,7 +934,7 @@ def brain_call_error(
     generic wrapper text, as HEAD's ErrorEvent did. The stream checks in `_drive_stream` raise
     their BrainCallError directly; this translates only what the SDK and the transport raise. A
     status response's `retry-after` header rides along too (W3.2-B2, `_retry_after`), for the
-    loop's backoff."""
+    loop's backoff. `exchange` is the attempt's raw I/O (W3.3), passed through for the loop."""
     if isinstance(exc, anthropic.APIStatusError):
         code = exc.status_code
         return BrainCallError(
@@ -917,8 +943,9 @@ def brain_call_error(
             status=code,
             raw_response=exc.response.content,
             retry_after=_retry_after(exc.response.headers.get("retry-after")),
+            exchange=exchange,
         )
-    return BrainCallError(repr(exc.__cause__ or exc), retryable=True)
+    return BrainCallError(repr(exc.__cause__ or exc), retryable=True, exchange=exchange)
 
 
 def _retry_after(value: str | None) -> float | None:
@@ -931,10 +958,6 @@ def _retry_after(value: str | None) -> float | None:
     except ValueError:
         return None
     return seconds if math.isfinite(seconds) and seconds >= 0 else None
-
-
-# The failures `brain_call_error` translates; anything else (a BrainParseError, a bug) propagates.
-_SDK_ERRORS = (anthropic.APIStatusError, anthropic.APIConnectionError, httpx2.TransportError)
 
 
 def _is_transport_failure(exc: anthropic.APIConnectionError) -> bool:
@@ -969,7 +992,12 @@ def adapter_brain_for(
     `with_raw_response` hands over the response bytes. Either way the provider's own bytes cross the
     single boundary at `parse_decision` (invariant 3). SDK and transport errors become one
     BrainCallError the loop's `classify` sorts (429/5xx and transport retryable, other statuses
-    fatal); the parsed `UsageEvent` rides onto the Decision (invariant 5).
+    fatal); the parsed `UsageEvent` rides onto the Decision (invariant 5). Since W3.3 every attempt
+    that sent a request also reports its raw I/O (invariant 6, fork E2): a `BrainExchangeEvent` with
+    the body httpx2 sent and the body as received (on the stream path every chunk `iter_bytes`
+    gave, framed into lines by `_received_lines`), on the Decision, the BrainParseError or the
+    BrainCallError, for the loop to append. SDK and transport errors are translated by the clauses
+    below; anything else (a bug, a body that is not JSON: W3.1-O1 to O5) propagates without one.
     """
     tools = build_tools(registry)  # derived once — stable across the run
     # Fail closed at factory time (W2.2): a model with no floor row raises here, before any run.
@@ -986,6 +1014,12 @@ def adapter_brain_for(
                 thinking=thinking,
                 tool_choice=HUNT_TOOL_CHOICE,
             )
+            # The attempt's raw I/O (W3.3, invariant 6): the request httpx2 sent (fork R1) and the
+            # body as received (fork S1). The stream path keeps every chunk here, so a body cut by a
+            # transport failure keeps what arrived before the cut.
+            received: list[bytes] = []
+            sent: bytes | None = None
+            status: int | None = None
             try:
                 if not stream:
                     # Cast, not inferred: `**body` matches several `create` overloads, so pyright
@@ -995,23 +1029,71 @@ def adapter_brain_for(
                         await client.messages.with_raw_response.create(**body),
                     )
                     raw = await plain.read()  # the provider's bytes, as they came
+                    exchange = BrainExchangeEvent(
+                        raw_request=plain.http_request.content,
+                        raw_response=raw,
+                        status=plain.status_code,
+                    )
                 else:
                     async with client.messages.with_streaming_response.create(
                         **body, stream=True
                     ) as streamed:
-                        raw = await _drive_stream(streamed.iter_lines(), sink)
+                        sent, status = streamed.http_request.content, streamed.status_code
+                        lines = _received_lines(
+                            streamed.iter_bytes(),
+                            received,
+                            encoding=streamed.http_response.encoding or "utf-8",
+                        )
+                        try:
+                            raw = await _drive_stream(lines, sink)
+                        except (BrainParseError, BrainCallError) as exc:
+                            # a stream the guard refused (W3.1): its bytes as received ride on
+                            # the error; `raw` / `raw_response` keep the assembled bytes
+                            exc.exchange = BrainExchangeEvent(
+                                raw_request=sent, raw_response=b"".join(received), status=status
+                            )
+                            raise
+                    exchange = BrainExchangeEvent(
+                        raw_request=sent, raw_response=b"".join(received), status=status
+                    )
             except anthropic.APIConnectionError as exc:
                 if not _is_transport_failure(exc):
                     # Not the network: re-raise the real error for the <loop> backstop, as at HEAD
                     # (from None: the SDK's wrapper says nothing the cause does not).
                     raise (exc.__cause__ or exc) from None
-                raise brain_call_error(exc) from exc
-            except _SDK_ERRORS as exc:
-                # a failure while the body streams (a reset mid-frame) is a transport blip too
-                raise brain_call_error(exc) from exc
+                # no response arrived; the SDK error carries the request it built (W3.3, R1)
+                raise brain_call_error(
+                    exc, exchange=BrainExchangeEvent(raw_request=exc.request.content)
+                ) from exc
+            except anthropic.APIStatusError as exc:
+                raise brain_call_error(
+                    exc,
+                    exchange=BrainExchangeEvent(
+                        raw_request=exc.request.content,
+                        raw_response=exc.response.content,
+                        status=exc.status_code,
+                    ),
+                ) from exc
+            except httpx2.TransportError as exc:
+                # a failure while the body streams (a reset mid-frame) is a transport blip too; the
+                # attempt keeps the bytes received before it (W3.3; its usage is not counted,
+                # W3.2-U2b). The plain path never gets here: the SDK reads its body in `create`.
+                exchange = None
+                if sent is not None:
+                    exchange = BrainExchangeEvent(
+                        raw_request=sent, raw_response=b"".join(received), status=status
+                    )
+                raise brain_call_error(exc, exchange=exchange) from exc
             # The one boundary (invariant 3). A ToolCallDecision carries the whole turn from here
-            # on both paths (W2.3), so the next call echoes it exactly as returned.
-            return parse_decision(raw)
+            # on both paths (W2.3), so the next call echoes it exactly as returned. The attempt's
+            # exchange rides on the decision, or on the boundary's refusal (W3.3, fork E2).
+            try:
+                decision = parse_decision(raw)
+            except BrainParseError as exc:
+                exc.exchange = exchange
+                raise
+            decision.exchange = exchange
+            return decision
 
         return brain
 

@@ -5,7 +5,8 @@ pre-flight → streaming hunt through the `CapturingTransport` tee → fixture w
 `httpx2.MockTransport` and a tmp fixture dir, so at spend time the ONLY untested unknown is "does
 the real API accept the stream-assembled signed block". The load-bearing thing this catches that the
 per-adapter tests can't: the tee reads the full body, and we prove that still feeds the streaming
-adapter (a buffered response the SDK's raw mode iterates with `iter_lines`).
+adapter (a buffered response the SDK's raw mode iterates with `iter_bytes`, framed into lines as
+`iter_lines` framed them before W3.3).
 """
 
 import json

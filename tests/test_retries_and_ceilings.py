@@ -44,7 +44,7 @@ import httpx2
 import pytest
 
 from rexhunter import brain, cost, db, loop, scheduler
-from rexhunter.events import ErrorEvent, TrajectoryEvent, UsageEvent
+from rexhunter.events import BrainExchangeEvent, ErrorEvent, TrajectoryEvent, UsageEvent
 from rexhunter.loop import (
     Brain,
     Context,
@@ -254,7 +254,13 @@ async def _hunt(
                 tool_timeout_s=5.0,
                 publish=publish,
             )
-            events = await db.read_events(conn, run_id)
+            # Every attempt's BrainExchangeEvent (W3.3) is left out: tests/test_brain_exchange.py
+            # pins where it sits; these sequences pin the rest.
+            events: list[TrajectoryEvent] = [
+                e
+                for e in await db.read_events(conn, run_id)
+                if not isinstance(e, BrainExchangeEvent)
+            ]
             row = await _row(conn, run_id)
         finally:
             await conn.close()
@@ -1205,7 +1211,7 @@ async def test_tool_retries_follow_the_backoff_bound(
 
 
 class _HeldRead:
-    """Holds one in-run SELECT (`db.read_usage` or `db.read_events`) inside the worker thread: a
+    """Holds one in-run SELECT (`db.read_usage` or `db.read_context`) inside the worker thread: a
     progress handler blocks on `release` once the statement is stepping. So a cancel lands while
     the read's worker call is still running, and the test can commit from another connection
     before the read ends: the R2-RV1 shape, by gates, not timing. `skip` lets the first reads of
@@ -1247,7 +1253,7 @@ async def _hunt_rows(conn: Any) -> list[tuple[Any, ...]]:
         return [tuple(r) for r in await cur.fetchall()]
 
 
-@pytest.mark.parametrize("read", ["read_usage", "read_events"])
+@pytest.mark.parametrize("read", ["read_usage", "read_context"])
 async def test_a_cancel_during_an_in_run_read_closes_the_run_and_propagates(
     read: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1269,8 +1275,9 @@ async def test_a_cancel_during_an_in_run_read_closes_the_run_and_propagates(
             await db.read_usage(conn)
             brain_, daemon_ceiling = _needs_help, 1000.0
         else:
-            # The first iteration's read passes and caches the statement; its sniff leaves events
-            # in the run, so the second iteration's read yields rows and is the one held.
+            # The first iteration's read (`db.read_context`, the brain's read since W3.3-W) passes
+            # and caches the statement; its sniff leaves events in the run, so the second
+            # iteration's read yields rows and is the one held.
             brain_, daemon_ceiling = _spending_brain([]), None
         task = asyncio.create_task(
             run_hunt(

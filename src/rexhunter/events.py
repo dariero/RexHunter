@@ -132,6 +132,30 @@ class UsageEvent(_Event):
     output_tokens: int
 
 
+class BrainExchangeEvent(_Event):
+    """One brain attempt's raw I/O (W3.3, fragility #3, invariant 6): the request bytes it sent
+    and the response bytes it got, so a dead run is a pytest fixture from its own log (ADR:30) and
+    rebuilds offline to identical events (DoD #5). Written by the owning task before the attempt's
+    other events (its ThinkingDeltas, written during the call, come first), only when the brain
+    reports bytes: the adapter attaches one to what it returns or raises (fork E2), so the stub and
+    scripted brains write none. Never published to the hub, and left out of the SSE backfill and
+    the projection's rows (fork X2): audit data, up to a few MB per run, that the UI never shows.
+
+    - `raw_request`: the body httpx2 put on the wire (`http_request.content`, or the SDK error's
+      `request`; fork R1), not a re-serialisation of the request dict.
+    - `raw_response`: the body as received, content-decoded (gzip and the like undone by httpx2):
+      `read()` on the plain path, every chunk `iter_bytes` gave on the stream path, joined (fork
+      S1), so a stream that was cut keeps what arrived before the cut. None when no response
+      arrived (a connection failure).
+    - `status`: the HTTP status the response came with (200 for a stream that then failed), None
+      when none arrived, so a non-200 attempt (a 429 or 529 retry) replays as one."""
+
+    type: Literal["brain_exchange"] = "brain_exchange"
+    raw_request: bytes
+    raw_response: bytes | None = None
+    status: int | None = None
+
+
 # The trajectory-event union, now multi-member and discriminated by `type`: Pydantic routes a
 # payload straight to the model whose Literal tag matches, and an unknown/absent tag raises at
 # the boundary. Adding a member is one line here; the read crossing below never changes.
@@ -142,7 +166,8 @@ type TrajectoryEvent = Annotated[
     | ErrorEvent
     | PreyCapturedEvent
     | UsageEvent
-    | ThinkingDelta,
+    | ThinkingDelta
+    | BrainExchangeEvent,
     Field(discriminator="type"),
 ]
 
@@ -168,13 +193,23 @@ class BrainParseError(Exception):
     envelope validated and the count reads cleanly: a refused 200 can still be billed, so run_hunt
     appends it as a UsageEvent before the ErrorEvent (invariants 1 and 5), the safe direction for a
     guard. None otherwise: no count, a count that does not read, or a body that fails the
-    envelope."""
+    envelope. `exchange` (W3.3) is the attempt's raw request and response, which the adapter
+    attaches and run_hunt appends before the usage (invariant 6); `raw` stays what it was (the
+    assembled bytes on the stream path). None from a brain that reports no bytes."""
 
-    def __init__(self, raw: bytes, detail: str, *, usage: UsageEvent | None = None) -> None:
+    def __init__(
+        self,
+        raw: bytes,
+        detail: str,
+        *,
+        usage: UsageEvent | None = None,
+        exchange: BrainExchangeEvent | None = None,
+    ) -> None:
         super().__init__(detail)
         self.raw = raw
         self.detail = detail
         self.usage = usage
+        self.exchange = exchange
 
 
 # ── The pen log: verdict events (ADR pillar 4) ────────────────────────────────

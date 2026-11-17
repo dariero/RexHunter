@@ -27,8 +27,12 @@ from rexhunter import events, verdicts, view
 from rexhunter.view import LogRow, TerritoryView, ViewState
 
 # The columns the payload union does not carry (the reducer needs id/seq/run_id/created_at alongside
-# the decoded event). One SELECT, two orderings — the two cursors below.
-_LOG_ROWS_SELECT = "SELECT id, seq, run_id, created_at, payload FROM trajectory_events"
+# the decoded event). One SELECT, two orderings — the two cursors below. A `brain_exchange` row is
+# left out (W3.3, fork X2): audit bytes the UI never shows, so the projection never decodes them.
+_LOG_ROWS_SELECT = (
+    "SELECT id, seq, run_id, created_at, payload FROM trajectory_events"
+    " WHERE type != 'brain_exchange'"
+)
 
 
 async def read_log_rows(conn: aiosqlite.Connection, *, run_id: str | None = None) -> list[LogRow]:
@@ -41,7 +45,7 @@ async def read_log_rows(conn: aiosqlite.Connection, *, run_id: str | None = None
     if run_id is None:
         sql, params = f"{_LOG_ROWS_SELECT} ORDER BY id", ()
     else:
-        sql, params = f"{_LOG_ROWS_SELECT} WHERE run_id = ? ORDER BY seq", (run_id,)
+        sql, params = f"{_LOG_ROWS_SELECT} AND run_id = ? ORDER BY seq", (run_id,)
     async with conn.execute(sql, params) as cursor:
         rows = await cursor.fetchall()
     return [
