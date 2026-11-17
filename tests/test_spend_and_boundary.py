@@ -310,3 +310,43 @@ async def test_guard_a_token_count_that_reads_is_counted_as_before(
     hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=False)
     assert hunt.row == ("needs_help", None)
     assert _usages(hunt.events) == [counted]
+
+
+# ── N1: a null count in message_delta keeps the earlier count, as the SDK does (W3.2-N1) ─────
+# The assembler wrote every key of message_delta's `usage` over the counts so far, a null one too,
+# so a null `input_tokens` replaced message_start's count. The SDK's accumulator keeps the earlier
+# count when the new one is null (anthropic 2.6.0 lib/streaming/_messages.py:547-556). A count that
+# is not null still replaces the earlier one: they are cumulative (the streaming page, :334).
+
+NULL_COUNTS_DELTA = _message_delta(
+    {"input_tokens": None, "cache_read_input_tokens": None, "output_tokens": 20}
+)
+
+
+async def test_a_null_count_in_message_delta_keeps_message_starts(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    body = b"".join([*SNIFF_STREAM[:4], NULL_COUNTS_DELTA, SNIFF_STREAM[5]])
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    assert _usages(hunt.events)[:1] == [(100, 20)]
+    assert _types(hunt.events)[:4] == [E, U, "tool_call", "tool_result"]
+
+
+async def test_a_null_count_in_message_delta_keeps_message_starts_on_a_refused_stream(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # A stream cut before message_stop (W3.1-T, retried): each attempt is counted with
+    # message_start's input count, not left uncounted for a null.
+    body = b"".join([*SNIFF_STREAM[:4], NULL_COUNTS_DELTA])
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    assert _types(hunt.events) == [E, U, ERR] * (RETRY_BUDGET + 1)
+    assert _usages(hunt.events) == [(100, 20)] * (RETRY_BUDGET + 1)
+
+
+async def test_guard_a_count_in_message_delta_still_replaces_message_starts(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    delta = _message_delta({"input_tokens": 150, "output_tokens": 20})
+    body = b"".join([*SNIFF_STREAM[:4], delta, SNIFF_STREAM[5]])
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    assert _usages(hunt.events)[:1] == [(150, 20)]

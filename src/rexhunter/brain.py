@@ -505,7 +505,11 @@ class StreamAssembler:
             if delta.get("stop_reason") is not None:
                 self._stop_reason = delta["stop_reason"]
                 self.complete = True
-            self._usage.update(event.get("usage", {}))  # cumulative output_tokens
+            # The counts are cumulative and replace the earlier ones; a null count keeps the earlier
+            # one, every key alike, as the SDK's accumulator does (W3.2-N1; anthropic 2.6.0
+            # lib/streaming/_messages.py:547-556).
+            usage = event.get("usage", {})
+            self._usage.update({key: value for key, value in usage.items() if value is not None})
         elif etype == "message_stop":
             self.complete = True
             self._message_stopped = True
