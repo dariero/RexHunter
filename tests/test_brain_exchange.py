@@ -376,7 +376,7 @@ OUTCOMES: list[tuple[str, list[Respond], bool, list[str], tuple[str, str | None]
     ),
     ("plain-status-529-retried", [_status(529)], False, [E, E_] * 3, BRAIN_CALL_FAILED),
     ("plain-connection-failure-retried", [_connect_error], False, [E, E_] * 3, BRAIN_CALL_FAILED),
-    ("stream-reset-mid-stream-retried", [_reset], True, [E, E_] * 3, BRAIN_CALL_FAILED),
+    ("stream-reset-mid-stream-retried", [_reset], True, [E, U, E_] * 3, BRAIN_CALL_FAILED),
 ]
 
 

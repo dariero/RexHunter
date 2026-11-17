@@ -7,7 +7,7 @@ whose name starts `test_guard_` passed before W3.4 too: it pins what must not ch
 
 import json
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -17,7 +17,7 @@ import pytest
 
 from rexhunter import brain, cost, db
 from rexhunter.events import BrainExchangeEvent, ErrorEvent, TrajectoryEvent, UsageEvent
-from rexhunter.loop import run_hunt
+from rexhunter.loop import BrainCallError, run_hunt
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
@@ -593,3 +593,88 @@ async def test_guard_unknown_events_and_fields_and_unstarted_blocks_are_ignored(
     body = _with(1, *ignored)
     hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
     assert _types(hunt.events)[:4] == [E, U, "tool_call", "tool_result"]
+
+
+# ── reset: a reset mid-stream counts what the stream reported (W3.2-U2b) ──────────────────
+# A transport failure while the body streams raised a bare `httpx2.TransportError` past the
+# assembler, so the refused attempt, which can still be billed, appended no UsageEvent. reset-1
+# with 1a: `_drive_stream` raises the retryable BrainCallError with the counts its frames reported,
+# so each attempt appends its UsageEvent before its ErrorEvent (invariant 1). The ErrorEvent's text
+# is as before, plus the note when the counts do not read; `raw_response` stays None (the bytes as
+# received are in the exchange, W3.3). A frame whose closing blank line never came is not folded.
+
+RESET = httpx2.ReadError("connection reset mid-stream")
+RESET_TEXT = repr(BrainCallError(repr(RESET), retryable=True))  # the ErrorEvent's text before W3.4
+
+
+class _ResetAfter(httpx2.AsyncByteStream):
+    """A 200 stream that sends `chunks`, then the connection resets."""
+
+    def __init__(self, chunks: Sequence[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+        raise httpx2.ReadError("connection reset mid-stream")
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _reset_after(*chunks: bytes) -> Respond:
+    return lambda _request: httpx2.Response(200, stream=_ResetAfter(chunks))
+
+
+@pytest.mark.parametrize(
+    ("chunks", "counted"),
+    [
+        (SNIFF_STREAM[:2], (100, 1)),
+        (SNIFF_STREAM[:5], (100, 20)),
+        # this message_delta's closing blank line never came: dropped, its count not read
+        (
+            [
+                SNIFF_STREAM[0],
+                b'data: {"type": "message_delta", "delta": {}, "usage": {"output_tokens": 20}}\n',
+            ],
+            (100, 1),
+        ),
+        # the turn was whole, then the connection reset before the body ended: counted, retried
+        (SNIFF_STREAM, (100, 20)),
+    ],
+    ids=["after-message-start", "after-message-delta", "inside-a-frame", "after-message-stop"],
+)
+async def test_a_reset_mid_stream_counts_what_the_stream_reported(
+    chunks: list[bytes],
+    counted: tuple[int, int],
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+) -> None:
+    hunt = await _hunt(tmp_path, mock_anthropic, _reset_after(*chunks), stream=True)
+    assert _types(hunt.events) == [E, U, ERR] * (RETRY_BUDGET + 1)
+    assert _usages(hunt.events) == [counted] * (RETRY_BUDGET + 1)
+    assert hunt.row == BRAIN_CALL_FAILED
+    for error in _errors(hunt.events):
+        assert (error.tool, error.error, error.retryable) == ("<brain>", RESET_TEXT, True)
+        assert error.raw_response is None
+
+
+async def test_a_reset_whose_counts_do_not_read_says_so(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    respond = _reset_after(_message_start({"input_tokens": "x", "output_tokens": 1}))
+    hunt = await _hunt(tmp_path, mock_anthropic, respond, stream=True)
+    assert _types(hunt.events) == [E, ERR] * (RETRY_BUDGET + 1)
+    # The text is the transport cause, then the note: no count read, none appended.
+    for error in _errors(hunt.events):
+        assert f"{RESET!r}; usage not counted" in error.error
+
+
+async def test_guard_a_reset_before_message_start_counts_nothing(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # No count arrived, so none is appended; the text is as before W3.4.
+    respond = _reset_after(b'event: ping\ndata: {"type": "ping"}\n\n')
+    hunt = await _hunt(tmp_path, mock_anthropic, respond, stream=True)
+    assert _types(hunt.events) == [E, ERR] * (RETRY_BUDGET + 1)
+    assert [e.error for e in _errors(hunt.events)] == [RESET_TEXT] * (RETRY_BUDGET + 1)

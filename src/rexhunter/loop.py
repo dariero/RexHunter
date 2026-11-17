@@ -53,9 +53,10 @@ class BrainCallError(Exception):
     `data` bytes for an SSE error frame; for a stream whose body ended before `message_stop`, the
     bytes assembled from it (W3.1); None when no response arrived (a reset mid-body included).
     `usage` (W3.2-U2a) is the token count a 200 stream reported before the adapter refused it (an
-    error frame, a body cut before `message_stop`), when it reads cleanly: `_call_brain` appends it
-    as a UsageEvent before the ErrorEvent, once per attempt. None for a status error (its body
-    carries no count) and for a transport failure (the stream's state is lost, W3.2-U2b).
+    error frame, a body cut before `message_stop`, and since W3.4 a reset mid-stream, W3.2-U2b),
+    when it reads cleanly: `_call_brain` appends it as a UsageEvent before the ErrorEvent, once per
+    attempt. None for a status error (its body carries no count) and for a transport failure before
+    the response.
     `retry_after` (W3.2-B2) is a status response's `retry-after` header in seconds, None when it
     was absent or not a finite, non-negative number of seconds; the retry waits at least that
     long, cut to BACKOFF_CAP_S (`backoff_delay`). `exchange` (W3.3) is the attempt's raw request and
@@ -362,10 +363,10 @@ async def _call_brain(
     narrows to BrainCallError so it never swallows a brain bug. An attempt the adapter refused
     after a 200 (W3.2-U2a) can still be billed: when its error carries a usage, that usage is
     appended as a UsageEvent before the ErrorEvent, so the spend folds count every attempt whose
-    error carries one (a transport failure mid-stream carries none, W3.2-U2b). Before either, an
-    attempt whose brain reports its bytes (W3.3, the adapter's `exchange`, on its Decision or its
-    BrainCallError) appends its BrainExchangeEvent, committed and never published (fork X2): the
-    request it sent and the response it got (invariant 6).
+    error carries one (since W3.4 a transport failure mid-stream carries one too, W3.2-U2b). Before
+    either, an attempt whose brain reports its bytes (W3.3, the adapter's `exchange`, on its
+    Decision or its BrainCallError) appends its BrainExchangeEvent, committed and never published
+    (fork X2): the request it sent and the response it got (invariant 6).
     """
 
     async def sink(text: str) -> None:

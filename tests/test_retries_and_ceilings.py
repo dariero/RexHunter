@@ -6,8 +6,9 @@ still be billed (a turn refused for its stop reason, a stream cut before `messag
 frame, an unfinished stream, a tool input that does not parse, a turn with no single tool_use) was
 missed by `cost.fold_cost`, the per-run ceiling and `scheduler.daemon_spend_usd`. W3.2-U2a: the
 refusal carries the response's own usage, and the loop appends it as a UsageEvent before the
-ErrorEvent. A count that does not read is not counted, and the ErrorEvent says so; a stream cut by
-a transport failure (W3.2-U2b), a status error and an envelope-invalid body carry no usage.
+ErrorEvent. A count that does not read is not counted, and the ErrorEvent says so; a status error
+and an envelope-invalid body carry no usage. A stream cut by a transport failure (W3.2-U2b) carried
+none either until W3.4, which counts what its frames reported.
 
 H3 and H5 (fragility #4): the daemon ceiling was checked once per hunt, at launch, and the per-run
 ceiling once per iteration, so a running hunt never saw the daemon ceiling and a retried call made
@@ -563,15 +564,13 @@ class _ResetAfterMessageStart(httpx2.AsyncByteStream):
         pass
 
 
-async def test_a_reset_mid_stream_is_not_counted(
-    tmp_path: Path, mock_anthropic: MockAnthropic
-) -> None:
-    # W3.2-U2b, Darie's: the assembler's state is lost with the stream, so nothing is counted.
+async def test_a_reset_mid_stream_is_counted(tmp_path: Path, mock_anthropic: MockAnthropic) -> None:
+    # W3.2-U2b, closed in W3.4 (reset): each attempt counts what its frames reported.
     def respond(_request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(200, stream=_ResetAfterMessageStart())
 
     hunt = await _hunt(tmp_path, mock_anthropic, respond, stream=True)
-    assert _types(hunt.events) == ["error"] * (RETRY_BUDGET + 1)
+    assert _types(hunt.events) == ["usage", "error"] * (RETRY_BUDGET + 1)
     assert hunt.row == BRAIN_CALL_FAILED
 
 

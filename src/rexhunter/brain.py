@@ -900,7 +900,8 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     as it arrives: a `data:` line that is not JSON, or an event of the wrong shape (`feed`'s
     MalformedFrame), raises a BrainParseError with the bytes and the counts so far, except a body
     that ended inside its last `data:` line before `message_stop`, which is the cut, the retryable
-    BrainCallError. (A transport failure mid-stream carries no usage, W3.2-U2b.)"""
+    BrainCallError. A transport failure while the body streams is the retryable BrainCallError too,
+    carrying the counts the frames received so far reported (W3.4 reset, W3.2-U2b)."""
     assembler = StreamAssembler()
     data_buf: list[str] = []
     error_data: str | None = None  # the first SSE error frame's own `data` text (W3.1, Z1)
@@ -950,22 +951,36 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
             error_data = data
         return text
 
-    async for line in lines:
-        if line.startswith("data:"):
-            data_buf.append(line.removeprefix("data:").strip())
-        elif not line.strip():  # a blank line closes the frame
-            if data_buf:
-                text = fold("".join(data_buf))
-                data_buf = []
-                if error_data is not None:
-                    # Z-stop: the first error frame ends the read. Nothing after it can make the
-                    # turn usable, and what follows one is undocumented; reading on would let a
-                    # later transport failure replace the frame's verdict. It holds where `lines`
-                    # is the live body: a transport that buffers the whole response first (the
-                    # smoke harness's CapturingTransport) has finished its read before this runs.
-                    break
-                if text:
-                    await sink(text)  # inline await — single writer (inv 7), live (inv 1)
+    try:
+        async for line in lines:
+            if line.startswith("data:"):
+                data_buf.append(line.removeprefix("data:").strip())
+            elif not line.strip():  # a blank line closes the frame
+                if data_buf:
+                    text = fold("".join(data_buf))
+                    data_buf = []
+                    if error_data is not None:
+                        # Z-stop: the first error frame ends the read. Nothing after it can make
+                        # the turn usable, and what follows one is undocumented; reading on would
+                        # let a later transport failure replace the frame's verdict. It holds where
+                        # `lines` is the live body: a transport that buffers the whole response
+                        # first (the smoke harness's CapturingTransport) has finished its read
+                        # before this runs.
+                        break
+                    if text:
+                        await sink(text)  # inline await — single writer (inv 7), live (inv 1)
+    except httpx2.TransportError as exc:
+        # A transport failure while the body streams (a reset mid-stream, W3.2-U2b; the SDK does not
+        # wrap it): the retryable BrainCallError `brain_call_error` gives it, its text unchanged,
+        # now with the counts the frames received so far reported, so the loop counts the attempt
+        # before its ErrorEvent (W3.4 reset, invariants 1 and 5). A frame whose closing blank line
+        # never came is dropped, not folded. `raw_response` stays None (reset-1a): the bytes as
+        # received are in the attempt's exchange (W3.3). A reset after `message_stop` is the same:
+        # counted, then retried.
+        _, usage, note = so_far()
+        raise BrainCallError(
+            repr(exc.__cause__ or exc) + note, retryable=True, usage=usage
+        ) from exc
     if data_buf:  # a final frame not terminated by a trailing blank line
         fold("".join(data_buf), last=True)
     # The bytes and the counts the refusals below carry (`so_far`).
@@ -1190,9 +1205,10 @@ def adapter_brain_for(
                     ),
                 ) from exc
             except httpx2.TransportError as exc:
-                # a failure while the body streams (a reset mid-frame) is a transport blip too; the
-                # attempt keeps the bytes received before it (W3.3; its usage is not counted,
-                # W3.2-U2b). The plain path never gets here: the SDK reads its body in `create`.
+                # A transport failure outside the line read (closing the body): a transport blip
+                # too; the attempt keeps the bytes received before it (W3.3). One during the read
+                # (a reset mid-stream) is `_drive_stream`'s, counted there (W3.4 reset, W3.2-U2b).
+                # The plain path never gets here: the SDK reads its body in `create`.
                 exchange = None
                 if sent is not None:
                     exchange = BrainExchangeEvent(
