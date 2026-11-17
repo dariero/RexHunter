@@ -452,7 +452,7 @@ past its ceiling by at most the one call each hunt has in flight, of the calls t
 (W3.2-X16). Measured: a $0.01 daemon ceiling stops a hunt at 2 calls, $0.016 (3 calls, $0.024, at
 `8fdd92a`); two concurrent hunts stay within the ceiling plus one call each (≤ $0.026; $0.048 at
 `8fdd92a`). **B2 + Y1** (`a1ff3f5`): `loop.backoff_delay(retry, retry_after=None)` is full jitter, a
-uniform draw in [0, min(8, 0.5 × 2^(retry-1))] s, then at least `min(retry_after, 8)`;
+uniform draw in [0, min(8, 0.5 × 2^(retry-1))] s, then at least `min(retry_after, 8)` (60 s since W3.4);
 `BACKOFF_BASE_S = 0.5` and `BACKOFF_CAP_S = 8.0` are anthropic 2.6.0's `INITIAL_RETRY_DELAY` and
 `MAX_RETRY_DELAY` (`_constants.py:14-15`). `brain._retry_after` reads a status response's
 `retry-after` in seconds only (finite, ≥ 0; an HTTP-date, `retry-after-ms` and anything else are
@@ -460,10 +460,10 @@ ignored). `_call_brain` and `_run_tool` await `loop.retry_wait` (default `asynci
 attempt's events commit, only before a retry; the next attempt re-checks both ceilings. Y1:
 tests/conftest.py's autouse `retry_waits` records every wait and never sleeps. With the default
 `retry_budget=2` a failing brain call now waits at most 0.5 s + 1 s, 3 s + 3 s with `retry-after:
-3`, and at most 8 s + 8 s. Risk notes: a full-jitter wait can be near 0 s, so a retry can still
-follow almost at once; a `retry-after` above 8 s is cut to 8 s (W3.2-X6; the rate-limits docs say to
+3`, and at most 8 s + 8 s (60 s + 60 s since W3.4). Risk notes: a full-jitter wait can be near 0 s, so a retry can still
+follow almost at once; a `retry-after` above 8 s is cut to 8 s (60 s since W3.4; W3.2-X6; the rate-limits docs say to
 wait that many seconds), so such a retry likely fails within the budget, and making it fatal
-instead is Darie's call (ADR:126). Parked, not taken: Jsdk (the SDK's own jitter) and Cap60.
+instead is Darie's call (ADR:126). Parked, not taken: Jsdk (the SDK's own jitter) and Cap60 (Cap60 taken in W3.4).
 **R2-RV1** (`8569e62`): found by review 2 (on C1), pre-existing at `8fdd92a`, widened by C1 (an
 in-run `read_usage` before every attempt), fixed in W3.2 on Darie's ruling of 15 Nov (W3.2-F2a +
 W3.2-F3). A daemon-shutdown cancel that landed inside an in-run SELECT (`async with
@@ -570,6 +570,78 @@ check's body 4 baseline is `f551d65e…0c05` (W3.2-X11: the ON FILE `25d12acc…
 reproducible). *Next: W4. `tests/test_hunt_smoke_thinking_offline.py` still leaves two
 `rexhunter-think-*` temp directories per suite run, and `tests/test_stage5_gate.py` still
 intermittently raises the aiosqlite `PytestUnhandledThreadExceptionWarning`.*
+**▶ W3.4a · Strict token counts, typed malformed frames, a counted reset, retry-after up to 60 s,
+no usage in the terminal tools – ✅ done on branch `w3.4-spend-and-boundary` (`a19010f`→`7d18078`,
+2026-11-17), PR #12.** Offline: no API call of any kind, no model change; one approved wire change
+(F1). Labels are W3.4's (cp files: this run's checkpoint reports). Darie's decisions of 17 Nov
+2026, in her words (each the planner's recommended option): "U2b: считать обрыв", "Строгие
+счётчики", "Ждать до 60 с", "F1: убрать usage из схемы", "RV14: заметка в ADR" and "Оркестратор +
+merge, живая охота". Forks chosen 17 Nov by rex-orchestrator under her delegation: counts-1 (one
+reader; the bound `brain.MAX_TOKEN_COUNT = 10_000_000`; the pricing check dropped), frames-1 with
+1a, reset-1 with 1a; N1 and `loop.RETRY_AFTER_CAP_S = 60.0` as planned. **Counts** (`a19010f`;
+W3.2-RV12, the count types, W3.2-RV1b, W3.1-O5): `brain._read_usage`, the one reader for the
+accepted and the refused path, reads `input_tokens` and `output_tokens` only, each a Python int that
+is not a bool, 0 to 10,000,000 (a validation limit, ten times Claude Sonnet 5.5's 1M window; a call
+then prices at most $900); an absent count reads 0, as before. A refused turn whose count fails is
+not counted and its ErrorEvent says so; an accepted one is refused "malformed provider response"
+with its bytes and exchange, and writes no UsageEvent. Reds at `9106c23`: a refused -5,000,000
+count folded to -$9.9998; a bool, a numeric string, a float, a negative count and one past the
+bound were counted, or dispatched on an accepted turn; a 401-digit accepted count was written and
+the next fold raised (`<loop>`); a word, null or a list on an accepted turn reached `<loop>`. An int
+over 4300 digits fails pydantic's envelope ("number out of range"), typed (4 guards). **N1**
+(`e3f4fee`, W3.2-N1): a null count in `message_delta` keeps the earlier count, every key, as
+anthropic 2.6.0's accumulator does (lib/streaming/_messages.py:547-556); red: message_start's 100
+was overwritten. **Frames** (`193e901`, W3.1-O1 to O4): `_drive_stream`'s guard catches ValueError
+(the int-limit one included) and `StreamAssembler.feed`'s new MalformedFrame (not an event type),
+never the sink. A frame that does not parse, unterminated and last on a body that ended before
+`message_stop`, is the cut (retried, W3.1-T); every other malformed frame is a BrainParseError with
+the bytes and the counts so far and its exchange. Under 1a an `index` is an int and a
+`content_block`, `delta`, `message` or `usage` an object; an absent optional field, an unknown event
+type or field and a delta or stop for an index never started are read as before. Reds: 28 cases
+ended at `<loop>` without bytes, and 4 values `int()` or `dict()` coerced were accepted. **Reset**
+(`d3a72a2`, W3.2-U2b): a transport failure during the line read is the retryable BrainCallError,
+its text unchanged (plus the note when the counts do not read), with the counts the frames
+reported, so each attempt appends its UsageEvent before its ErrorEvent; `raw_response` stays None, a
+frame whose closing blank line never came is dropped, and a reset after `message_stop` is counted,
+then retried. The adapter's outer clause stays, for a failure outside the line read. Red: `[E, ERR]`
+three times where `[E, U, ERR]`. **Cap60** (`2ccb2ad`): a brain retry waits at least
+min(`retry-after`, 60 s); the jitter (0.5 s base, 8 s cap) and the tool retries are unchanged; red:
+`retry-after` 30, 60 and 90 waited 8 s. **F1** (`7d18078`, W3.3-F1): `usage` leaves the
+`hunt_complete` and `needs_help` schemas through `SkipJsonSchema`, like `exchange`; a model-sent
+`usage` is still validated (W3.3-F2). **RV14** (W3.2-R2-RV14): a reconciliation note after ADR:130,
+a budget abort closes its run through `runs.outcome` and appends no event, and a refused launch
+starts no run. Wire (five bodies, a MockTransport capture): commits 1 to 5 byte-identical to
+`9106c23` (1 `ac3af52e…7b66` 3739 B, 2 `21290c02…9c30` 3771, 3 `03abc056…08a4` 3721, 4
+`f551d65e…0c05` 4150, 5 = 2); from F1 on, 1 `6122764f…4036` 2204, 2 `3c70bbbe…f358` 2236, 3
+`10933c31…c7e4` 2186, 4 `b22273fd…4067` 2615, 5 = 2, each differing only by `usage` and its `$defs`
+in the two terminal tools. Pinned edits W3.4-PA1 to PA13, all in tests/test_retries_and_ceilings.py
+and tests/test_brain_exchange.py: :9-11 and :20-22 docstrings (PA11); :476-478 comment (PA13);
+:567-568, the rename to `test_a_reset_mid_stream_is_counted` (PA9); :573 (PA1); :580-581 comment
+(PA10); :585-586 (PA2, PA3); :948-949 (PA4); :1191 (PA5); test_brain_exchange.py :379 (PA6),
+:414-417 comment (PA12), :422 (PA7), :425 (PA8). Mutants W3.4-MA1 to MA15, each red on a scratch
+copy of its commit's tree. Docs read 17 Nov 2026: rate-limits, streaming, errors. Process: no
+subagent or workflow; one advisor call at A1, none after (Darie: every check inside one session). No
+live run was made. 605 tests pass at `7d18078` (516 at `9106c23`): the new
+tests/test_spend_and_boundary.py (89). Open: W3.1-X9 (a retried stream's ThinkingDeltas repeat in
+the feed); the network environment hardening (the SDK client reads proxies, `SSL_CERT_FILE`,
+`SSLKEYLOGFILE` and OTel headers from the environment); W3.3-F2; W3.2-X16, narrowed (the bound
+still covers only the calls the log counts: a count that does not read, a status error, an
+envelope-invalid body and a stream that fails before `message_start` stay uncounted, and output
+after the last frame received is not counted, INFERRED); the attempts that end at `<loop>` with no
+exchange (a non-network `APIConnectionError` cause, a failing sink write); SSE line endings,
+UNVERIFIED; the aiosqlite `PytestUnhandledThreadExceptionWarning` (tests/test_stage5_gate.py); Jsdk,
+parked; **W3.4-D1** (an environment item, Darie's: with `int_max_str_digits` lowered below 4300 by
+`PYTHONINTMAXSTRDIGITS` or `-X`, a plain-path int from that limit to 4300 digits ends `<loop>`, at
+both count messages and `assistant_content`'s `json.dumps`, because pydantic's parser ignores the
+lowered limit while `repr` enforces it; the default limit is typed on every path; a whole fix is an
+environment policy, for example refusing to start below 4300); **W3.4-D2** (a value nested about
+74,800 levels or more, in a field the API sends as a string, ends `<loop>` on the stream path at its
+`str()` and `repr()` sites: the delta text fields, `stop_reason` in the refusal messages, the error
+frame's type and the count messages; eight of the nine predate W3.4; the plain path refuses depth
+past about 200). For Darie: keeping a whole turn despite a reset after `message_stop` (today
+counted, then retried; a W4 question), and a `max iterations` line in the RV14 note (that abort
+closes the same way, `loop._drive`). *Next: W3.4b (the smoke harnesses, the `capture_prey` cancel
+edge, the hygiene and docs backlog) and the live daemon hunt.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
