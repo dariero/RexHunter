@@ -129,6 +129,8 @@ The harness owns an explicit error taxonomy: retryable (network blips, 429s, tra
 
 > **Reconciliation note (logged in `W3.3`): the whole conversation, read narrowly.** No window is taken: the model gets the whole conversation, every turn sent back as stored (Darie, 17 Nov 2026). Before each brain attempt the loop reads only the run's `tool_call`, `tool_result`, `error` and `usage` events (`db.read_context`, a type filter in SQL): the types `brain.project_messages` turns into `messages` and the per-run spend fold reads. Revisit when a hunt call's `input_tokens` exceeds 100,000 or `max_iterations` is raised above 50.
 
+> **Reconciliation note (logged in `W3.4`): a budget abort appends no event.** A per-run "cost ceiling" abort and a "daemon spend ceiling" abort inside a hunt, each checked before every brain attempt, close the run through `runs.outcome` (`aborted`) with that `abort_reason` and append no trajectory event; a launch the daemon ceiling refuses (`scheduler._bounded_hunt`) starts no run, so it writes no row and no event. "Every transition … abort … is appended as a typed event" (the taxonomy paragraph above) is read here as the `P2.2` note reads terminal decisions: the spend that tripped a ceiling is already in the log as UsageEvents (invariant 5), the per-run ceiling the run ran under is on its row (`runs.cost_ceiling_usd`), and the abort is recorded where every run's end is, `runs.outcome` and `abort_reason`.
+
 ### The Justification (The Why)
 
 Two reasons, one practical and one strategic.
