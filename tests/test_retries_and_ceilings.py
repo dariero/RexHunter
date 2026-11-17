@@ -44,7 +44,7 @@ import httpx2
 import pytest
 
 from rexhunter import brain, cost, db, loop, scheduler
-from rexhunter.events import ErrorEvent, TrajectoryEvent, UsageEvent
+from rexhunter.events import BrainExchangeEvent, ErrorEvent, TrajectoryEvent, UsageEvent
 from rexhunter.loop import (
     Brain,
     Context,
@@ -254,7 +254,13 @@ async def _hunt(
                 tool_timeout_s=5.0,
                 publish=publish,
             )
-            events = await db.read_events(conn, run_id)
+            # Every attempt's BrainExchangeEvent (W3.3) is left out: tests/test_brain_exchange.py
+            # pins where it sits; these sequences pin the rest.
+            events: list[TrajectoryEvent] = [
+                e
+                for e in await db.read_events(conn, run_id)
+                if not isinstance(e, BrainExchangeEvent)
+            ]
             row = await _row(conn, run_id)
         finally:
             await conn.close()

@@ -31,6 +31,7 @@ import pytest
 
 from rexhunter import brain, cost, db, hunt_smoke_thinking
 from rexhunter.events import (
+    BrainExchangeEvent,
     ThinkingDelta,
     ToolCallEvent,
     ToolResultEvent,
@@ -160,7 +161,13 @@ async def _replay(
                 max_iterations=hunt_smoke_thinking.MAX_ITERATIONS,
                 tool_timeout_s=5.0,
             )
-            events = await db.read_events(conn, run_id)
+            # Each call's BrainExchangeEvent (W3.3) is left out: tests/test_brain_exchange.py pins
+            # it on this run; the live run's own events are pinned here.
+            events: list[TrajectoryEvent] = [
+                e
+                for e in await db.read_events(conn, run_id)
+                if not isinstance(e, BrainExchangeEvent)
+            ]
             async with conn.execute(
                 "SELECT outcome, abort_reason FROM runs WHERE id = ?", (run_id,)
             ) as cur:

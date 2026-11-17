@@ -20,6 +20,7 @@ from typing import Any, assert_never
 
 import aiosqlite
 from pydantic import BaseModel, ValidationError
+from pydantic.json_schema import SkipJsonSchema
 
 from rexhunter import cost, db, events, verdicts
 from rexhunter.tools import ToolFn, ToolRegistry
@@ -57,7 +58,10 @@ class BrainCallError(Exception):
     carries no count) and for a transport failure (the stream's state is lost, W3.2-U2b).
     `retry_after` (W3.2-B2) is a status response's `retry-after` header in seconds, None when it
     was absent or not a finite, non-negative number of seconds; the retry waits at least that
-    long, cut to BACKOFF_CAP_S (`backoff_delay`)."""
+    long, cut to BACKOFF_CAP_S (`backoff_delay`). `exchange` (W3.3) is the attempt's raw request and
+    response (the bytes as received, a stream's partial body included), which `_call_brain` appends
+    before the usage and the ErrorEvent; `raw_response` stays what it was. None from a brain that
+    reports no bytes."""
 
     def __init__(
         self,
@@ -68,6 +72,7 @@ class BrainCallError(Exception):
         raw_response: bytes | None = None,
         usage: events.UsageEvent | None = None,
         retry_after: float | None = None,
+        exchange: events.BrainExchangeEvent | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
@@ -75,6 +80,7 @@ class BrainCallError(Exception):
         self.raw_response = raw_response
         self.usage = usage
         self.retry_after = retry_after
+        self.exchange = exchange
 
 
 def classify(exc: BaseException) -> bool:
@@ -162,6 +168,9 @@ class ToolCallDecision(BaseModel):
     usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
     assistant_content: bytes = b""  # the WHOLE turn: the response's `content` array as JSON bytes
     # (W2.3, D7), set by `brain.parse_decision` on both paths; b"" for the stub/scripted brains
+    # the attempt's raw I/O (W3.3); None = none. Kept out of the JSON schema: HuntComplete and
+    # NeedsHelp derive the terminal tools' `input_schema` the model sees (`brain.build_tools`).
+    exchange: SkipJsonSchema[events.BrainExchangeEvent | None] = None
 
 
 class HuntComplete(BaseModel):
@@ -174,6 +183,9 @@ class HuntComplete(BaseModel):
 
     catch: list[str] = []
     usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
+    # the attempt's raw I/O (W3.3); None = none. Kept out of the JSON schema: HuntComplete and
+    # NeedsHelp derive the terminal tools' `input_schema` the model sees (`brain.build_tools`).
+    exchange: SkipJsonSchema[events.BrainExchangeEvent | None] = None
 
 
 class NeedsHelp(BaseModel):
@@ -182,6 +194,9 @@ class NeedsHelp(BaseModel):
     is P4. needs_help collapses to aborted trivially later; aborted can't be split back."""
 
     usage: events.UsageEvent | None = None  # per-call token cost (P5 Unit 2c); None = no spend
+    # the attempt's raw I/O (W3.3); None = none. Kept out of the JSON schema: HuntComplete and
+    # NeedsHelp derive the terminal tools' `input_schema` the model sees (`brain.build_tools`).
+    exchange: SkipJsonSchema[events.BrainExchangeEvent | None] = None
 
 
 type Decision = ToolCallDecision | HuntComplete | NeedsHelp
@@ -347,7 +362,10 @@ async def _call_brain(
     narrows to BrainCallError so it never swallows a brain bug. An attempt the adapter refused
     after a 200 (W3.2-U2a) can still be billed: when its error carries a usage, that usage is
     appended as a UsageEvent before the ErrorEvent, so the spend folds count every attempt whose
-    error carries one (a transport failure mid-stream carries none, W3.2-U2b).
+    error carries one (a transport failure mid-stream carries none, W3.2-U2b). Before either, an
+    attempt whose brain reports its bytes (W3.3, the adapter's `exchange`, on its Decision or its
+    BrainCallError) appends its BrainExchangeEvent, committed and never published (fork X2): the
+    request it sent and the response it got (invariant 6).
     """
 
     async def sink(text: str) -> None:
@@ -367,9 +385,12 @@ async def _call_brain(
         ):
             return "daemon spend ceiling"
         try:
-            return await brain(context, sink)
+            decision = await brain(context, sink)
         except BrainCallError as exc:
             retryable = classify(exc)
+            if exc.exchange is not None:
+                # the attempt's raw I/O first (inv 6, W3.3): committed, never published (X2)
+                await db.append_event(conn, run_id, exc.exchange)
             if exc.usage is not None:
                 # the refused 200's usage, counted write-ahead before its error (inv 1, 5; W3.2-U2a)
                 await db.append_event(conn, run_id, exc.usage, publish=publish)
@@ -396,6 +417,12 @@ async def _call_brain(
                 await retry_wait(backoff_delay(attempt + 1, retry_after=exc.retry_after))
                 continue
             return "brain call failed"  # fatal 4xx, or retryable budget exhausted -> abort
+        else:
+            if decision.exchange is not None:
+                # the attempt's raw I/O, before its UsageEvent (`_drive`) and what it does (inv 6,
+                # W3.3): committed, never published (X2)
+                await db.append_event(conn, run_id, decision.exchange)
+            return decision
     return "brain call failed"  # pragma: no cover - range(attempts >= 1) returns inside the loop
 
 
@@ -548,7 +575,10 @@ async def run_hunt(
         # the raw payload (invariant 6) so the malformed response is a ghost-replay fixture, then
         # ends the run in a typed outcome - never an unhandled escape (DoD #5). A refused 200 can
         # still be billed: its usage, when the error carries one, is counted first (inv 1, 5;
-        # W3.2-U2a).
+        # W3.2-U2a). Before both, the attempt's raw request and response (inv 6, W3.3), committed
+        # and never published (X2).
+        if exc.exchange is not None:
+            await db.append_event(conn, run_id, exc.exchange)
         if exc.usage is not None:
             await db.append_event(conn, run_id, exc.usage, publish=publish)
         await db.append_event(
