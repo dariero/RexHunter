@@ -460,6 +460,41 @@ def iter_sse_events(raw: bytes) -> Iterator[dict[str, Any]]:
             yield json.loads(data)
 
 
+class MalformedFrame(Exception):
+    """An SSE event of the wrong shape (W3.1-O2 to O4, W3.4 frames-1a): not a JSON object, a block
+    event without its `index`, `content_block` or `delta`, or a value of the wrong type in those or
+    in `message`, `delta` or `usage`. Raised by `StreamAssembler.feed`; `_drive_stream` turns it
+    into a BrainParseError with the bytes assembled so far. Its message names the field and the
+    value's type, never the value."""
+
+
+def _object_field(
+    container: dict[str, Any], key: str, *, owner: str, required: bool = True
+) -> dict[str, Any]:
+    """`container[key]` as an object (W3.4 frames-1a). An absent key raises MalformedFrame when
+    `required`, and otherwise reads as `{}`, as before W3.4; a present value that is not an object
+    raises MalformedFrame."""
+    if key not in container:
+        if required:
+            raise MalformedFrame(f"{owner} without {key!r}")
+        return {}
+    value = container[key]
+    if not isinstance(value, dict):
+        raise MalformedFrame(f"{owner} whose {key!r} is not an object (a {type(value).__name__})")
+    return cast("dict[str, Any]", value)
+
+
+def _index_field(event: dict[str, Any], *, owner: str) -> int:
+    """A block event's `index` (W3.4 frames-1a): a Python int that is not a bool, never coerced
+    (`int()` read "1", 1.0 and True before W3.4)."""
+    if "index" not in event:
+        raise MalformedFrame(f"{owner} without 'index'")
+    value = event["index"]
+    if type(value) is not int:
+        raise MalformedFrame(f"{owner} whose 'index' is not an int (a {type(value).__name__})")
+    return value
+
+
 class StreamAssembler:
     """Fold the SSE event stream into an assembled Messages-API response (the `_ProviderResponse`
     shape parse_decision consumes). Stateful + incremental so the live path can relay thinking
@@ -484,31 +519,49 @@ class StreamAssembler:
         self._error_frame: dict[str, Any] | None = None  # the first SSE `error` event (W3.1)
         self.complete = False  # True once message_stop / a stop_reason has arrived
 
-    def feed(self, event: dict[str, Any]) -> str | None:
+    def feed(self, event: object) -> str | None:
         """Fold one SSE event. Returns the thinking-delta text to relay (the caller appends it
-        write-ahead then broadcasts, invariant 1), or None for every other event."""
-        etype = event.get("type")
+        write-ahead then broadcasts, invariant 1), or None for every other event. An event of the
+        wrong shape raises MalformedFrame (W3.4 frames-1a, W3.1-O2 to O4): one that is not a JSON
+        object; a block event without its `index`, `content_block` or `delta`; an `index` that is
+        not an int; a `content_block`, `delta`, `message` or `usage` that is not an object. An
+        absent `message`, message_delta `delta` or `usage` reads as before W3.4 (nothing), and an
+        unknown event type or field, or a delta or stop for an index never started, is ignored."""
+        if not isinstance(event, dict):
+            raise MalformedFrame(
+                f"an SSE event that is not a JSON object (a {type(event).__name__})"
+            )
+        frame = cast("dict[str, Any]", event)
+        etype = frame.get("type")
         if etype == "message_start":
-            message = event.get("message", {})
+            owner = "a 'message_start' event"
+            message = _object_field(frame, "message", owner=owner, required=False)
             self._model = message.get("model")
-            self._usage.update(message.get("usage", {}))  # input_tokens (+ an initial output count)
+            # input_tokens (+ an initial output count)
+            usage = _object_field(message, "usage", owner=f"{owner}'s message", required=False)
+            self._usage.update(usage)
         elif etype == "content_block_start":
-            self._blocks[int(event["index"])] = dict(event["content_block"])
+            owner = "a 'content_block_start' event"
+            index = _index_field(frame, owner=owner)
+            self._blocks[index] = dict(_object_field(frame, "content_block", owner=owner))
         elif etype == "content_block_delta":
-            return self._apply_delta(int(event["index"]), event["delta"])
+            owner = "a 'content_block_delta' event"
+            index = _index_field(frame, owner=owner)
+            return self._apply_delta(index, _object_field(frame, "delta", owner=owner))
         elif etype == "content_block_stop":
-            index = int(event["index"])
+            index = _index_field(frame, owner="a 'content_block_stop' event")
             self._stopped.add(index)
             self._finalize(index)
         elif etype == "message_delta":
-            delta = event.get("delta", {})
+            owner = "a 'message_delta' event"
+            delta = _object_field(frame, "delta", owner=owner, required=False)
             if delta.get("stop_reason") is not None:
                 self._stop_reason = delta["stop_reason"]
                 self.complete = True
             # The counts are cumulative and replace the earlier ones; a null count keeps the earlier
             # one, every key alike, as the SDK's accumulator does (W3.2-N1; anthropic 2.6.0
             # lib/streaming/_messages.py:547-556).
-            usage = event.get("usage", {})
+            usage = _object_field(frame, "usage", owner=owner, required=False)
             self._usage.update({key: value for key, value in usage.items() if value is not None})
         elif etype == "message_stop":
             self.complete = True
@@ -516,7 +569,7 @@ class StreamAssembler:
         elif etype == "error" and self._error_frame is None:
             # Recorded, never raised (W3.1, fork Z1): `_drive_stream` turns it into the call's
             # verdict, and an offline reader of the bytes (the smoke reporters) folds on.
-            self._error_frame = event
+            self._error_frame = frame
         return None
 
     @property
@@ -843,17 +896,56 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
     body that reached `message_stop` but is not whole raises a BrainParseError, each carrying the
     assembled bytes; so does a whole stream whose closed tool_use input does not parse as JSON
     (W3.1, P1). Each of these errors also carries the usage the stream reported before it ended
-    (W3.2-U2a), for the loop to count. (A body cut inside a `data:` line still fails `json.loads`
-    and reaches the loop's `<loop>` backstop: O1, not in W3.1; a transport failure mid-stream
-    carries no usage, W3.2-U2b.)"""
+    (W3.2-U2a), for the loop to count. A malformed frame (W3.4 frames, W3.1-O1 to O4) ends the read
+    as it arrives: a `data:` line that is not JSON, or an event of the wrong shape (`feed`'s
+    MalformedFrame), raises a BrainParseError with the bytes and the counts so far, except a body
+    that ended inside its last `data:` line before `message_stop`, which is the cut, the retryable
+    BrainCallError. (A transport failure mid-stream carries no usage, W3.2-U2b.)"""
     assembler = StreamAssembler()
     data_buf: list[str] = []
     error_data: str | None = None  # the first SSE error frame's own `data` text (W3.1, Z1)
 
-    def fold(data: str) -> str | None:
+    def so_far() -> tuple[bytes, UsageEvent | None, str]:
+        # The bytes assembled so far, and what the stream reported it spent so far (W3.2-U2a):
+        # `message_start`'s counts, as updated by any `message_delta`. Every refusal carries both,
+        # so the loop counts the refused 200 (it can still be billed) before its ErrorEvent;
+        # `_refused_usage` never raises.
+        assembled = assembler.assembled()
+        counted, counted_note = _refused_usage(assembled["model"], assembled["usage"])
+        return json.dumps(assembled).encode(), counted, counted_note
+
+    def fold(data: str, *, last: bool = False) -> str | None:
         # One frame path for the in-loop and the final frame, so an error frame is seen on both.
+        # The guard covers the parse and the fold, never the sink (W3.4 frames).
         nonlocal error_data
-        text = assembler.feed(json.loads(data))
+        try:
+            event = json.loads(data)
+        except ValueError as exc:
+            # JSONDecodeError, and the plain ValueError for an int over `int_max_str_digits`
+            # digits (W3.4-D1), so the stream path stays typed under a lowered limit too.
+            part_raw, part_usage, part_note = so_far()
+            if last and not assembler.ended:
+                # The body ended inside its last `data:` line, before `message_stop`: a frame cut
+                # on the way, the class W3.1-T retries (W3.1-O1).
+                raise BrainCallError(
+                    f"stream cut inside its last data line before message_stop (stop_reason="
+                    f"{assembler.stop_reason!r}, open blocks {assembler.open_blocks}){part_note}",
+                    retryable=True,
+                    raw_response=part_raw,
+                    usage=part_usage,
+                ) from exc
+            raise BrainParseError(
+                raw=part_raw,
+                detail=f"an SSE data line that is not JSON ({exc}){part_note}",
+                usage=part_usage,
+            ) from exc
+        try:
+            text = assembler.feed(event)
+        except MalformedFrame as exc:
+            part_raw, part_usage, part_note = so_far()
+            raise BrainParseError(
+                raw=part_raw, detail=f"{exc}{part_note}", usage=part_usage
+            ) from exc
         if error_data is None and assembler.error_frame is not None:
             error_data = data
         return text
@@ -875,13 +967,9 @@ async def _drive_stream(lines: AsyncIterator[str], sink: ThinkingSink) -> bytes:
                 if text:
                     await sink(text)  # inline await — single writer (inv 7), live (inv 1)
     if data_buf:  # a final frame not terminated by a trailing blank line
-        fold("".join(data_buf))
-    assembled = assembler.assembled()
-    raw = json.dumps(assembled).encode()
-    # What the stream reported it spent before it ended (W3.2-U2a): `message_start`'s counts, as
-    # updated by any `message_delta`. Each refusal below carries it, so the loop counts the refused
-    # 200 (it can still be billed) before its ErrorEvent; `_refused_usage` never raises.
-    usage, note = _refused_usage(assembled["model"], assembled["usage"])
+        fold("".join(data_buf), last=True)
+    # The bytes and the counts the refusals below carry (`so_far`).
+    raw, usage, note = so_far()
     # An SSE error frame, wherever it sat, is the call's verdict (W3.1, Z1): it explains why the
     # stream is short, so it is checked before T.
     if error_data is not None and assembler.error_frame is not None:
@@ -1024,7 +1112,7 @@ def adapter_brain_for(
     the body httpx2 sent and the body as received (on the stream path every chunk `iter_bytes`
     gave, framed into lines by `_received_lines`), on the Decision, the BrainParseError or the
     BrainCallError, for the loop to append. SDK and transport errors are translated by the clauses
-    below; anything else (a bug, a body that is not JSON: W3.1-O1 to O4) propagates without one.
+    below; anything else (a bug in a transport, a failing sink write) propagates without one.
     """
     tools = build_tools(registry)  # derived once — stable across the run
     # Fail closed at factory time (W2.2): a model with no floor row raises here, before any run.

@@ -6,7 +6,8 @@ whose name starts `test_guard_` passed before W3.4 too: it pins what must not ch
 """
 
 import json
-from collections.abc import Callable, Sequence
+import sys
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -27,6 +28,7 @@ Respond = Callable[[httpx2.Request], httpx2.Response]
 MODEL = brain.SMOKE_MODEL
 RETRY_BUDGET = 2  # run_hunt's default, passed explicitly: a retried call makes 3 requests
 MALFORMED = ("aborted", "malformed provider response")
+BRAIN_CALL_FAILED = ("aborted", "brain call failed")
 E, U, ERR = "brain_exchange", "usage", "error"
 
 SNIFF: dict[str, Any] = {
@@ -350,3 +352,244 @@ async def test_guard_a_count_in_message_delta_still_replaces_message_starts(
     body = b"".join([*SNIFF_STREAM[:4], delta, SNIFF_STREAM[5]])
     hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
     assert _usages(hunt.events)[:1] == [(150, 20)]
+
+
+# ── frames: a malformed stream frame ends the call typed, with its bytes (W3.1-O1 to O4) ─────
+# Before W3.4 `json.loads` (O1), `.get` on a value that is not an object (O2), a missing key (O3)
+# and `int()`, `dict()` or `dict.update` on a value of the wrong type (O4) raised past
+# `_drive_stream`, so the run ended at the `<loop>` catch-all without its bytes. frames-1 with 1a:
+# a frame whose closing blank line never came, last on a body that ended before `message_stop`,
+# is the cut (retried, W3.1-T); every other malformed frame ends "malformed provider response",
+# with the bytes assembled so far, the counts so far and the exchange. An `index` is an int, and
+# a `content_block`, `delta`, `message` or `usage` an object. An absent `message` or `usage`, an
+# unknown event type or field, and a delta or stop for an index with no start are read as before.
+
+
+def _data(text: str) -> bytes:
+    """One SSE frame whose `data:` line is `text`, as sent (it need not be JSON)."""
+    return f"data: {text}\n\n".encode()
+
+
+def _with(at: int, *inserted: bytes, replace: bool = False) -> bytes:
+    """SNIFF_STREAM with `inserted` before index `at`, or put in place of that frame."""
+    frames = list(SNIFF_STREAM)
+    frames[at : at + 1 if replace else at] = inserted
+    return b"".join(frames)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _with(1, _data("{not json")),
+        b"".join(SNIFF_STREAM[:-1]) + _data('{"type": "message_st'),
+        b"".join(SNIFF_STREAM) + b'data: {"type": "ping"',
+    ],
+    ids=["terminated-mid-stream", "terminated-last", "unterminated-after-message-stop"],
+)
+async def test_o1_a_data_line_that_is_not_json_is_a_malformed_response(
+    body: bytes, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    error = _assert_malformed(hunt, types=[E, U, ERR], cause="not JSON")
+    assert json.loads(error.raw_response or b"")["usage"]["input_tokens"] == 100  # counts so far
+
+
+async def test_o1_a_body_cut_inside_its_last_data_line_is_a_cut(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # The body ends inside its last `data:` line, before message_stop: the cut class (W3.1-T),
+    # retried within the budget, each attempt counted.
+    body = b"".join(SNIFF_STREAM[:-1]) + b'data: {"type": "message_st'
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    assert _types(hunt.events) == [E, U, ERR] * (RETRY_BUDGET + 1)
+    assert _usages(hunt.events) == [(100, 20)] * (RETRY_BUDGET + 1)
+    assert all(e.tool == "<brain>" and e.retryable for e in _errors(hunt.events))
+    assert hunt.row == BRAIN_CALL_FAILED
+
+
+def _start_with_a_count_of(digits: int) -> bytes:
+    """A message_start whose `input_tokens` is a literal of `digits` digits (spliced into the
+    bytes: `json.dumps` cannot write it past `int_max_str_digits`)."""
+    frame = _message_start({"input_tokens": "COUNT_LITERAL", "output_tokens": 1})
+    return frame.replace(b'"COUNT_LITERAL"', b"9" * digits)
+
+
+async def test_o1_a_count_over_4300_digits_in_a_frame_is_a_malformed_response(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # `json.loads` raises a plain ValueError (not JSONDecodeError) for an int over
+    # `int_max_str_digits` digits (4300 by default): the guard catches ValueError.
+    body = _with(0, _start_with_a_count_of(4301), replace=True)
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    _assert_malformed(hunt, types=[E, ERR], cause="not JSON")
+
+
+@pytest.fixture
+def digit_limit_640() -> Iterator[None]:
+    """Python's `int_max_str_digits` lowered to 640 for one test (as PYTHONINTMAXSTRDIGITS can
+    set it), then restored."""
+    before = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(640)
+    try:
+        yield
+    finally:
+        sys.set_int_max_str_digits(before)
+
+
+async def test_o1_a_count_over_a_lowered_digit_limit_in_a_frame_is_a_malformed_response(
+    tmp_path: Path, mock_anthropic: MockAnthropic, digit_limit_640: None
+) -> None:
+    # The stream path stays typed under a lowered limit: `json.loads` enforces it (W3.4-D1 is
+    # the plain path's, where pydantic's parser does not).
+    body = _with(0, _start_with_a_count_of(1000), replace=True)
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    _assert_malformed(hunt, types=[E, ERR], cause="not JSON")
+
+
+@pytest.mark.parametrize(
+    "text", ["[1, 2]", "42", "null", '"text"'], ids=["list", "number", "null", "string"]
+)
+async def test_o2_a_frame_that_is_not_an_object_is_a_malformed_response(
+    text: str, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(_with(1, _data(text))), stream=True)
+    _assert_malformed(hunt, types=[E, U, ERR], cause="not a JSON object")
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        {"type": "content_block_start", "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_start", "index": 1},
+        {"type": "content_block_delta", "index": 0},
+        {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "x"}},
+        {"type": "content_block_stop"},
+    ],
+    ids=[
+        "start-without-index",
+        "start-without-block",
+        "delta-without-delta",
+        "delta-without-index",
+        "stop-without-index",
+    ],
+)
+async def test_o3_a_block_frame_missing_a_field_is_a_malformed_response(
+    frame: dict[str, Any], tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(_with(2, _frame(frame))), stream=True)
+    _assert_malformed(hunt, types=[E, U, ERR], cause="without")
+
+
+BLOCK: dict[str, Any] = {"type": "text", "text": ""}
+
+
+@pytest.mark.parametrize(
+    ("at", "frame", "types"),
+    [
+        (2, {"type": "content_block_start", "index": None, "content_block": BLOCK}, [E, U, ERR]),
+        (2, {"type": "content_block_start", "index": "a", "content_block": BLOCK}, [E, U, ERR]),
+        (2, {"type": "content_block_start", "index": [1], "content_block": BLOCK}, [E, U, ERR]),
+        (2, {"type": "content_block_start", "index": 1, "content_block": None}, [E, U, ERR]),
+        (2, {"type": "content_block_start", "index": 1, "content_block": "x"}, [E, U, ERR]),
+        (2, {"type": "content_block_delta", "index": 0, "delta": None}, [E, U, ERR]),
+        (2, {"type": "content_block_delta", "index": 0, "delta": "x"}, [E, U, ERR]),
+        (0, {"type": "message_start", "message": None}, [E, ERR]),
+        (0, {"type": "message_start", "message": {"model": MODEL, "usage": None}}, [E, ERR]),
+        (0, {"type": "message_start", "message": {"model": MODEL, "usage": [1]}}, [E, ERR]),
+        (4, {"type": "message_delta", "delta": None, "usage": {"output_tokens": 20}}, [E, U, ERR]),
+        (
+            4,
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": None},
+            [E, U, ERR],
+        ),
+        (
+            4,
+            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": "x"},
+            [E, U, ERR],
+        ),
+    ],
+    ids=[
+        "index-null",
+        "index-word",
+        "index-list",
+        "block-null",
+        "block-string",
+        "delta-null",
+        "delta-string",
+        "message-null",
+        "start-usage-null",
+        "start-usage-list",
+        "message-delta-null",
+        "delta-usage-null",
+        "delta-usage-string",
+    ],
+)
+async def test_o4_a_field_of_the_wrong_type_is_a_malformed_response(
+    at: int,
+    frame: dict[str, Any],
+    types: list[str],
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+) -> None:
+    # A message_start or message_delta of the wrong shape takes that frame's place.
+    replace = frame["type"] in ("message_start", "message_delta")
+    body = _with(at, _frame(frame), replace=replace)
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    _assert_malformed(hunt, types=types, cause="is not an")
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        {"type": "content_block_start", "index": "1", "content_block": BLOCK},
+        {"type": "content_block_start", "index": 1.0, "content_block": BLOCK},
+        {"type": "content_block_start", "index": True, "content_block": BLOCK},
+        {"type": "content_block_start", "index": 1, "content_block": [["type", "text"]]},
+    ],
+    ids=["index-numeric-string", "index-float", "index-bool", "block-pair-list"],
+)
+async def test_frames_1a_a_value_int_or_dict_would_coerce_is_refused(
+    frame: dict[str, Any], tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # Not an O-item: before W3.4 `int()` and `dict()` read these, so the turn (a tool_use and a
+    # closed text block) was accepted. Under frames-1a they are refused like any wrong type.
+    stop = _frame({"type": "content_block_stop", "index": 1})
+    body = _with(2, _frame(frame), stop)
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    _assert_malformed(hunt, types=[E, U, ERR], cause="is not an")
+
+
+@pytest.mark.parametrize(
+    ("at", "frame", "counted"),
+    [
+        (0, {"type": "message_start"}, (0, 20)),
+        (0, {"type": "message_start", "message": {"model": MODEL}}, (0, 20)),
+        (4, {"type": "message_delta", "delta": {"stop_reason": "tool_use"}}, (100, 1)),
+    ],
+    ids=["no-message", "no-start-usage", "no-delta-usage"],
+)
+async def test_guard_an_absent_message_or_usage_reads_as_before(
+    at: int,
+    frame: dict[str, Any],
+    counted: tuple[int, int],
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+) -> None:
+    body = _with(at, _frame(frame), replace=True)
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    assert _types(hunt.events)[:4] == [E, U, "tool_call", "tool_result"]
+    assert _usages(hunt.events)[:1] == [counted]
+
+
+async def test_guard_unknown_events_and_fields_and_unstarted_blocks_are_ignored(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    ignored = [
+        _frame({"type": "a_future_event", "index": "x", "delta": 5}),
+        b'event: ping\ndata: {"type": "ping"}\n\n',
+        _frame({"type": "content_block_delta", "index": 7, "delta": {"type": "text_delta"}}),
+        _frame({"type": "content_block_stop", "index": 7}),
+    ]
+    body = _with(1, *ignored)
+    hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=True)
+    assert _types(hunt.events)[:4] == [E, U, "tool_call", "tool_result"]
