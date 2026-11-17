@@ -87,7 +87,11 @@ the ADR.
   stream that is not whole (cut before `message_stop`, a block left open, no stop reason) and on a
   tool input that does not parse, and `parse_decision` on any `stop_reason` but `tool_use`, each
   before any dispatch. A 200 it refuses is still counted, its UsageEvent before its ErrorEvent
-  (W3.2-U2a), and both spend ceilings are checked before every brain attempt (W3.2-C1).
+  (W3.2-U2a), and both spend ceilings are checked before every brain attempt (W3.2-C1). Each brain
+  attempt reads only the run's `db.CONTEXT_TYPES` (`db.read_context`, W3.3-W) and, once it has sent
+  a request, stores a `BrainExchangeEvent` before its other events (W3.3): the body httpx2 sent, the
+  body as received (content-decoded) and the status, never published and left out of the SSE
+  backfill and the projection. An attempt that ends at the `<loop>` backstop stores none (W3.3-E2).
 - **Tooling:** `ruff` (lint + format), `pyright` (typecheck, strict – one type-truth in
   editor and gate), `pytest` (async tests via anyio's built-in pytest plugin – no separate
   `pytest-anyio` dep). Config and version floors in `pyproject.toml`; exact pins in `uv.lock`.
@@ -490,6 +494,82 @@ between its two INSERTs; INFERRED, not probed); and the intermittent aiosqlite
 `PytestUnhandledThreadExceptionWarning` (tests/test_stage5_gate.py, as before W3.2). *Next: W3 run 3
 (fragility #1 and #3). `tests/test_hunt_smoke_thinking_offline.py` still leaves two
 `rexhunter-think-*` temp directories per suite run.*
+**▶ W3.3 · The brain reads what it uses, and every attempt stores its bytes – ✅ done on branch
+`w3.3-context-and-raw-bytes` (`c3b7372`→`1df8bdc`, 2026-11-17), PR #11.** Offline: no API call of
+any kind, no model change, no wire change (the five wire-check bodies, a plain turn, a streamed
+turn, the pre-flight, the second request of a two-turn hunt and a retried attempt, are
+byte-identical to `070ed9a`'s). Labels are W3.3's (cp files: this run's checkpoint reports). Darie's
+decisions of 17 Nov 2026, in her words: "Весь разговор, узкое чтение" (the model keeps the whole
+conversation; the read from the log is narrowed) and "Новое событие на попытку" (one new event per
+brain attempt, with its request and response bytes). Forks chosen 17 Nov by rex-orchestrator under
+her delegation: W3.3-W, W3.3-E2, W3.3-R1, W3.3-S1, W3.3-X2. "Fragility #1" and "#3" are items of the
+W3 plan (D8, Darie 9 Nov): #1, the brain's context read; #3, the raw SSE bytes, with the
+request-bytes gap. The hazards at `070ed9a`: W3.3-H1 (#1), `_call_brain` read the whole run before
+every attempt (`db.read_events`) and decoded every row, ThinkingDeltas included, though a call uses
+four types, so a stored row of another type that did not validate ended the run at `<loop>`; W3.3-H2
+(#3), a call's response bytes were not stored as received (the plain path kept only the parsed turn,
+the stream path read text lines and kept a re-encoded assembly); W3.3-H3, the request body sent was
+stored nowhere; W3.3-H4, a terminal decision appends no event (ADR:128, :220), so the last call's
+bytes left no trace and a dead run could not become a fixture from its log alone (ADR:30). **W**
+(`c3b7372`): `db.read_context` reads the run's `db.CONTEXT_TYPES` (`tool_call`, `tool_result`,
+`error`, `usage`: the types `brain.project_messages` turns into `messages` and the per-run spend
+fold reads), a type filter in SQL, one `execute_fetchall` (the R2-RV1 property); on both recorded
+Sonnet 5.5 runs it projects the same messages as the whole read at every point of the run. **E2, R1,
+S1, X2** (`1df8bdc`): the new `BrainExchangeEvent` (`raw_request: bytes`, `raw_response: bytes |
+None`, `status: int | None`) rides on the Decision (an `exchange` field), on BrainParseError and on
+BrainCallError, and the loop appends it before the attempt's UsageEvent, ErrorEvent or ToolCallEvent
+(its ThinkingDeltas, written during the call, come first). `raw_request` is the body httpx2 put on
+the wire (`http_request.content`, or the SDK error's `request`); `raw_response` is the body as
+received, content-decoded: `read()` on the plain path, every chunk `iter_bytes` gave on the stream
+path, framed into lines by `_received_lines` (httpx2's own `aiter_lines` over a tee, equal to
+`iter_lines` at every chunk size tested), so a reset mid-stream keeps the bytes before the cut;
+`status` lets a 429 or 529 attempt replay as one; both are None when no response arrived (a
+connection failure). The event is committed and never published; `server.catch_up` and
+`viewstate._LOG_ROWS_SELECT` leave it out and `view._apply` folds it to nothing. A brain that
+reports no bytes (the stub and scripted brains) writes none. Every existing event keeps its bytes
+(`raw_request=b""` on the `<brain>` and `<loop>` ErrorEvents; `BrainParseError.raw` and
+`BrainCallError.raw_response` the assembled bytes on the stream path). Before commit, the wire check
+found the carrier field in the terminal tools' `input_schema` (HuntComplete and NeedsHelp derive it;
+every body about doubled): `SkipJsonSchema` keeps it out, pinned by
+`test_the_exchange_never_reaches_the_tools_the_model_sees`. Bytes measured on the two recorded
+Sonnet 5.5 runs, per call: requests 3689 to 4548 B (thinking off) and 3721 to 5851 B (on), responses
+738 to 823 B and 2361 to 6474 B, stored payloads 5977 to 15549 B; a 50-call run is INFERRED at about
+1.0 MB (off) to 3.5 MB (on) stored, quadratic in the calls. A run rebuilds from its own log: its
+exchanges, served back in order, give the same requests byte for byte and identical events (DoD #5,
+ADR:30; both recorded runs and a 529-then-needs_help run). Reds: the 8 hazard tests (W3.3-H1 ×2 at
+`070ed9a`, W3.3-H2 to W3.3-H4 ×6 at `c3b7372`) and 31 existing exact event sequences (29 in
+tests/test_retries_and_ceilings.py through `_hunt`, one in each Sonnet 5.5 replay), green by the
+pinned edits; 0 `assert` lines changed or removed. The five pinned edits (W3.3-P1 to W3.3-P5): the
+R2-RV1 hold's parametrize id `read_events` → `read_context`
+(tests/test_retries_and_ceilings.py:1250, wording at :1208 and :1272); a filter that drops only
+`BrainExchangeEvent` in `_hunt` (:257) and in each Sonnet 5.5 replay's `_replay`
+(tests/test_sonnet_5_5_hunt_replay.py:117, tests/test_sonnet_5_5_thinking_hunt_replay.py:163); the
+tests/test_hunt_smoke_thinking_offline.py:8 docstring. Mutants W3.3-M1 to W3.3-M13 (M6 measured as
+W3.3-M6a and W3.3-M6b), each red on a scratch copy of its commit's tree. Docs (read 17 Nov 2026,
+quotes in cp1 §2): the docs allow cutting older turns ("If your own code writes the summary, or cuts
+older turns without one, remove the kept turns' thinking or send `"drop_block"`",
+preserved-thinking/change-tools-or-instructions), at the cost of the kept turns' thinking on a model
+with preserved thinking, Claude Sonnet 5.5 among them; a `tool_result` must immediately follow its
+`tool_use`, and a tool-use turn's thinking blocks go back complete and unmodified. The ADR's revisit
+trigger, 100,000 input tokens: about a tenth of Sonnet 5.5's 1M window, and 9 to 15 times the
+projected input of a run's 50th call (about 6.8K tokens thinking off, 10.6K on, at the measured
+growth per turn). No live run was made. 516 tests pass at `1df8bdc` (466 at `070ed9a`): the new
+tests/test_context_read.py (5) and tests/test_brain_exchange.py (45). Open: W3.2-U2b (a reset
+mid-stream is billed and uncounted; its partial bytes are now stored); W3.1-X9; W3.1-K1; W3.1-O1 to
+W3.1-O5; the W3.2 count items (W3.2-N1, W3.2-RV12 and the count types, W3.2-RV1b, W3.2-X16) and the
+rest of the W3.2 entry's open list; the attempts that end at `<loop>` (W3.1-O1 to W3.1-O5, a
+non-network `APIConnectionError` cause, a failing sink write) store no exchange (W3.3-E2 as chosen;
+the O-items' typed fix brings them in); a transport failure replays from the log only approximately
+(its ErrorEvent names the exception); SSE line endings are UNVERIFIED (no page states them; every
+recorded stream is LF only); W3.3-F1 (Darie's: at `070ed9a` the model already sees an optional
+`usage` input on `hunt_complete` and `needs_help`; it is overwritten after validation, but a
+malformed one refuses the turn, and the fix changes the wire) and W3.3-F2 (Darie's: the decisions
+have no model_config, so before W3.3 an unknown `exchange` key in `hunt_complete`'s input was
+ignored; now a malformed one refuses the turn and a well-formed one is overwritten); the wire
+check's body 4 baseline is `f551d65e…0c05` (W3.2-X11: the ON FILE `25d12acc…3abe` is not
+reproducible). *Next: W4. `tests/test_hunt_smoke_thinking_offline.py` still leaves two
+`rexhunter-think-*` temp directories per suite run, and `tests/test_stage5_gate.py` still
+intermittently raises the aiosqlite `PytestUnhandledThreadExceptionWarning`.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
