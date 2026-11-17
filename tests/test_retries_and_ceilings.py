@@ -17,9 +17,9 @@ brain attempt, each a fold over the log, so a run or the daemon goes past its ce
 the one call each hunt has in flight, of the calls the log counts.
 
 H1 and H2 (fragility #2): a retried brain call or tool ran again at once. W3.2-B2: each retry
-waits a jittered backoff, at least a status response's `retry-after` (cut to 8 s), after its
-events are committed. The waits are recorded, never slept: tests/conftest.py's autouse `retry_waits`
-(W3.2-Y1).
+waits a jittered backoff, at least a status response's `retry-after` (cut to 8 s; 60 s since
+W3.4), after its events are committed. The waits are recorded, never slept: tests/conftest.py's
+autouse `retry_waits` (W3.2-Y1).
 
 R2-RV1 (review 2, pre-existing, widened by C1): a shutdown cancel that landed inside an in-run
 read, with another connection committing, made the shielded `finish_run` fail, so the run
@@ -945,8 +945,8 @@ async def test_a_retry_after_header_sets_the_least_wait(
 async def test_a_retry_after_above_the_cap_is_cut_to_the_cap(
     tmp_path: Path, mock_anthropic: MockAnthropic, retry_waits: list[float]
 ) -> None:
-    await _hunt(tmp_path, mock_anthropic, _status(429, {"retry-after": "30"}), stream=False)
-    assert retry_waits == [8.0, 8.0]  # the cap, BACKOFF_CAP_S
+    await _hunt(tmp_path, mock_anthropic, _status(429, {"retry-after": "90"}), stream=False)
+    assert retry_waits == [60.0, 60.0]  # the cap, RETRY_AFTER_CAP_S
 
 
 @pytest.mark.parametrize(
@@ -1188,7 +1188,7 @@ def test_the_backoff_bound_doubles_to_its_cap(monkeypatch: pytest.MonkeyPatch) -
     assert [loop.backoff_delay(n) for n in range(1, 8)] == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0]
     assert loop.backoff_delay(10_000) == loop.BACKOFF_CAP_S  # no float overflow on a long budget
     assert loop.backoff_delay(1, retry_after=3.0) == 3.0
-    assert loop.backoff_delay(1, retry_after=30.0) == loop.BACKOFF_CAP_S
+    assert loop.backoff_delay(1, retry_after=90.0) == loop.RETRY_AFTER_CAP_S
     assert loop.backoff_delay(3, retry_after=0.1) == 2.0  # the jitter's draw when it is longer
 
 

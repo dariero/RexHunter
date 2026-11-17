@@ -6,6 +6,7 @@ whose name starts `test_guard_` passed before W3.4 too: it pins what must not ch
 """
 
 import json
+import random
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from pathlib import Path
@@ -15,9 +16,17 @@ import anthropic
 import httpx2
 import pytest
 
-from rexhunter import brain, cost, db
+from rexhunter import brain, cost, db, loop
 from rexhunter.events import BrainExchangeEvent, ErrorEvent, TrajectoryEvent, UsageEvent
-from rexhunter.loop import BrainCallError, run_hunt
+from rexhunter.loop import (
+    Brain,
+    BrainCallError,
+    Decision,
+    NeedsHelp,
+    RetryableToolError,
+    ToolCallDecision,
+    run_hunt,
+)
 from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
@@ -678,3 +687,72 @@ async def test_guard_a_reset_before_message_start_counts_nothing(
     hunt = await _hunt(tmp_path, mock_anthropic, respond, stream=True)
     assert _types(hunt.events) == [E, ERR] * (RETRY_BUDGET + 1)
     assert [e.error for e in _errors(hunt.events)] == [RESET_TEXT] * (RETRY_BUDGET + 1)
+
+
+# ── Cap60: a brain retry waits for retry-after up to 60 s ──────────────────────────────────
+# Before W3.4 a `retry-after` above 8 s was cut to the jitter's 8 s cap (W3.2-B2); the
+# rate-limits page says to wait that many seconds before retrying (:89, :204) and that "Earlier
+# retries might fail" (:309). Now a brain retry waits at least min(`retry-after`, 60 s); the
+# jitter (base 0.5 s, cap 8 s) and the tool retries, which carry no `retry-after`, are unchanged.
+# The waits are recorded, never slept (tests/conftest.py's `retry_waits`, W3.2-Y1).
+
+
+def _status(code: int, headers: dict[str, str]) -> Respond:
+    return lambda _request: httpx2.Response(code, content=b"status body", headers=headers)
+
+
+@pytest.mark.parametrize(
+    ("header", "waits"),
+    [("30", [30.0, 30.0]), ("60", [60.0, 60.0]), ("90", [60.0, 60.0])],
+    ids=["30s-honoured", "60s-honoured", "90s-cut-to-60s"],
+)
+async def test_a_brain_retry_waits_for_retry_after_up_to_60_s(
+    header: str,
+    waits: list[float],
+    tmp_path: Path,
+    mock_anthropic: MockAnthropic,
+    retry_waits: list[float],
+) -> None:
+    await _hunt(tmp_path, mock_anthropic, _status(429, {"retry-after": header}), stream=False)
+    assert retry_waits == waits
+
+
+class _Top(random.Random):
+    """A jitter source that always draws the top of its range, to read the backoff's bounds."""
+
+    def uniform(self, a: float, b: float) -> float:
+        return b
+
+
+def test_guard_the_jitter_bound_still_stops_at_8_s(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(loop, "jitter_source", _Top())
+    assert [loop.backoff_delay(n) for n in range(1, 9)] == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0, 8.0]
+    assert loop.backoff_delay(8, retry_after=0.0) == 8.0
+
+
+async def test_guard_a_tool_retry_waits_the_jitter_only(
+    tmp_path: Path,
+    scripted_brain: Callable[[Sequence[Decision]], Brain],
+    retry_waits: list[float],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(loop, "jitter_source", _Top())
+
+    async def flaky() -> str:
+        """A tool that always fails, retryably."""
+        raise RetryableToolError("busy")
+
+    reg = ToolRegistry()
+    reg.tool(flaky)
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        await run_hunt(
+            conn,
+            territory="mock-gym",
+            brain=scripted_brain([ToolCallDecision(tool="flaky", args={}), NeedsHelp()]),
+            registry=reg,
+            retry_budget=6,
+        )
+    finally:
+        await conn.close()
+    assert retry_waits == [0.5, 1.0, 2.0, 4.0, 8.0, 8.0]

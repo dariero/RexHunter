@@ -59,10 +59,10 @@ class BrainCallError(Exception):
     the response.
     `retry_after` (W3.2-B2) is a status response's `retry-after` header in seconds, None when it
     was absent or not a finite, non-negative number of seconds; the retry waits at least that
-    long, cut to BACKOFF_CAP_S (`backoff_delay`). `exchange` (W3.3) is the attempt's raw request and
-    response (the bytes as received, a stream's partial body included), which `_call_brain` appends
-    before the usage and the ErrorEvent; `raw_response` stays what it was. None from a brain that
-    reports no bytes."""
+    long, cut to RETRY_AFTER_CAP_S, 60 s (`backoff_delay`, W3.4 Cap60). `exchange` (W3.3) is the
+    attempt's raw request and response (the bytes as received, a stream's partial body included),
+    which `_call_brain` appends before the usage and the ErrorEvent; `raw_response` stays what it
+    was. None from a brain that reports no bytes."""
 
     def __init__(
         self,
@@ -107,9 +107,12 @@ def classify(exc: BaseException) -> bool:
 # `max_retries=0`), so the loop owns the wait, shaped like the one it replaces: a 0.5 s base that
 # doubles per retry up to an 8 s cap (`INITIAL_RETRY_DELAY`, `MAX_RETRY_DELAY`, anthropic 2.6.0
 # `_constants.py`), drawn with full jitter. A brain retry after a status response that carried
-# `retry-after` waits at least that many seconds, capped at the same cap.
+# `retry-after` waits at least that many seconds, up to RETRY_AFTER_CAP_S, 60 s (W3.4 Cap60: the
+# rate-limits page says to wait that many seconds, and "Earlier retries might fail"; W3.2 cut it at
+# the jitter's 8 s). The jitter keeps its 8 s cap, and a tool retry carries no `retry-after`.
 BACKOFF_BASE_S = 0.5
 BACKOFF_CAP_S = 8.0
+RETRY_AFTER_CAP_S = 60.0
 
 # The two seams the tests replace (W3.2-Y1), looked up at call time: the wait itself and the
 # jitter's random source. tests/conftest.py records every wait instead of sleeping.
@@ -120,11 +123,11 @@ jitter_source = random.Random()
 def backoff_delay(retry: int, *, retry_after: float | None = None) -> float:
     """Seconds to wait before retry number `retry` (1 = the first retry): full jitter, a uniform
     draw in [0, min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2 ** (retry - 1))], and at least `retry_after`
-    (cut to BACKOFF_CAP_S) when the failed response carried one."""
+    (cut to RETRY_AFTER_CAP_S, 60 s; W3.4 Cap60) when the failed response carried one."""
     bound = min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2.0 ** min(retry - 1, 16))  # no float overflow
     delay = jitter_source.uniform(0.0, bound)
     if retry_after is not None:
-        delay = max(delay, min(retry_after, BACKOFF_CAP_S))
+        delay = max(delay, min(retry_after, RETRY_AFTER_CAP_S))
     return delay
 
 
@@ -355,7 +358,7 @@ async def _call_brain(
     Owns exactly one error shape: the provider-neutral BrainCallError (W2.0 D1a), which the adapter
     raises for every transport + status failure, so the loop knows no vendor or transport types. A
     transient blip (`classify` True: timeout / 429 / 5xx) is re-tried within budget after a backoff
-    wait (`backoff_delay`: at least its `retry-after`, up to the 8 s cap; W3.2-B2), each attempt
+    wait (`backoff_delay`: at least its `retry-after`, up to 60 s; W3.2-B2, W3.4), each attempt
     appending its own ErrorEvent(tool="<brain>") in the owning task (single writer, invariant 7)
     before the wait; a fatal one (a 4xx) logs once and aborts. Everything else propagates
     unchanged: BrainParseError to run_hunt's clause (invariant 6, raw bytes preserved) and any
@@ -413,7 +416,7 @@ async def _call_brain(
             )
             if retryable and attempt < attempts - 1:
                 # A transient blip: back off once the UsageEvent and ErrorEvent are committed
-                # (inv 1), at least `retry-after` (up to the cap) if the response carried one, then
+                # (inv 1), at least `retry-after` (up to 60 s) if the response carried one, then
                 # re-try within budget; the ceilings are checked again at the top, after the wait.
                 await retry_wait(backoff_delay(attempt + 1, retry_after=exc.retry_after))
                 continue
