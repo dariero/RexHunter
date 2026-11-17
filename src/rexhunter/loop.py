@@ -330,9 +330,11 @@ async def _call_brain(
     UsageEvents against `cost_ceiling_usd` first, then every run's (`db.read_usage`, the fold
     `scheduler.daemon_spend_usd` makes) against `daemon_spend_ceiling_usd` (None = ungated). So a
     run, or the daemon, goes past its ceiling by at most the one call each hunt has in flight, of
-    the calls the log counts. The context the brain projects is read at the same point: what a
-    failed attempt left in the log (its ThinkingDeltas, UsageEvent and `<brain>` ErrorEvent) is not
-    conversation, so a retry sends the same request.
+    the calls the log counts. The context the brain projects is read at the same point, and only
+    the event types the call uses (`db.read_context`, W3.3-W: the conversation's turns and the
+    usage the per-run fold reads; the whole conversation is still sent): what a failed attempt left
+    in the log (its ThinkingDeltas, UsageEvent and `<brain>` ErrorEvent) is not conversation, so a
+    retry sends the same request.
 
     Owns exactly one error shape: the provider-neutral BrainCallError (W2.0 D1a), which the adapter
     raises for every transport + status failure, so the loop knows no vendor or transport types. A
@@ -356,7 +358,7 @@ async def _call_brain(
 
     attempts = retry_budget + 1
     for attempt in range(attempts):
-        context = await db.read_events(conn, run_id)  # the window the brain projects into messages
+        context = await db.read_context(conn, run_id)  # what the call uses (W3.3-W), every turn
         if cost.fold_cost(context) >= cost_ceiling_usd:
             return "cost ceiling"
         if (

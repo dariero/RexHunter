@@ -186,6 +186,28 @@ async def read_events(conn: aiosqlite.Connection, run_id: str) -> list[events.Tr
     return [events.decode_event(str(row[0])) for row in rows]
 
 
+# The event types a brain call uses (W3.3-W, fragility #1): `brain.project_messages` turns
+# `tool_call`, `tool_result` and fatal `error` events into the `messages` array, and the per-run
+# spend fold (`cost.fold_cost` in `loop._call_brain`) reads `usage`. Every other type (thinking
+# deltas, captures) is not conversation, so the brain's read never decodes it.
+CONTEXT_TYPES: tuple[str, ...] = ("tool_call", "tool_result", "error", "usage")
+_CONTEXT_SQL = (
+    "SELECT payload FROM trajectory_events WHERE run_id = ?"
+    f" AND type IN ({', '.join('?' for _ in CONTEXT_TYPES)}) ORDER BY seq"
+)
+
+
+async def read_context(conn: aiosqlite.Connection, run_id: str) -> list[events.TrajectoryEvent]:
+    """The brain's read (W3.3-W): this run's events of the `CONTEXT_TYPES`, in `seq` order, each
+    through the validation boundary (invariant 3). The type filter runs in SQL (the `type` column
+    mirrors the discriminator, as `read_usage` relies on), so a row of any other type is never
+    decoded. The model still gets the whole conversation, every turn (Darie, 17 Nov 2026): this
+    narrows what is read, not what is sent. One `execute_fetchall` worker call, so no statement is
+    left open if a cancel lands during the read (R2-RV1, as `read_events`)."""
+    rows = await conn.execute_fetchall(_CONTEXT_SQL, (run_id, *CONTEXT_TYPES))
+    return [events.decode_event(str(row[0])) for row in rows]
+
+
 async def read_usage(conn: aiosqlite.Connection) -> list[events.TrajectoryEvent]:
     """The id-scoped usage sub-log: EVERY run's `UsageEvent`s, ordered by the global `id` cursor
     (the SSE-stream cursor), each routed through the validation boundary (invariant 3). This is the
