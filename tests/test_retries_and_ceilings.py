@@ -473,8 +473,9 @@ async def test_a_refused_stream_whose_usage_does_not_read_says_so(
 async def test_a_refused_turn_whose_count_cannot_be_priced_is_not_counted(
     tmp_path: Path, mock_anthropic: MockAnthropic
 ) -> None:
-    # A count int() reads but the fold cannot price (its float overflows) must not reach the log:
-    # every later fold would raise, the run's ceiling check and the daemon's launch gate with it.
+    # A count the fold cannot price (its float overflows) must not reach the log: every later fold
+    # would raise, the run's ceiling check and the daemon's launch gate with it. Since W3.4 the
+    # bound (`brain.MAX_TOKEN_COUNT`) stops it.
     usage = {"input_tokens": int("9" * 400), "output_tokens": 20}
     body = _plain("max_tokens", [SNIFF], usage=usage)
     hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=False)
@@ -577,13 +578,13 @@ async def test_a_reset_mid_stream_is_not_counted(
 async def test_an_accepted_turn_whose_usage_does_not_read_still_fails_closed(
     tmp_path: Path, mock_anthropic: MockAnthropic
 ) -> None:
-    # W3.1-O5, unchanged: the accepted path keeps `_extract_usage`, which raises, so the turn is
-    # never dispatched uncounted; it reaches the `<loop>` catch-all (without its bytes, O5).
+    # W3.1-O5, closed in W3.4 (counts): the accepted path reads its count through the one reader,
+    # so the turn is never dispatched uncounted; it is refused with its bytes, never `<loop>`.
     body = _plain("tool_use", [SNIFF], usage={"input_tokens": "x", "output_tokens": 20})
     hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=False)
     assert _types(hunt.events) == ["error"]
-    assert _errors(hunt.events)[0].tool == "<loop>"
-    assert hunt.row == ("aborted", "unhandled exception in loop")
+    assert _errors(hunt.events)[0].tool == "<brain>"
+    assert hunt.row == MALFORMED
 
 
 # ── C1: both ceilings before every brain attempt (H3, H5) ──────────────────────────────

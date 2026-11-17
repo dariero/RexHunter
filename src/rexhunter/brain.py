@@ -43,7 +43,6 @@ from anthropic import AsyncAPIResponse
 from anthropic.types import Message
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from rexhunter import cost
 from rexhunter.events import (
     BrainExchangeEvent,
     BrainParseError,
@@ -273,18 +272,43 @@ class _ProviderResponse(BaseModel):
     usage: dict[str, Any] | None = None  # {input_tokens, output_tokens, …}; absent on hand fixtures
 
 
+# The largest token count the boundary reads (W3.4 counts): a validation limit, not a spend
+# ceiling, ten times Claude Sonnet 5.5's 1M-token context window. Under it one call prices at most
+# $900 at the fallback price ($15/$75 per MTok, `cost.py`), so no count the reader passes can make a
+# fold overflow.
+MAX_TOKEN_COUNT = 10_000_000
+
+
+def _read_usage(model: object, counts: dict[str, Any]) -> UsageEvent:
+    """The one reader of a response's token counts (W3.4 counts, invariant 3), for the accepted
+    and the refused path alike. It reads `input_tokens` and `output_tokens` only, each a Python int
+    that is not a bool, 0 or more and at most MAX_TOKEN_COUNT; an absent one reads as 0, as before
+    W3.4. Any other value (null, a bool, a string, a float, a negative count, one past the bound)
+    raises ValueError. The other keys of `usage` are not read. A model that is not a string prices
+    at the fallback (`cost.py`), the safe direction for a guard."""
+    read: dict[str, int] = {}
+    for key in ("input_tokens", "output_tokens"):
+        value = counts.get(key, 0)
+        if type(value) is not int or not 0 <= value <= MAX_TOKEN_COUNT:
+            raise ValueError(f"{key}={value!r} is not a token count")
+        read[key] = value
+    return UsageEvent(
+        model=model if isinstance(model, str) else "",
+        input_tokens=read["input_tokens"],
+        output_tokens=read["output_tokens"],
+    )
+
+
 def _extract_usage(response: _ProviderResponse) -> UsageEvent | None:
-    """Read the envelope's token counts into a typed `UsageEvent` (P5 Unit 2c). None when the
-    payload carries no `usage` (hand-authored fixtures) — the loop then records no spend for that
-    call. Reads the SAME validated envelope as the decision, not a second inv-3 crossing. Used for
-    an accepted turn only (W3.2-U2a): a refused one reads its count with `_refused_usage`."""
+    """Read the envelope's token counts into a typed `UsageEvent` (P5 Unit 2c), through the one
+    reader (`_read_usage`, W3.4). None when the payload carries no `usage` (hand-authored
+    fixtures): the loop then records no spend for that call. Reads the SAME validated envelope as
+    the decision, not a second inv-3 crossing. Used for an accepted turn only (W3.2-U2a): a count
+    that does not read raises ValueError, which `parse_decision` turns into a refusal; a refused
+    turn reads its count with `_refused_usage`."""
     if response.usage is None:
         return None
-    return UsageEvent(
-        model=response.model or "",
-        input_tokens=int(response.usage.get("input_tokens", 0)),
-        output_tokens=int(response.usage.get("output_tokens", 0)),
-    )
+    return _read_usage(response.model, response.usage)
 
 
 def _refused_usage(model: object, usage: object) -> tuple[UsageEvent | None, str]:
@@ -292,26 +316,17 @@ def _refused_usage(model: object, usage: object) -> tuple[UsageEvent | None, str
 
     Read so it never raises: the refusal must still end typed, with its bytes. Returns (None, "")
     when the response carries no count (no `usage`, or an empty one: a stream cut before its
-    `message_start`), and (None, a note) when a count does not read as tokens or cannot be priced
-    (a float overflow in `cost.cost_of`); that call is not counted, and the note says so in the
-    ErrorEvent. A model that is not a string prices at the
-    fallback (`cost.py`), the safe direction for a guard. The accepted path keeps
-    `_extract_usage`, which raises on such a count (W3.1-O5)."""
+    `message_start`), and (None, a note) when a count does not read (`_read_usage`, W3.4: one past
+    MAX_TOKEN_COUNT included, so no count reaches a fold that cannot price it); that call is not
+    counted, and the note says so in the ErrorEvent. The accepted path reads its count the same way
+    and refuses the turn instead (`parse_decision`)."""
     if not isinstance(usage, dict) or not usage:
         return None, ""
     counts = cast("dict[str, Any]", usage)
     try:
-        counted = UsageEvent(
-            model=model if isinstance(model, str) else "",
-            input_tokens=int(counts.get("input_tokens", 0)),
-            output_tokens=int(counts.get("output_tokens", 0)),
-        )
-        # Priced once here: a count int() reads but the fold cannot price (its float overflows)
-        # would make every later fold of the log raise, so it is not counted either.
-        cost.cost_of(counted)
-    except TypeError, ValueError, OverflowError:
-        return None, f"; usage not counted, it does not read as a priceable token count: {counts!r}"
-    return counted, ""
+        return _read_usage(model, counts), ""
+    except ValueError:
+        return None, f"; usage not counted, it does not read as a token count: {counts!r}"
 
 
 def _refusal(raw: bytes, detail: str, *, model: object, usage: object) -> BrainParseError:
@@ -404,9 +419,17 @@ def parse_decision(raw: bytes) -> Decision:
             # compares, so re-serialising it here keeps the turn exactly as returned.
             assistant_content=json.dumps(response.content).encode(),
         )
-    # every Decision carries the call's cost (None for a no-usage payload); read only once the turn
-    # is accepted, with `_extract_usage`, so a count that is not a number still raises (W3.1-O5)
-    decision.usage = _extract_usage(response)
+    # Every Decision carries the call's cost (None for a no-usage payload), read only once the turn
+    # is accepted, through the one reader (W3.4 counts): a count that does not read refuses the
+    # turn with its bytes and writes no UsageEvent (W3.1-O5, W3.2-RV1b), never the `<loop>`
+    # catch-all. The adapter attaches the exchange (W3.3).
+    try:
+        decision.usage = _extract_usage(response)
+    except ValueError as exc:
+        raise BrainParseError(
+            raw=raw,
+            detail=f"usage not counted, it does not read as a token count: {response.usage!r}",
+        ) from exc
     return decision
 
 
@@ -997,7 +1020,7 @@ def adapter_brain_for(
     the body httpx2 sent and the body as received (on the stream path every chunk `iter_bytes`
     gave, framed into lines by `_received_lines`), on the Decision, the BrainParseError or the
     BrainCallError, for the loop to append. SDK and transport errors are translated by the clauses
-    below; anything else (a bug, a body that is not JSON: W3.1-O1 to O5) propagates without one.
+    below; anything else (a bug, a body that is not JSON: W3.1-O1 to O4) propagates without one.
     """
     tools = build_tools(registry)  # derived once — stable across the run
     # Fail closed at factory time (W2.2): a model with no floor row raises here, before any run.
