@@ -10,6 +10,7 @@ lines as `iter_lines` framed them before W3.3) and the fixture write.
 """
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,22 @@ import pytest
 from rexhunter import brain, hunt_smoke_thinking, stub
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(autouse=True)
+def _no_run_db_in_the_system_temp_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each harness run here passes `db_dir=tmp_path`. One that would make its run DB in the
+    system temp dir, as these tests did before W3.4b (two `rexhunter-think-*` directories per
+    suite run, never removed), fails instead."""
+    real = tempfile.mkdtemp
+
+    def guarded(
+        suffix: str | None = None, prefix: str | None = None, dir: str | Path | None = None
+    ) -> str:
+        assert dir is not None, f"mkdtemp(prefix={prefix!r}) would land in the system temp dir"
+        return real(suffix, prefix, dir)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", guarded)
 
 
 def _sse(thinking: str, sig: str, tool_id: str, name: str, tool_input: dict[str, Any]) -> bytes:
@@ -107,7 +124,10 @@ async def test_harness_full_path_runs_offline_and_writes_fixtures(tmp_path: Path
         return httpx2.Response(200, content=[CALL1, CALL2][i])  # the two streaming brain calls
 
     summary = await hunt_smoke_thinking.run_live_hunt(
-        "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=tmp_path
+        "offline-key",
+        inner=httpx2.MockTransport(handler),
+        fixture_dir=tmp_path,
+        db_dir=tmp_path,
     )
 
     # Two brain calls captured through the tee — the streaming path survives the full-body read.
@@ -142,7 +162,10 @@ async def test_preflight_non_200_stops_before_any_paid_call(tmp_path: Path) -> N
 
     with pytest.raises(SystemExit):
         await hunt_smoke_thinking.run_live_hunt(
-            "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=tmp_path
+            "offline-key",
+            inner=httpx2.MockTransport(handler),
+            fixture_dir=tmp_path,
+            db_dir=tmp_path,
         )
     assert hit["messages"] == 0  # never spent — stopped at the free pre-flight
 
@@ -169,7 +192,10 @@ async def test_the_harness_sends_the_pinned_wire(
         return httpx2.Response(200, content=[CALL1, CALL2][len(seen) - 2])
 
     await hunt_smoke_thinking.run_live_hunt(
-        "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=tmp_path
+        "offline-key",
+        inner=httpx2.MockTransport(handler),
+        fixture_dir=tmp_path,
+        db_dir=tmp_path,
     )
     assert len(seen) == 3
     for request in seen:

@@ -109,12 +109,15 @@ async def run_live_hunt(
     *,
     inner: httpx2.AsyncBaseTransport | None = None,
     fixture_dir: Path = FIXTURE_DIR,
+    db_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Free pre-flight → one capped STREAMING hunt on the teed client → fixtures + report.
 
-    `inner`/`fixture_dir` are injection seams for the OFFLINE harness test (a `MockTransport` + a
-    tmp dir), so the whole path is proven with zero spend before the real run. Default `inner` is a
-    live `AsyncHTTPTransport`; the paid path leaves both at their defaults.
+    `inner`/`fixture_dir`/`db_dir` are injection seams for the OFFLINE harness test (a
+    `MockTransport` + tmp dirs), so the whole path is proven with zero spend before the real run.
+    Default `inner` is a live `AsyncHTTPTransport`; the paid path leaves all three at their
+    defaults, so its run DB lands in a fresh directory under the system temp dir that nothing
+    removes: since W3.3 that DB holds every attempt's request and response bytes.
     """
     registry = stub.build_registry()
     tee = CapturingTransport(inner or brain.live_transport(), brain.MESSAGES_URL)
@@ -129,7 +132,7 @@ async def run_live_hunt(
             thinking=THINKING,
             stream=True,
         )
-        db_path = Path(tempfile.mkdtemp(prefix="rexhunter-think-")) / "rex.db"
+        db_path = Path(tempfile.mkdtemp(prefix="rexhunter-think-", dir=db_dir)) / "rex.db"
         conn = await db.connect(db_path)
         run_id: str | None = None
         paths: list[Path] = []
