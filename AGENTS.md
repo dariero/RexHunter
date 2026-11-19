@@ -645,6 +645,66 @@ past about 200). For Darie: keeping a whole turn despite a reset after `message_
 counted, then retried; a W4 question), and a `max iterations` line in the RV14 note (that abort
 closes the same way, `loop._drive`). *Next: W3.4b (the smoke harnesses, the `capture_prey` cancel
 edge, the hygiene and docs backlog) and the live daemon hunt.*
+**▶ W3.4b · Smoke harnesses, capture atomicity, hygiene and the docs backlog – ✅ done on branch
+`w3.4-harness-hygiene-docs` (`3f2fbcb`→`10c7f2e`, 2026-11-20), PR #13.** Offline: no API call of
+any kind, no model change, no wire change (the five wire-check bodies are byte-identical to
+`619e6ea`'s, the W3.4a F1 baselines, after every commit). Labels are W3.4's (cp files: this run's
+checkpoint reports). The cp1 stop to rex-orchestrator was held by that session, undelivered, so
+Darie answered in the worker's terminal on 20 Nov 2026: the recommended options of cp1, then
+"decide on your own, autonomously, and do not ask me for confirmation". Forks: capture-1,
+fixtures-1, telemetry-1; with them F8 d1 (a missing fixture dir refuses, never created),
+`db_dir` as the temp-dir seam, and commit 8 with its mutant label MB11. **Capture** (`3f2fbcb`,
+W3.1-K1, W3.2-X17): `CapturingTransport` passes the decoded body through as it arrives, captured
+on the way, every header kept but `content-encoding` and `content-length`; the pre-flight passes
+untouched; `captured` is a property. Reds: the tee read past the first error frame (`[1, 2] ==
+[1]`) and dropped `retry-after: 3` (`[0.22…] == [3.0]`); MB1 (the body buffered again) and MB2
+(`retry-after` dropped) each red. Live chunked or gzip streams through the tee are UNVERIFIED: only
+a paid smoke exercises them. **Fixtures** (`4126b89`): both harnesses write what they captured in a
+`finally`, before the reporter, a cancelled hunt naming its directory after its fresh DB's one
+run. Reds: a cancel at call two, a 502 in HTML (hunt_smoke's reporter) and a frame that is not
+JSON (hunt_smoke_thinking's) each lost every fixture (`[] == [...]`); MB3 (the write only on
+success) red twice. The reporter can still raise after the write. **smoke.py** (`470d78b`, F8 c to
+f): the paid path needs `REXHUNTER_BRAIN=live` (`--count-only` the key only); a transport error at
+the pre-flight, the paid call or its body read is a typed exit; a failing unlink no longer masks
+the error (c); a missing fixture dir refuses at $0 (d); any `OSError` reserving is the `[fixture]`
+exit (e); the UTC name is pinned under a UTC+14 process zone, killing the `astimezone()` survivor
+that passed under `TZ=UTC` (f). Reds: 7; MB4 (the guard removed) 1, MB5 (`APIConnectionError`
+escaping) 4. F8 (a) and (b) stay accepted limits, untested. **capture_prey** (`9806ae0`): VERIFIED
+(it was INFERRED): a cancel on its first INSERT, then `run_hunt`'s `finish_run` commit, left a
+`PreyCapturedEvent` and no prey row, and so did a failed prey INSERT followed by the `<loop>`
+ErrorEvent's commit (found here). It now rolls back on any BaseException; reds `(1, 0, …) == (0, 0,
+…)` on both paths, held by a progress handler; MB6 red twice. **Temp dirs** (`33c6eb2`):
+`run_live_hunt(db_dir=)`, set to `tmp_path` by the offline tests, with an autouse `mkdtemp` guard
+(red twice before the seam); `rexhunter-think-*` 398 → 398 across a suite run (two more per run
+before); MB7 red twice; the paid path keeps the system temp dir. **Pins** (`319f097`): a launch at
+exactly the daemon ceiling is refused (W3.2-R2-M; the `>` mutant MB8 passed all 605 tests before);
+the live daemon brain's request carries `display: "summarized"` (MB9 red 3, two of them the replay
+literals; on Sonnet 5.5 the default is "omitted", the thinking docs, read 19 Nov 2026); the six
+replays of recorded hunts register `stub.sniff`'s docstring, the description every live run sent
+(6 reds before, MB10 red); the stage-1 gate's pipe closes in a `with` block (F12/R9; 0
+ResourceWarnings under `-W always::ResourceWarning`, 2 before). **Chore** (`be93f4e`, F11):
+`.hypothesis/` in `.gitignore`; `actions/checkout@d23441a…` (`# v6.1.0`, the commit `v6` points at,
+so no bump; v7.0.1 exists, Darie's); fastapi telemetry pinned off and tested (inert today: only
+`opentelemetry-api` is installed). **The aiosqlite warning** (`0c5d443`): CLOSED. A cancel inside
+`db.connect` after `aiosqlite.connect()` leaked the connection, and aiosqlite's `__del__` later
+stopped its worker on a closed event loop. Bisected to test_stage4_gate.py's crash-sweep test (5
+warnings in 20 runs with stage 5; 0 in 20 after; 0 in 6 full suite runs); `db.connect` closes the
+connection on any BaseException in its bootstrap; on-demand red, the worker thread alive after the
+cancel; MB11 red. **Docs** (`10c7f2e`): the Stack lines on constrained decoding and the config
+POST mark what is not built; a pointer on the W3.1 entry's stop-reason sentence; five
+p1-walkthrough citations; the four `loop.py:NN` citations name `loop._run_tool`. Test edits:
+PB1 (test_smoke_offline.py:315, the transport row now expects `SystemExit`, with its comment),
+PB2 (:376, `REXHUNTER_BRAIN=live`), PB3 (test_hunt_smoke_thinking_offline.py:7-9 docstring), PB4
+(its three calls gain `db_dir=tmp_path`), PB5 (the six replays' `sniff`), PB6
+(test_stage1_gate.py's fixture), PB7 (test_view.py:48, :221, test_viewstate.py:29 citations),
+PB8 (comments on the `assert` lines at test_smoke_offline.py:85 and test_stage_2c.py:699, their
+expressions unchanged). 633 tests pass at `10c7f2e` (605 at `619e6ea`): the new
+tests/test_smoke_harnesses.py (7) and tests/test_db_connect.py (1), and 20 more in six files. No
+subagent, workflow or advisor call. Open: capture-2 (fixtures from the log's exchanges, W4); C10
+(`.claude/hooks/guard-bash.sh:33-35` still says direct-to-main, Darie's); and from the W3.4a list
+W3.1-X9, the network environment hardening, W3.3-F2, W3.2-X16 as narrowed, the `<loop>` attempts
+with no exchange, SSE line endings, Jsdk, W3.4-D1, W3.4-D2 and its two questions for Darie. *Next:
+the first live daemon hunt on Sonnet 5.5 (Darie's command), then W4.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
