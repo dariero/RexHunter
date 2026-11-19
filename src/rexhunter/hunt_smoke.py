@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import anthropic
 import httpx2
 
@@ -152,6 +153,14 @@ def write_fixtures(
     return paths
 
 
+async def fresh_db_run_id(conn: aiosqlite.Connection) -> str:
+    """The id of the one run a harness's fresh DB holds: the fixture directory's name when the hunt
+    raised before it returned its id (a cancel, Ctrl-C). A DB with no run gives "unknown"."""
+    async with conn.execute("SELECT id FROM runs ORDER BY started_at LIMIT 1") as cur:
+        row = await cur.fetchone()
+    return str(row[0]) if row is not None else "unknown"
+
+
 def _report_findings(captured: list[bytes]) -> None:
     """Surface, never paper over: a parallel-tool response despite the flag is a real finding; a
     `max_tokens` stop is truncation (bump the budget), not a parse error."""
@@ -185,6 +194,7 @@ async def run_live_hunt(api_key: str) -> None:
         )
         db_path = Path(tempfile.mkdtemp(prefix="rexhunter-hunt-")) / "rex.db"
         conn = await db.connect(db_path)
+        run_id: str | None = None
         try:
             run_id = await run_hunt(
                 conn,
@@ -203,6 +213,12 @@ async def run_live_hunt(api_key: str) -> None:
                 row = await cur.fetchone()
             outcome, reason = (str(row[0]), row[1]) if row else ("unknown", None)
         finally:
+            # Persist first (invariant 6): every captured response is on disk before anything
+            # else can fail (a cancel, a raising read above) and before the reporter re-reads it.
+            if tee.captured:
+                named = run_id if run_id is not None else await fresh_db_run_id(conn)
+                paths = write_fixtures(tee.captured, named)
+                print(f"[fixtures] wrote {len(paths)} golden fixture(s) under hunt_{named}/")
             await conn.close()
 
     print(
@@ -210,8 +226,6 @@ async def run_live_hunt(api_key: str) -> None:
         f"spend=${spend:.4f} (ceiling ${COST_CEILING_USD})"
     )
     _report_findings(tee.captured)
-    paths = write_fixtures(tee.captured, run_id)
-    print(f"[fixtures] wrote {len(paths)} golden fixture(s) under hunt_{run_id}/")
 
 
 def main() -> None:

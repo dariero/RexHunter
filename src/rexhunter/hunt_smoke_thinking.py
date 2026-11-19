@@ -32,7 +32,7 @@ import anthropic
 import httpx2
 
 from rexhunter import brain, cost, db, stub
-from rexhunter.hunt_smoke import CapturingTransport, write_fixtures
+from rexhunter.hunt_smoke import CapturingTransport, fresh_db_run_id, write_fixtures
 from rexhunter.loop import run_hunt
 from rexhunter.tools import ToolRegistry
 
@@ -131,6 +131,8 @@ async def run_live_hunt(
         )
         db_path = Path(tempfile.mkdtemp(prefix="rexhunter-think-")) / "rex.db"
         conn = await db.connect(db_path)
+        run_id: str | None = None
+        paths: list[Path] = []
         try:
             run_id = await run_hunt(
                 conn,
@@ -149,6 +151,12 @@ async def run_live_hunt(
                 row = await cur.fetchone()
             outcome, reason = (str(row[0]), row[1]) if row else ("unknown", None)
         finally:
+            # Persist first (invariant 6): every captured stream is on disk before anything else
+            # can fail (a cancel, a raising read above) and before the reporter re-folds it.
+            if tee.captured:
+                named = run_id if run_id is not None else await fresh_db_run_id(conn)
+                paths = write_fixtures(tee.captured, named, fixture_dir=fixture_dir)
+                print(f"[fixtures] wrote {len(paths)} streaming fixture(s) under hunt_{named}/")
             await conn.close()
 
     print(
@@ -156,8 +164,6 @@ async def run_live_hunt(
         f"spend=${spend:.4f} (ceiling ${COST_CEILING_USD})"
     )
     _report_findings(tee.captured)
-    paths = write_fixtures(tee.captured, run_id, fixture_dir=fixture_dir)
-    print(f"[fixtures] wrote {len(paths)} streaming fixture(s) under hunt_{run_id}/")
     return {
         "run_id": run_id,
         "outcome": outcome,

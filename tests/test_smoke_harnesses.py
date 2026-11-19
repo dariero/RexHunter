@@ -5,10 +5,18 @@ W3.1-K1: the capturing tee read each body to its end before the adapter saw a by
 could not stop at its first error frame (Z-stop, W3.1) and the thinking relay arrived all at once.
 W3.2-X17: the tee rebuilt each response with two headers only, so a 429's `retry-after` never
 reached the loop's backoff.
+Fixtures: both harnesses wrote what they captured only after the hunt and the reporter, so a
+Ctrl-C mid-hunt or a reporter that raised lost every paid response. Each harness here runs with
+its fixtures and its run DB under `tmp_path`, never tests/fixtures or the system temp dir.
 """
 
+import asyncio
+import contextlib
+import functools
 import gzip
+import hashlib
 import json
+import tempfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -17,7 +25,7 @@ import anthropic
 import httpx2
 import pytest
 
-from rexhunter import brain, db, hunt_smoke, stub
+from rexhunter import brain, db, hunt_smoke, hunt_smoke_thinking, stub
 from rexhunter.loop import run_hunt
 
 pytestmark = pytest.mark.anyio
@@ -151,3 +159,190 @@ async def test_a_compressed_reply_passes_the_tee_decoded(
     finally:
         await conn.close()
     assert rows == [("needs_help",)]  # the decoded reply parsed
+
+
+# ── Fixtures: a failed hunt still writes what it captured ─────────────────────
+
+FIXTURES = Path(__file__).parent / "fixtures"  # the recorded tree, read-only here
+SNIFF_REPLY = json.dumps(
+    {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": brain.SMOKE_MODEL,
+        "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "sniff", "input": {"prey": "mock-gym"}}
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+).encode()
+SNIFF_STREAM = b"".join(
+    [
+        MESSAGE_START,
+        _frame(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "sniff",
+                    "input": {},
+                },
+            },
+        ),
+        _frame(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"prey": "mock-gym"}'},
+            },
+        ),
+        _frame("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        _frame(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use"},
+                "usage": {"output_tokens": 20},
+            },
+        ),
+        _frame("message_stop", {"type": "message_stop"}),
+    ]
+)
+
+
+def _tree_digest(root: Path) -> str:
+    h = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            h.update(str(path.relative_to(root)).encode())
+            h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def _written(fixture_dir: Path) -> list[bytes]:
+    return [p.read_bytes() for p in sorted(fixture_dir.glob("hunt_*/call_*.json"))]
+
+
+def _answer_once_then_hang(first: bytes, second: asyncio.Event) -> Callable[..., Any]:
+    """The free pre-flight, one brain reply, then a brain call that never answers: the moment an
+    operator presses Ctrl-C."""
+    calls = {"n": 0}
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url) == brain.COUNT_TOKENS_URL:
+            return httpx2.Response(200, json={"input_tokens": 1})
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx2.Response(200, content=first)
+        second.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable: the hunt is cancelled while this call waits")
+
+    return handler
+
+
+def _route_plain_harness(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, handler: Callable[..., Any]
+) -> Path:
+    """hunt_smoke.run_live_hunt has no transport or directory seam, and write_fixtures' default
+    directory is tests/fixtures, bound when it was defined, so each is routed here by hand: the
+    live transport to `handler`, the fixtures to the returned directory, the run DB under
+    tmp_path."""
+    fixture_dir = tmp_path / "fx"
+    monkeypatch.setattr(brain, "live_transport", lambda: httpx2.MockTransport(handler))
+    monkeypatch.setattr(
+        hunt_smoke,
+        "write_fixtures",
+        functools.partial(hunt_smoke.write_fixtures, fixture_dir=fixture_dir),
+    )
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(stub, "SNIFF_INTERVAL", 0.0)  # the stub sniff's 5 s beat proves nothing
+    return fixture_dir
+
+
+async def test_a_cancelled_plain_hunt_still_writes_what_it_captured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = _tree_digest(FIXTURES)
+    second = asyncio.Event()
+    fixture_dir = _route_plain_harness(
+        monkeypatch, tmp_path, _answer_once_then_hang(SNIFF_REPLY, second)
+    )
+    task = asyncio.create_task(hunt_smoke.run_live_hunt("offline-key"))
+    await second.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _written(fixture_dir) == [SNIFF_REPLY]
+    assert _tree_digest(FIXTURES) == before
+
+
+async def test_the_plain_harness_keeps_its_fixtures_when_a_reply_is_not_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A 502 from a proxy, in HTML: the hunt ends typed after its retries, then the reporter's
+    # json.loads raises on the body. The fixtures are already on disk by then.
+    html = b"<html><body>502 Bad Gateway</body></html>"
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url) == brain.COUNT_TOKENS_URL:
+            return httpx2.Response(200, json={"input_tokens": 1})
+        return httpx2.Response(502, headers={"content-type": "text/html"}, content=html)
+
+    before = _tree_digest(FIXTURES)
+    fixture_dir = _route_plain_harness(monkeypatch, tmp_path, handler)
+    with contextlib.suppress(json.JSONDecodeError):
+        await hunt_smoke.run_live_hunt("offline-key")
+    assert _written(fixture_dir) == [html] * 3  # the first attempt and its two retries
+    assert _tree_digest(FIXTURES) == before
+
+
+async def test_a_cancelled_thinking_hunt_still_writes_what_it_captured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run DB
+    monkeypatch.setattr(stub, "SNIFF_INTERVAL", 0.0)
+    second = asyncio.Event()
+    fixture_dir = tmp_path / "fx"
+    task = asyncio.create_task(
+        hunt_smoke_thinking.run_live_hunt(
+            "offline-key",
+            inner=httpx2.MockTransport(_answer_once_then_hang(SNIFF_STREAM, second)),
+            fixture_dir=fixture_dir,
+        )
+    )
+    await second.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _written(fixture_dir) == [SNIFF_STREAM]
+
+
+async def test_the_thinking_harness_keeps_its_fixtures_when_its_reporter_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # W3.1-O1's body, a `data:` line that is not JSON: since W3.4 the hunt ends typed, but the
+    # reporter re-reads each captured stream with iter_sse_events, which raises on that line.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))  # the run DB
+    body = (
+        MESSAGE_START
+        + b"event: content_block_delta\ndata: {not json\n\n"
+        + SNIFF_STREAM[len(MESSAGE_START) :]
+    )
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if str(request.url) == brain.COUNT_TOKENS_URL:
+            return httpx2.Response(200, json={"input_tokens": 1})
+        return httpx2.Response(200, content=body)
+
+    fixture_dir = tmp_path / "fx"
+    with contextlib.suppress(ValueError):
+        await hunt_smoke_thinking.run_live_hunt(
+            "offline-key", inner=httpx2.MockTransport(handler), fixture_dir=fixture_dir
+        )
+    assert _written(fixture_dir) == [body]
