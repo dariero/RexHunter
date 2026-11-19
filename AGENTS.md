@@ -705,6 +705,33 @@ subagent, workflow or advisor call. Open: capture-2 (fixtures from the log's exc
 W3.1-X9, the network environment hardening, W3.3-F2, W3.2-X16 as narrowed, the `<loop>` attempts
 with no exchange, SSE line endings, Jsdk, W3.4-D1, W3.4-D2 and its two questions for Darie. *Next:
 the first live daemon hunt on Sonnet 5.5 (Darie's command), then W4.*
+**▶ W3.4 Part C · The first live daemon hunt on Sonnet 5.5 – ✅ done (2026-11-20), PR #14.** On
+`main` `dc4c8cf`, in Darie's terminal with the key set: the free pre-flight `PYTHONPATH=src uv run
+python -m rexhunter.hunt_smoke_thinking --count-only`, then `REXHUNTER_BRAIN=live
+REXHUNTER_DB=<live dir>/rex.db DAEMON_SPEND_CEILING_USD=0.05 COST_CEILING_USD=0.05 uv run uvicorn
+--app-dir src rexhunter.server:app` (`MAX_ITERATIONS` unset: 50). A first attempt without the key
+refused at $0 in both places, the pre-flight and the lifespan's `select_brain_for` (fail closed);
+it left only an empty schema in the DB. The daemon was not stopped after its first run, so it ran
+six `mock-gym` hunts, each launched 5 s after the last closed (21:37:29Z to 21:39:29Z), until the
+launch gate refused the seventh: the whole-log fold $0.051306 against the $0.05 ceiling, $0.001306
+over, inside the one-call-in-flight bound (W3.2-C1). Outcomes: five `needs_help`, one `completed`
+with an empty catch (no prey). Per run: $0.010226, $0.006392, $0.006872, $0.010840, $0.006842,
+$0.010134. 15 brain calls, each one attempt, status 200 and `stop_reason` `tool_use`: no retry, no
+ErrorEvent, no error frame, no cut; 9 `sniff` calls; 191 ThinkingDeltas; 239 events. Call one of
+every run: 1073 input and 59 output tokens, `[tool_use]` only (no thinking, as in W2.5), and its
+request byte-identical to the wire check's body 2 (`3c70bbbe…f358`, 2236 B), so the offline
+baseline is the live wire. Calls two and three each carried one summarized, signed thinking block
+and sent the stored turns back; all were accepted. Every request's `hunt_complete` and
+`needs_help` schemas carry no `usage` and no `$defs` (W3.3-F1, live). The stored stream bodies,
+2357 to 9831 B, hold no CRLF: LF only, as received (`_received_lines` keeps the chunks), which
+settles SSE line endings for what this run saw. DoD #5 on the live log: the six runs, rebuilt in
+order on one fresh DB from their own BrainExchangeEvents (the same caps and the same $0.05 daemon
+ceiling), give byte-identical requests (15 of 15), identical event payloads (239 of 239) and the
+same outcomes; the rebuilt fold is $0.051306 and refuses a seventh launch. The DB copy read was
+taken while the daemon idled (`PRAGMA integrity_check` ok). The DB stays outside the repo
+(`~/dev/agent-reports/RexHunter/live-2026-11-20/rex.db`); making fixtures from it is Darie's.
+Still unseen live: hunt_smoke's capture-1 tee, a retry, a cut stream and an error frame. *Next:
+W4.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
