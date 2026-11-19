@@ -19,8 +19,10 @@ import asyncio
 import hashlib
 import inspect
 import json
+import os
 import sys
-from collections.abc import Callable, Iterator
+import time
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -312,7 +314,7 @@ def test_run_smoke_has_no_default_for_fixture_dir_or_now() -> None:
     [
         (KeyboardInterrupt(), KeyboardInterrupt),
         (asyncio.CancelledError(), asyncio.CancelledError),
-        (httpx2.ConnectError("down"), anthropic.APIConnectionError),
+        (httpx2.ConnectError("down"), SystemExit),  # typed since W3.4b
     ],
     ids=["ctrl-c", "cancel", "transport-error"],
 )
@@ -323,7 +325,7 @@ async def test_any_failure_before_a_paid_reply_drops_the_reservation(
     mock_anthropic: MockAnthropic,
 ) -> None:
     # Not only a non-200: Ctrl-C, a cancel or a transport error during the paid call leaves no
-    # empty file behind, and the failure surfaces unchanged.
+    # empty file behind, and the failure surfaces (a transport error as the typed exit).
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith("/count_tokens"):
             return httpx2.Response(200, json={"input_tokens": 1})
@@ -374,9 +376,154 @@ def test_main_passes_the_module_fixture_dir_and_an_aware_utc_clock(
         return factory(api_key, transport=httpx2.MockTransport(_smoke_handler([])), timeout=timeout)
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("REXHUNTER_BRAIN", "live")  # the paid path's second opt-in (W3.4b)
     monkeypatch.setattr(sys, "argv", ["smoke"])
     monkeypatch.setattr(brain, "anthropic_client", offline_client)
     monkeypatch.setattr(smoke, "run_smoke", spy)
     smoke.main()
     assert seen["fixture_dir"] is smoke.FIXTURE_DIR
     assert seen["now"].utcoffset() == timedelta(0)
+
+
+# ── 5. the paid path's guard and its typed exits (W3.4b; W2.1b F8 c to f) ──────
+
+
+def _offline_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> list[str]:
+    """Point smoke.main() at the factory's client over a MockTransport and record each request's
+    path; run_smoke is a spy, so a paid call that got past main() shows as "run_smoke"."""
+    seen: list[str] = []
+    factory = brain.anthropic_client
+
+    async def spy(
+        client: anthropic.AsyncAnthropic, *, fixture_dir: Path, now: datetime
+    ) -> tuple[bytes, Decision]:
+        seen.append("run_smoke")
+        return b"", ToolCallDecision(tool="sniff", args={})
+
+    def offline_client(api_key: str, *, timeout: float) -> anthropic.AsyncAnthropic:
+        return factory(
+            api_key, transport=httpx2.MockTransport(_smoke_handler(seen)), timeout=timeout
+        )
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(brain, "anthropic_client", offline_client)
+    monkeypatch.setattr(smoke, "run_smoke", spy)
+    return seen
+
+
+def test_the_paid_smoke_needs_rexhunter_brain_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    # hunt_smoke and hunt_smoke_thinking refuse to spend without the second opt-in; smoke did not.
+    monkeypatch.delenv("REXHUNTER_BRAIN", raising=False)
+    seen = _offline_main(monkeypatch, ["smoke"])
+    with pytest.raises(SystemExit, match="REXHUNTER_BRAIN=live"):
+        smoke.main()
+    assert seen == []  # no request, no paid call
+
+
+def test_the_free_preflight_needs_no_rexhunter_brain(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("REXHUNTER_BRAIN", raising=False)
+    seen = _offline_main(monkeypatch, ["smoke", "--count-only"])
+    smoke.main()
+    assert seen == ["/v1/messages/count_tokens"]
+    assert "NO paid call made" in capsys.readouterr().out
+
+
+class _ResetBody(httpx2.AsyncByteStream):
+    """A 200 whose body is cut by a connection reset part way."""
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield b'{"id": "msg_1", "type": "mess'
+        raise httpx2.ReadError("connection reset")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("where", ["preflight", "paid-call", "paid-body"])
+async def test_a_transport_error_exits_typed(
+    where: str, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # The SDK raises APIConnectionError for each; before W3.4b it escaped as a traceback.
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path.endswith("/count_tokens"):
+            if where == "preflight":
+                raise httpx2.ConnectError("down")
+            return httpx2.Response(200, json={"input_tokens": 1})
+        if where == "paid-call":
+            raise httpx2.ConnectError("down")
+        return httpx2.Response(200, stream=_ResetBody())
+
+    expected = r"^\[preflight transport\]" if where == "preflight" else r"^\[transport\]"
+    async with mock_anthropic(handler) as client:
+        with pytest.raises(SystemExit, match=expected):
+            await smoke.run_smoke(client, fixture_dir=tmp_path, now=NOW)
+    assert _names(tmp_path) == []  # no paid bytes reached the reservation, so it is dropped
+
+
+@pytest.mark.anyio
+async def test_a_failing_unlink_does_not_mask_the_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mock_anthropic: MockAnthropic,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # F8 (c): the reservation's unlink raised in the finally and replaced the real error.
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(400, json={"error": {"message": "bad schema"}})
+
+    def failing_unlink(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError(f"cannot remove {self} (missing_ok={missing_ok})")
+
+    async with mock_anthropic(handler) as client:
+        monkeypatch.setattr(Path, "unlink", failing_unlink)
+        with pytest.raises(SystemExit, match=r"^\[preflight http 400\]"):
+            await smoke.run_smoke(client, fixture_dir=tmp_path, now=NOW)
+    assert _names(tmp_path) == [FIXTURE_NAME]  # the empty reservation stays, and is named
+    assert FIXTURE_NAME in capsys.readouterr().err
+
+
+@pytest.mark.anyio
+async def test_a_missing_fixture_dir_refuses_before_any_call(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # F8 (d): run_smoke created a missing directory and left it behind when the run failed.
+    paths: list[str] = []
+    missing = tmp_path / "missing"
+    async with mock_anthropic(_smoke_handler(paths)) as client:
+        with pytest.raises(SystemExit, match=r"^\[fixture\] cannot reserve"):
+            await smoke.run_smoke(client, fixture_dir=missing, now=NOW)
+    assert paths == []  # refused at $0
+    assert not missing.exists()
+
+
+@pytest.mark.anyio
+async def test_a_fixture_dir_that_is_a_file_refuses_typed_before_any_call(
+    tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # F8 (e): an unusable directory raised a raw OSError instead of the [fixture] exit.
+    paths: list[str] = []
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("x")
+    async with mock_anthropic(_smoke_handler(paths)) as client:
+        with pytest.raises(SystemExit, match=r"^\[fixture\] cannot reserve"):
+            await smoke.run_smoke(client, fixture_dir=not_a_dir, now=NOW)
+    assert paths == []
+
+
+def test_the_fixture_name_is_utc_whatever_the_local_zone() -> None:
+    # F8 (f): `now.astimezone()` (the local zone) instead of `now.astimezone(UTC)` passed every
+    # test where the local zone is UTC, as on CI. Here the process zone is UTC+14 for the call.
+    saved = os.environ.get("TZ")
+    os.environ["TZ"] = "Etc/GMT-14"  # POSIX sign: UTC+14, neither UTC nor the clock's +11
+    time.tzset()
+    try:
+        when = datetime(2026, 11, 14, 10, 0, 0, 7, tzinfo=timezone(timedelta(hours=11)))
+        path = smoke.fixture_path(Path("d"), "m", when)
+    finally:
+        if saved is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = saved
+        time.tzset()
+    assert path == Path("d") / "smoke_m_20261113T230000000007Z.json"
