@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -71,32 +72,66 @@ async def count_tokens_preflight(
     return result.input_tokens
 
 
-_KEPT_HEADERS = ("content-type", "request-id")
+# The headers that describe the encoded body. The tee hands on DECODED bytes (httpx2 asks for
+# compression by default), so a stale `Content-Encoding: gzip` would make the adapter's read fail
+# and a `Content-Length` would count the wrong bytes. Every other header passes: `retry-after`
+# (W3.2-X17) reaches the loop's backoff, `request-id` still names a failed request.
+_ENCODED_BODY_HEADERS = frozenset({"content-encoding", "content-length"})
+
+
+class _TeeStream(httpx2.AsyncByteStream):
+    """The inner response's decoded body, handed on chunk by chunk as it arrives and kept in `sink`
+    on the way, so the reader sees each chunk when it lands and can stop early."""
+
+    def __init__(self, response: httpx2.Response, sink: bytearray) -> None:
+        self._response = response
+        self._sink = sink
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._response.aiter_bytes():
+            self._sink.extend(chunk)
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._response.aclose()
 
 
 class CapturingTransport(httpx2.AsyncBaseTransport):
     """Tees every response for `capture_url` into `captured` (invariant 6 fixture capture) without
-    touching the adapter. Wraps any inner transport — a live `AsyncHTTPTransport`, or a
-    `MockTransport` in tests. Reads the body once, returns a fresh buffered response, same bytes."""
+    touching the adapter. Wraps any inner transport: a live `AsyncHTTPTransport`, or a
+    `MockTransport` in tests. The body passes through as it arrives (W3.1-K1), so a stream the
+    adapter stops reading at its first error frame (Z-stop) is captured up to there and never read
+    to its end first, and the thinking relay streams as it does without the tee. Any other URL,
+    the count_tokens pre-flight among them, is returned untouched."""
 
     def __init__(self, inner: httpx2.AsyncBaseTransport, capture_url: str) -> None:
         self._inner = inner
         self._capture_url = capture_url
-        self.captured: list[bytes] = []
+        self._sinks: list[bytearray] = []
+
+    @property
+    def captured(self) -> list[bytes]:
+        """Each captured response's decoded body, in order, as far as the adapter read it."""
+        return [bytes(sink) for sink in self._sinks]
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         response = await self._inner.handle_async_request(request)
-        body = await response.aread()  # DECODED bytes (httpx2 requests compression by default)
-        if str(request.url) == self._capture_url:
-            self.captured.append(body)
-        # Reconstruct with status + body + two harmless headers. Re-attaching the inner headers
-        # wholesale would carry a stale `Content-Encoding: gzip` / `Content-Length` over
-        # already-decoded bytes and make the adapter's body read error on a live gzipped response;
-        # httpx2 recomputes `Content-Length` from `content=`. `content-type` is kept because the
-        # typed count_tokens pre-flight parses through this tee too, and `request-id` so a teed
-        # status error still names the request.
-        kept = {k: v for k, v in response.headers.items() if k.lower() in _KEPT_HEADERS}
-        return httpx2.Response(response.status_code, headers=kept, content=body, request=request)
+        if str(request.url) != self._capture_url:
+            return response
+        sink = bytearray()
+        self._sinks.append(sink)
+        headers = [
+            (name, value)
+            for name, value in response.headers.multi_items()
+            if name.lower() not in _ENCODED_BODY_HEADERS
+        ]
+        return httpx2.Response(
+            response.status_code,
+            headers=headers,
+            stream=_TeeStream(response, sink),
+            request=request,
+            extensions=response.extensions,
+        )
 
 
 def write_fixtures(
