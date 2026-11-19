@@ -7,6 +7,7 @@ Later units grow this file with the verdict state machine and the enqueued follo
 """
 
 import asyncio
+import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
@@ -119,6 +120,84 @@ async def test_capture_prey_is_atomic(tmp_path: Path) -> None:
         assert row is not None and row[0] == 0  # row rolled back
     finally:
         await fresh.close()
+
+
+async def _captures(db_path: Path) -> tuple[int, int, list[tuple[object, ...]]]:
+    """(prey_captured events, prey rows, every run's outcome and reason), read on a fresh
+    connection, so only what was committed counts."""
+    fresh = await db.connect(db_path)
+    try:
+        async with fresh.execute(
+            "SELECT COUNT(*) FROM trajectory_events WHERE type = 'prey_captured'"
+        ) as cur:
+            row = await cur.fetchone()
+        n_events = int(row[0]) if row is not None else -1
+        async with fresh.execute("SELECT COUNT(*) FROM prey") as cur:
+            row = await cur.fetchone()
+        n_prey = int(row[0]) if row is not None else -1
+        async with fresh.execute("SELECT outcome, abort_reason FROM runs") as cur:
+            runs = [tuple(r) for r in await cur.fetchall()]
+    finally:
+        await fresh.close()
+    return n_events, n_prey, runs
+
+
+async def test_a_cancel_inside_a_capture_leaves_no_half_capture(tmp_path: Path) -> None:
+    # aiosqlite runs a statement even when the task awaiting it is cancelled, and run_hunt's
+    # cancel clause commits finish_run on the same connection. A daemon shutdown that landed on
+    # the capture's first INSERT therefore committed a PreyCapturedEvent with no prey row.
+    db_path = tmp_path / "rex.db"
+    conn = await db.connect(db_path)
+    armed, entered, release = threading.Event(), threading.Event(), threading.Event()
+
+    def hold_one_statement() -> int:
+        # Runs in aiosqlite's worker thread: holds the first statement after the brain returns,
+        # the capture's event INSERT, until the test has cancelled the hunt.
+        if armed.is_set() and not entered.is_set():
+            entered.set()
+            release.wait(5)
+        return 0
+
+    await conn.set_progress_handler(hold_one_statement, 1)
+
+    async def brain(_context: list[object], _sink: object) -> Decision:
+        armed.set()
+        return HuntComplete(catch=["posting:mock-gym"])
+
+    task = asyncio.create_task(
+        run_hunt(conn, territory="mock-gym", brain=brain, registry=ToolRegistry())  # type: ignore[arg-type]
+    )
+    assert await asyncio.to_thread(entered.wait, 5)  # the worker is inside the event INSERT
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await conn.close()
+    assert await _captures(db_path) == (0, 0, [("aborted", "daemon shutdown")])
+
+
+async def test_an_error_inside_a_capture_leaves_no_half_capture(tmp_path: Path) -> None:
+    # The same edge through the loop's backstop: the prey INSERT fails, the `<loop>` ErrorEvent
+    # is appended and committed on the same connection, and with it the capture's event INSERT.
+    db_path = tmp_path / "rex.db"
+    conn = await db.connect(db_path)
+    real_execute = conn.execute
+
+    def fail_on_prey_insert(sql: str, *args: object, **kwargs: object) -> object:
+        if "INSERT INTO prey" in sql:
+            raise RuntimeError("disk full mid-capture")
+        return real_execute(sql, *args, **kwargs)  # type: ignore[arg-type]
+
+    async def brain(_context: list[object], _sink: object) -> Decision:
+        return HuntComplete(catch=["posting:mock-gym"])
+
+    conn.execute = fail_on_prey_insert  # type: ignore[method-assign]
+    try:
+        await run_hunt(conn, territory="mock-gym", brain=brain, registry=ToolRegistry())  # type: ignore[arg-type]
+    finally:
+        conn.execute = real_execute  # type: ignore[method-assign]
+        await conn.close()
+    assert await _captures(db_path) == (0, 0, [("aborted", "unhandled exception in loop")])
 
 
 # ── Unit 2: the verdict state machine (guarded, idempotent) + the projection ──────────────
