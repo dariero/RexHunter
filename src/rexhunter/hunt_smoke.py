@@ -11,7 +11,7 @@ NOT a test — pytest must never spend. Two modes:
 The default paid path is opt-in twice over — it refuses to spend unless `REXHUNTER_BRAIN=live` and a
 key are both set — and drives ONE budget-capped multi-iteration hunt on `SMOKE_MODEL` against the
 deterministic mock-gym `sniff` board. It tees each brain call's raw response bytes into golden
-fixtures (invariant 6 — the brain's raw response is not otherwise in the log), then reports the
+fixtures (invariant 6; since W3.3 the log keeps every attempt's bytes too), then reports the
 outcome, spend, and any findings (a `max_tokens` truncation, or parallel tool calls past the flag).
 """
 

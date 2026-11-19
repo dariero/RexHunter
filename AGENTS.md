@@ -51,7 +51,7 @@ the ADR.
   typed signature (one definition = schema + validator + handler). **No agent framework.**
   A retried brain call or tool waits a jittered backoff first (`loop.backoff_delay`, W3.2-B2).
 - **Transport:** SSE downstream (`EventSource`, `Last-Event-ID` resume); plain HTTP POST
-  upstream for verdicts/config.
+  upstream for verdicts (`POST /verdict`; no config endpoint is built).
 - **LLM (`P5`):** provider-agnostic `brain()` – loop imports no vendor SDK. The adapter
   (`brain.py`) runs on the Anthropic SDK in raw mode (`with_raw_response` /
   `with_streaming_response`, `max_retries=0` – the loop owns retries); our SSE assembler and
@@ -76,8 +76,9 @@ the ADR.
   valid UTF-8 makes every request fail before it is sent, as it did before W2.1. A client
   `copy()` or `with_options()` keeps these entries but re-reads the variable, so a name or
   spelling added to it after the factory ran is not covered on the copy and can reach the wire, a
-  second spelling of a pinned name included; src/ never copies the client. Native tool calling,
-  constrained decoding where available, `ThinkingDelta` event relay, per-event cost accounting.
+  second spelling of a pinned name included; src/ never copies the client. Native tool calling
+  (constrained decoding is not built: no request carries `strict` or `output_config`),
+  `ThinkingDelta` event relay, per-event cost accounting.
   Each `ToolCallEvent` the live brain writes stores the whole assistant turn (`assistant_content`,
   W2.3), and the next call sends it back as stored, every block in order. The live model is
   `claude-sonnet-5-5` (`SMOKE_MODEL`, W2.5); a thinking-off hunt sends that model's row of
@@ -390,7 +391,9 @@ run `aborted`, "malformed provider response" (W3.1-A1), with one `<brain>` Error
 bytes and the cause in `detail` (`stop_reason='max_tokens'`, the open blocks, the unparsed text).
 Each check has its mutant, red then reverted (W3.1-M1 to W3.1-M22, cp2 to cp5b). The docs (stop
 reasons, streaming, thinking, errors and the tool-use pages, read 15 Nov 2026, saved with sha256 in
-cp1 §2): no page tells a client to run a tool when `stop_reason` is not `tool_use`, and none states
+cp1 §2): no page tells a client to run a tool when `stop_reason` is not `tool_use` (the thinking
+page, read 19 Nov 2026, continues a turn that stopped on `max_tokens` soon after a tool call with
+"a `tool_result` for each `tool_use` block in that turn": fork S2, not taken; W3.4b), and none states
 where an error frame can arrive, what follows it, or whether a cut `tool_use` gets its
 `content_block_stop`. No cut shape has been seen live: there was no paid run, and every cut and
 error stream is built in the tests. The Unit 3a line above ("display streams, execution waits")

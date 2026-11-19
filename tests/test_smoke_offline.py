@@ -82,7 +82,7 @@ def test_smoke_request_body_omits_sonnet5_forbidden_params() -> None:
     assert body["model"] == "claude-sonnet-5-5"
     assert body["max_tokens"] >= 1024  # room for adaptive-thinking tokens + the tool_use block
     for forbidden in ("temperature", "top_p", "top_k", "thinking"):
-        assert forbidden not in body  # any of these → 400 on Sonnet 5
+        assert forbidden not in body  # a sampling param is a 400; no `thinking`: the default runs
     assert body["messages"][-1]["role"] != "assistant"  # no assistant prefill (→ 400)
 
 
