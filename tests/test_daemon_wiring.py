@@ -19,6 +19,7 @@ from pathlib import Path
 
 import aiosqlite
 import anthropic
+import httpx2
 import pytest
 
 from rexhunter import brain, cost, db, scheduler, server, stub
@@ -91,6 +92,65 @@ async def test_live_selects_the_streaming_thinking_brain(monkeypatch: pytest.Mon
     finally:
         assert isinstance(client, anthropic.AsyncAnthropic)
         await client.close()  # closed without ever calling brain() → zero spend
+
+
+def _sse(data: dict[str, object]) -> bytes:
+    return f"event: {data['type']}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+async def test_the_live_daemon_brain_asks_for_summarized_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On Claude 5 and later models, Claude Sonnet 5.5 among them, "`display` defaults to
+    # `"omitted"` on these models, so the thinking text is hidden until you opt in" (the thinking
+    # docs, read 19 Nov 2026), so a `display` dropped from HUNT_THINKING would empty the relay. The
+    # spy test above compares HUNT_THINKING with itself; this one reads the daemon's request off
+    # the wire (offline, a dummy key).
+    monkeypatch.setenv("REXHUNTER_BRAIN", "live")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    needs_help: dict[str, object] = {
+        "type": "tool_use",
+        "id": "toolu_1",
+        "name": "needs_help",
+        "input": {},
+    }
+    reply = b"".join(
+        [
+            _sse(
+                {
+                    "type": "message_start",
+                    "message": {"model": brain.SMOKE_MODEL, "content": [], "usage": {}},
+                }
+            ),
+            _sse({"type": "content_block_start", "index": 0, "content_block": needs_help}),
+            _sse({"type": "content_block_stop", "index": 0}),
+            _sse({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {}}),
+            _sse({"type": "message_stop"}),
+        ]
+    )
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(json.loads(request.content))
+        return httpx2.Response(200, content=reply)
+
+    factory = brain.anthropic_client
+
+    def offline_client(api_key: str, *, timeout: float) -> anthropic.AsyncAnthropic:
+        return factory(api_key, transport=httpx2.MockTransport(handler), timeout=timeout)
+
+    monkeypatch.setattr(brain, "anthropic_client", offline_client)
+    brain_for, client = brain.select_brain_for(stub.build_registry())
+    assert client is not None
+
+    async def sink(_text: str) -> None:
+        return None
+
+    try:
+        await brain_for("mock-gym")([], sink)
+    finally:
+        await client.close()
+    assert [body["thinking"] for body in bodies] == [{"type": "adaptive", "display": "summarized"}]
 
 
 # ── W.1 · the id-scoped daemon spend ceiling (Tiny Arms for money) ─────────────
@@ -193,6 +253,21 @@ async def test_daemon_launches_under_the_ceiling(tmp_path: Path) -> None:
     run_id = await _run_one(db_path, flag, daemon_spend_ceiling_usd=1.0)
     assert run_id is not None  # a run_id — the hunt launched
     assert flag["launched"] is True
+
+
+async def test_a_launch_at_exactly_the_ceiling_is_refused(tmp_path: Path) -> None:
+    # W3.2-R2-M: the gate is `>=` (scheduler._bounded_hunt); no test told it from `>`. The
+    # ceiling here is the fold itself, so the two are equal to the last bit.
+    db_path = tmp_path / "rex.db"
+    await _seed_usage(db_path, input_tokens=1_000_000, output_tokens=0)
+    conn = await db.connect(db_path)
+    try:
+        ceiling = await scheduler.daemon_spend_usd(conn)
+    finally:
+        await conn.close()
+    flag = {"launched": False}
+    run_id = await _run_one(db_path, flag, daemon_spend_ceiling_usd=ceiling)
+    assert (run_id, flag["launched"]) == (None, False)
 
 
 # ── W.2 · the ThinkingSink closure under the REAL lifespan (offline, no spend) ─

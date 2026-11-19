@@ -1,8 +1,9 @@
 """P5 Unit 2b — the single live smoke call (the FIRST PAID call). Spends on exactly one call.
 
-NOT a test — pytest must never spend. Run manually once, with the key exported:
+NOT a test — pytest must never spend. Run manually once, with the key exported and the second
+opt-in set, as hunt_smoke asks for (`--count-only` needs only the key):
 
-    ANTHROPIC_API_KEY=... PYTHONPATH=src uv run python -m rexhunter.smoke
+    ANTHROPIC_API_KEY=... REXHUNTER_BRAIN=live PYTHONPATH=src uv run python -m rexhunter.smoke
 
 Sequence (persist-first, one call, no retry — the hard one-call guard):
   1. build the title-stripped tools + a directive message (bias toward a real `sniff` tool_use,
@@ -89,6 +90,11 @@ async def count_tokens(
             f"[preflight http {exc.status_code}] count_tokens failed: fix before spending.\n"
             f"{exc.response.text[:2000]}"
         ) from exc
+    except anthropic.APIConnectionError as exc:
+        raise SystemExit(
+            f"[preflight transport] count_tokens failed before any paid call: {exc!r} "
+            f"(cause: {exc.__cause__!r})"
+        ) from exc
     return result.input_tokens
 
 
@@ -115,19 +121,29 @@ async def _preflight_and_pay(
             f"[http {exc.status_code}] paid call failed:\n"
             f"{exc.response.content.decode(errors='replace')[:2000]}"
         ) from exc
+    except anthropic.APIConnectionError as exc:
+        # The SDK raises this for a failure while sending and for a body cut while it reads it,
+        # so no reply bytes exist to persist; a request that reached the API can still be billed.
+        raise SystemExit(
+            f"[transport] paid call failed, no reply kept: {exc!r} (cause: {exc.__cause__!r})"
+        ) from exc
     return await resp.read()
 
 
 def _reserve(fixture_dir: Path, now: datetime) -> tuple[Path, BufferedWriter]:
     """Create this run's fixture file BEFORE any call (sync, like hunt_smoke.write_fixtures).
     "xb" refuses an existing name, so a collision costs $0 and a recorded fixture is never
-    overwritten."""
+    overwritten. The directory must already exist: one this run made would be left behind when
+    the run failed (F8 d). Any reason the file cannot be made refuses at $0 too (F8 e)."""
     path = fixture_path(fixture_dir, brain.SMOKE_MODEL, now)
-    fixture_dir.mkdir(parents=True, exist_ok=True)
     try:
         return path, path.open("xb")
     except FileExistsError as exc:
         raise SystemExit(f"[fixture] {path} exists: refusing before any call.") from exc
+    except OSError as exc:
+        raise SystemExit(
+            f"[fixture] cannot reserve {path}: {exc!r}: refusing before any call."
+        ) from exc
 
 
 async def run_smoke(
@@ -159,7 +175,14 @@ async def run_smoke(
         # Drop the reservation only while no paid reply has reached it (a non-200, a transport
         # error, Ctrl-C, a cancel); never once one has (persist-first).
         if not paid:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                # Never mask the failure in flight (F8 c): name the empty file left behind.
+                print(
+                    f"[fixture] could not drop the empty reservation {path}: {exc!r}",
+                    file=sys.stderr,
+                )
     print(f"[fixture] wrote {len(raw)} bytes -> {path}")
 
     if json.loads(raw).get("stop_reason") == "max_tokens":
@@ -176,6 +199,10 @@ def main() -> None:
     if not api_key:
         raise SystemExit("ANTHROPIC_API_KEY is not set — export it before the smoke call.")
     count_only = "--count-only" in sys.argv  # FREE pre-flight only; spends NOTHING.
+    if not count_only and os.environ.get("REXHUNTER_BRAIN") != "live":
+        raise SystemExit(
+            "refusing to spend: set REXHUNTER_BRAIN=live to run the paid smoke (opt-in only)."
+        )
 
     async def _go() -> None:
         # max_retries=0 (brain.anthropic_client): exactly one messages call, the hard one-call

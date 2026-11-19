@@ -100,7 +100,7 @@ class RunView:
     recorded write-once on its runs row at start and overlaid here (never set by the fold) —
     Step 5's HP/stamina denominators; None = a pre-4a row (no bar). ``current_tool`` is the tool
     of the last ToolCallEvent not yet closed by a result (or a matching error) — paired by
-    run-scoped position, not ``tool_use_id`` (which is "" on the stub, loop.py:198,233)."""
+    run-scoped position, not ``tool_use_id`` (which is "" on the stub, `loop._run_tool`)."""
 
     run_id: str
     current_tool: str | None

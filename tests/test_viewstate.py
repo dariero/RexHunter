@@ -26,7 +26,8 @@ _CLOCK = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)  # noon -> DAY; injected, never
 
 async def _seed_stub_hunt(conn: aiosqlite.Connection) -> tuple[str, str]:
     """Persist one stub hunt's trajectory — a sniff tool_call -> tool_result, then a capture — the
-    default daemon's emitted set (loop.py:195,229; verdicts.py:72). Returns (run_id, prey_id)."""
+    default daemon's emitted set (`loop._run_tool`; `verdicts.capture_prey`). Returns (run_id,
+    prey_id)."""
     run_id = await db.start_run(conn, territory="mock-gym")
     await db.append_event(conn, run_id, events.ToolCallEvent(tool="sniff", raw_request=b"{}"))
     await db.append_event(

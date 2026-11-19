@@ -11,7 +11,7 @@ NOT a test — pytest must never spend. Two modes:
 The default paid path is opt-in twice over — it refuses to spend unless `REXHUNTER_BRAIN=live` and a
 key are both set — and drives ONE budget-capped multi-iteration hunt on `SMOKE_MODEL` against the
 deterministic mock-gym `sniff` board. It tees each brain call's raw response bytes into golden
-fixtures (invariant 6 — the brain's raw response is not otherwise in the log), then reports the
+fixtures (invariant 6; since W3.3 the log keeps every attempt's bytes too), then reports the
 outcome, spend, and any findings (a `max_tokens` truncation, or parallel tool calls past the flag).
 """
 
@@ -20,9 +20,11 @@ import json
 import os
 import sys
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import anthropic
 import httpx2
 
@@ -71,32 +73,66 @@ async def count_tokens_preflight(
     return result.input_tokens
 
 
-_KEPT_HEADERS = ("content-type", "request-id")
+# The headers that describe the encoded body. The tee hands on DECODED bytes (httpx2 asks for
+# compression by default), so a stale `Content-Encoding: gzip` would make the adapter's read fail
+# and a `Content-Length` would count the wrong bytes. Every other header passes: `retry-after`
+# (W3.2-X17) reaches the loop's backoff, `request-id` still names a failed request.
+_ENCODED_BODY_HEADERS = frozenset({"content-encoding", "content-length"})
+
+
+class _TeeStream(httpx2.AsyncByteStream):
+    """The inner response's decoded body, handed on chunk by chunk as it arrives and kept in `sink`
+    on the way, so the reader sees each chunk when it lands and can stop early."""
+
+    def __init__(self, response: httpx2.Response, sink: bytearray) -> None:
+        self._response = response
+        self._sink = sink
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._response.aiter_bytes():
+            self._sink.extend(chunk)
+            yield chunk
+
+    async def aclose(self) -> None:
+        await self._response.aclose()
 
 
 class CapturingTransport(httpx2.AsyncBaseTransport):
     """Tees every response for `capture_url` into `captured` (invariant 6 fixture capture) without
-    touching the adapter. Wraps any inner transport — a live `AsyncHTTPTransport`, or a
-    `MockTransport` in tests. Reads the body once, returns a fresh buffered response, same bytes."""
+    touching the adapter. Wraps any inner transport: a live `AsyncHTTPTransport`, or a
+    `MockTransport` in tests. The body passes through as it arrives (W3.1-K1), so a stream the
+    adapter stops reading at its first error frame (Z-stop) is captured up to there and never read
+    to its end first, and the thinking relay streams as it does without the tee. Any other URL,
+    the count_tokens pre-flight among them, is returned untouched."""
 
     def __init__(self, inner: httpx2.AsyncBaseTransport, capture_url: str) -> None:
         self._inner = inner
         self._capture_url = capture_url
-        self.captured: list[bytes] = []
+        self._sinks: list[bytearray] = []
+
+    @property
+    def captured(self) -> list[bytes]:
+        """Each captured response's decoded body, in order, as far as the adapter read it."""
+        return [bytes(sink) for sink in self._sinks]
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         response = await self._inner.handle_async_request(request)
-        body = await response.aread()  # DECODED bytes (httpx2 requests compression by default)
-        if str(request.url) == self._capture_url:
-            self.captured.append(body)
-        # Reconstruct with status + body + two harmless headers. Re-attaching the inner headers
-        # wholesale would carry a stale `Content-Encoding: gzip` / `Content-Length` over
-        # already-decoded bytes and make the adapter's body read error on a live gzipped response;
-        # httpx2 recomputes `Content-Length` from `content=`. `content-type` is kept because the
-        # typed count_tokens pre-flight parses through this tee too, and `request-id` so a teed
-        # status error still names the request.
-        kept = {k: v for k, v in response.headers.items() if k.lower() in _KEPT_HEADERS}
-        return httpx2.Response(response.status_code, headers=kept, content=body, request=request)
+        if str(request.url) != self._capture_url:
+            return response
+        sink = bytearray()
+        self._sinks.append(sink)
+        headers = [
+            (name, value)
+            for name, value in response.headers.multi_items()
+            if name.lower() not in _ENCODED_BODY_HEADERS
+        ]
+        return httpx2.Response(
+            response.status_code,
+            headers=headers,
+            stream=_TeeStream(response, sink),
+            request=request,
+            extensions=response.extensions,
+        )
 
 
 def write_fixtures(
@@ -115,6 +151,14 @@ def write_fixtures(
         path.write_bytes(raw)
         paths.append(path)
     return paths
+
+
+async def fresh_db_run_id(conn: aiosqlite.Connection) -> str:
+    """The id of the one run a harness's fresh DB holds: the fixture directory's name when the hunt
+    raised before it returned its id (a cancel, Ctrl-C). A DB with no run gives "unknown"."""
+    async with conn.execute("SELECT id FROM runs ORDER BY started_at LIMIT 1") as cur:
+        row = await cur.fetchone()
+    return str(row[0]) if row is not None else "unknown"
 
 
 def _report_findings(captured: list[bytes]) -> None:
@@ -150,6 +194,7 @@ async def run_live_hunt(api_key: str) -> None:
         )
         db_path = Path(tempfile.mkdtemp(prefix="rexhunter-hunt-")) / "rex.db"
         conn = await db.connect(db_path)
+        run_id: str | None = None
         try:
             run_id = await run_hunt(
                 conn,
@@ -168,6 +213,12 @@ async def run_live_hunt(api_key: str) -> None:
                 row = await cur.fetchone()
             outcome, reason = (str(row[0]), row[1]) if row else ("unknown", None)
         finally:
+            # Persist first (invariant 6): every captured response is on disk before anything
+            # else can fail (a cancel, a raising read above) and before the reporter re-reads it.
+            if tee.captured:
+                named = run_id if run_id is not None else await fresh_db_run_id(conn)
+                paths = write_fixtures(tee.captured, named)
+                print(f"[fixtures] wrote {len(paths)} golden fixture(s) under hunt_{named}/")
             await conn.close()
 
     print(
@@ -175,8 +226,6 @@ async def run_live_hunt(api_key: str) -> None:
         f"spend=${spend:.4f} (ceiling ${COST_CEILING_USD})"
     )
     _report_findings(tee.captured)
-    paths = write_fixtures(tee.captured, run_id)
-    print(f"[fixtures] wrote {len(paths)} golden fixture(s) under hunt_{run_id}/")
 
 
 def main() -> None:

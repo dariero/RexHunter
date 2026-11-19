@@ -117,7 +117,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             await client.close()
 
 
-app = FastAPI(lifespan=lifespan)
+# fastapi turns its OpenTelemetry tracing, metrics, logs and operation spans on by default, and
+# FASTAPI_OTEL_AUTO_CONFIGURE=true would add OTLP exporters from the environment. Nothing here reads
+# them, and the logs would carry exception messages and stack traces, so all five are pinned off.
+app = FastAPI(
+    lifespan=lifespan,
+    telemetry={
+        "tracing": False,
+        "metrics": False,
+        "logs": False,
+        "operation_spans": False,
+        "auto_configure": False,
+    },
+)
 
 # The board's CSS/JS live as plain files (7b): SERVED byte-for-byte by Starlette's StaticFiles
 # (inside FastAPI — no new dependency), never built/bundled — the no-build rule holds; the split

@@ -96,6 +96,19 @@ def _utcnow() -> str:
 
 async def connect(path: str | Path) -> aiosqlite.Connection:
     conn = await aiosqlite.connect(path)
+    try:
+        await _bootstrap(conn)
+    except BaseException:
+        # A cancel (daemon shutdown) or an error part way through would leak the open
+        # connection: its worker thread outlives the task, and aiosqlite's __del__ later stops it
+        # on whatever event loop is current, a closed one in the test suite ("Event loop is
+        # closed", tests/test_db_connect.py).
+        await conn.close()
+        raise
+    return conn
+
+
+async def _bootstrap(conn: aiosqlite.Connection) -> None:
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA busy_timeout=5000")
     await conn.execute("PRAGMA foreign_keys=ON")
@@ -111,7 +124,6 @@ async def connect(path: str | Path) -> aiosqlite.Connection:
         if name not in columns:
             await conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {decl}")
     await conn.commit()
-    return conn
 
 
 async def start_run(

@@ -45,7 +45,7 @@ _RUN_IDS = ["run-a", "run-b", "run-c"]
 
 _small_bytes = st.binary(max_size=6)  # inv-6 raw I/O may be non-utf8 binary — the reducer must cope
 _small_text = st.text(max_size=8)
-# "" is the STUB reality (loop.py:198,233): the reducer must pair tool call/result by run-scoped
+# "" is the STUB reality (`loop._run_tool`): the reducer must pair tool call/result by run-scoped
 # position, NOT tool_use_id equality (which collides at "").
 _tool_use_ids = st.sampled_from(["", "tu_1", "tu_2"])
 
@@ -218,7 +218,8 @@ def test_reducer_is_total_over_the_non_producible_sniff_event() -> None:
 
 def test_projects_a_real_stub_hunt_trajectory() -> None:
     """The §2 finding, pinned: the default stub hunt emits tool_call -> tool_result -> prey_captured
-    (loop.py:195,229; verdicts.py:72). The reducer projects one penned prey and a closed tool."""
+    (`loop._run_tool`; `verdicts.capture_prey`). The reducer projects one penned prey and a closed
+    tool."""
     rows = [
         LogRow(
             id=1,

@@ -49,18 +49,20 @@ asyncio.run(hunt(sys.argv[1]))
 def killed_hunt(tmp_path: Path) -> KilledHunt:
     """Run a hunt in a real subprocess, SIGKILL it mid-hunt, return its confirmed commits."""
     db_path = tmp_path / "rex.db"
-    proc = subprocess.Popen(
+    # The with block closes the stdout pipe and waits for the killed child; without it the pipe
+    # was left to the garbage collector, an unclosed-file ResourceWarning (F12, R9).
+    with subprocess.Popen(
         [sys.executable, "-c", WRITER, str(db_path)],
         stdout=subprocess.PIPE,
         text=True,
         env={**os.environ, "PYTHONPATH": SRC},
-    )
-    out = proc.stdout
-    assert out is not None
-    run_id = out.readline().strip()
-    confirmed = [int(out.readline()) for _ in range(CONFIRMED_APPENDS)]
-    proc.kill()  # SIGKILL: no atexit, no graceful close - a mid-hunt power cut
-    proc.wait()
+    ) as proc:
+        out = proc.stdout
+        assert out is not None
+        run_id = out.readline().strip()
+        confirmed = [int(out.readline()) for _ in range(CONFIRMED_APPENDS)]
+        proc.kill()  # SIGKILL: no atexit, no graceful close - a mid-hunt power cut
+    assert out.closed
     return db_path, run_id, confirmed
 
 

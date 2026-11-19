@@ -75,17 +75,25 @@ async def capture_prey(
     payload = event.model_dump_json()
     # Reuse the log's append SQL but DON'T go through db.append_event — its per-call commit would
     # split this into two transactions. Both writes ride one commit below.
-    cursor = await conn.execute(
-        db.APPEND_EVENT_SQL,
-        (run_id, event.type, payload, now, run_id),
-    )
-    event_id = cursor.lastrowid
-    await conn.execute(
-        "INSERT INTO prey (id, run_id, territory, posting, status, captured_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
-        (prey_id, run_id, territory, posting, AWAITING, now),
-    )
-    await conn.commit()
+    try:
+        cursor = await conn.execute(
+            db.APPEND_EVENT_SQL,
+            (run_id, event.type, payload, now, run_id),
+        )
+        event_id = cursor.lastrowid
+        await conn.execute(
+            "INSERT INTO prey (id, run_id, territory, posting, status, captured_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (prey_id, run_id, territory, posting, AWAITING, now),
+        )
+        await conn.commit()
+    except BaseException:
+        # A cancel or an error between the two INSERTs leaves the first pending on this
+        # connection, and the caller's next commit (run_hunt's finish_run, or the `<loop>`
+        # ErrorEvent) would make it durable alone. aiosqlite runs a statement even after its
+        # awaiting task is cancelled, and runs requests in order, so this rollback lands after it.
+        await conn.rollback()
+        raise
     # Write-ahead (invariant 1), the SECOND trajectory writer: publish the PreyCapturedEvent post
     # commit so a stub hunt's capture reaches the live stream, not just the log. lastrowid is the
     # event's global id (the trajectory INSERT above; the prey INSERT is a different table).
