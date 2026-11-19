@@ -29,7 +29,7 @@ import anthropic
 import httpx2
 import pytest
 
-from rexhunter import brain, cost, db, hunt_smoke
+from rexhunter import brain, cost, db, hunt_smoke, stub
 from rexhunter.events import (
     BrainExchangeEvent,
     ToolCallEvent,
@@ -70,9 +70,13 @@ MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 
 
 async def sniff(prey: str) -> str:
-    """The mock-gym board tool the live hunt ran (stub.sniff without its 5 s beat): echoes the
-    scent, so every tool_result replays byte for byte."""
+    # The mock-gym board tool the live hunt ran, without stub.sniff's 5 s beat: it echoes the
+    # scent, so every tool_result replays byte for byte.
     return f"posting:{prey}"
+
+
+# The tool description the live run sent, which the model reads: stub.sniff's docstring.
+sniff.__doc__ = stub.sniff.__doc__
 
 
 def _payload(path: Path) -> dict[str, Any]:
@@ -289,3 +293,11 @@ async def test_replay_is_deterministic_across_two_passes(
     second, _, _ = await _replay(tmp_path / "b.db", mock_anthropic)
     assert any(isinstance(e, ToolCallEvent) for e in first)  # never vacuous
     assert _norm(first) == _norm(second)
+
+
+async def test_the_replay_sends_the_live_tool_description() -> None:
+    # Every live hunt registered stub.sniff (stub.build_registry()), whose docstring is the tool
+    # description the model reads; a replay that registers another sends a different `tools`.
+    reg = ToolRegistry()
+    reg.tool(sniff)
+    assert brain.build_tools(reg) == brain.build_tools(stub.build_registry())
