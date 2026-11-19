@@ -158,3 +158,21 @@ async def db_write_smoke(conn: aiosqlite.Connection) -> str:
     run_id = await db.start_run(conn, territory="smoke")
     await db.append_event(conn, run_id, SniffEvent(prey="post-shutdown write"))
     return run_id
+
+
+async def test_fastapi_telemetry_is_off() -> None:
+    # fastapi 0.162.2 turns tracing, metrics, logs and operation spans on by default over the
+    # global OpenTelemetry providers, and FASTAPI_OTEL_AUTO_CONFIGURE=true adds OTLP exporters
+    # (fastapi/applications.py:1011-1023). Nothing reads them, and the logs carry exception messages
+    # and stack traces, so the daemon pins all five off. The config has no public accessor.
+    config = vars(server.app)["_telemetry"]
+    assert {key: config[key] for key in TELEMETRY_OFF} == TELEMETRY_OFF
+
+
+TELEMETRY_OFF = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}

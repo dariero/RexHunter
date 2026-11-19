@@ -20,3 +20,5 @@ __pycache__/
 # Tool caches
 .ruff_cache/
 .pytest_cache/
+# hypothesis writes its own `*` .gitignore inside; this line holds if that file is ever missing
+.hypothesis/
