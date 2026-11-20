@@ -18,20 +18,17 @@ that are load-bearing at spend time:
     calls — a ceiling that aborts after call one would spend and prove nothing.
 
 The captured raw SSE stream of each brain call becomes a golden fixture (invariant 6); the offline
-replay test re-drives them through the streaming assembler with zero spend.
+replay test re-drives them through the streaming assembler with zero spend. The harness is
+`hunt_smoke`'s, run with this module's shape.
 """
 
-import asyncio
-import tempfile
 from pathlib import Path
 from typing import Any
 
 import anthropic
 import httpx2
 
-from rexhunter import brain, cost, db, stub
-from rexhunter.hunt_smoke import CapturingTransport, fresh_db_run_id, write_fixtures
-from rexhunter.loop import run_hunt
+from rexhunter import brain, hunt_smoke
 from rexhunter.tools import ToolRegistry
 
 TERRITORY = "mock-gym"
@@ -47,36 +44,14 @@ MAX_ITERATIONS = 3  # a few turns — enough to reach call two, the reconstructe
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 
 
-def _hunt_body(registry: ToolRegistry, *, territory: str = TERRITORY) -> dict[str, Any]:
-    """The iteration-1 body — the EXACT shape the streaming adapter's first call sends, so the free
-    pre-flight prices precisely what the paid call spends on (minus `stream`, which count_tokens and
-    the body builder don't carry)."""
-    return brain.build_request_body(
-        model=brain.SMOKE_MODEL,
-        max_tokens=HUNT_MAX_TOKENS,
-        messages=brain.project_messages(territory, []),
-        tools=brain.build_tools(registry),
-        system=brain.HUNT_SYSTEM_PROMPT,
-        thinking=THINKING,
-        tool_choice=brain.HUNT_TOOL_CHOICE,
-    )
-
-
 async def count_tokens_preflight(
     client: anthropic.AsyncAnthropic, registry: ToolRegistry, *, territory: str = TERRITORY
 ) -> int:
     """FREE pre-flight: count input tokens for the EXACT thinking-on payload. A non-200 STOPS before
     any paid call — auth / egress / a thinking param count_tokens rejects surfaces here for $0."""
-    body = _hunt_body(registry, territory=territory)
-    count_body: dict[str, Any] = {k: v for k, v in body.items() if k != "max_tokens"}
-    try:
-        result = await client.messages.count_tokens(**count_body)
-    except anthropic.APIStatusError as exc:
-        raise SystemExit(
-            f"[preflight http {exc.status_code}] count_tokens rejected the exact payload: "
-            f"fix before spending.\n{exc.response.text[:2000]}"
-        ) from exc
-    return result.input_tokens
+    return await hunt_smoke.count_tokens_preflight(
+        client, registry, territory=territory, thinking=THINKING
+    )
 
 
 def _report_findings(captured: list[bytes]) -> None:
@@ -117,76 +92,27 @@ async def run_live_hunt(
     defaults, so its run DB lands in a fresh directory under the system temp dir that nothing
     removes: since W3.3 that DB holds every attempt's request and response bytes.
     """
-    registry = stub.build_registry()
-    tee = CapturingTransport(inner or brain.live_transport(), brain.MESSAGES_URL)
-    async with brain.anthropic_client(api_key, transport=tee, timeout=180.0) as client:
-        n_in = await count_tokens_preflight(client, registry)
-        print(f"[preflight] count_tokens OK — input_tokens={n_in}")
-        brain_for = brain.adapter_brain_for(
-            client=client,
-            model=brain.SMOKE_MODEL,
-            registry=registry,
-            max_tokens=HUNT_MAX_TOKENS,
-            thinking=THINKING,
-            stream=True,
-        )
-        db_path = Path(tempfile.mkdtemp(prefix="rexhunter-think-", dir=db_dir)) / "rex.db"
-        conn = await db.connect(db_path)
-        run_id: str | None = None
-        paths: list[Path] = []
-        try:
-            run_id = await run_hunt(
-                conn,
-                territory=TERRITORY,
-                brain=brain_for(TERRITORY),
-                registry=registry,
-                cost_ceiling_usd=COST_CEILING_USD,
-                max_iterations=MAX_ITERATIONS,
-                tool_timeout_s=60.0,
-            )
-            events = await db.read_events(conn, run_id)
-            spend = cost.fold_cost(events)
-            async with conn.execute(
-                "SELECT outcome, abort_reason FROM runs WHERE id = ?", (run_id,)
-            ) as cur:
-                row = await cur.fetchone()
-            outcome, reason = (str(row[0]), row[1]) if row else ("unknown", None)
-        finally:
-            # Persist first (invariant 6): every captured stream is on disk before anything else
-            # can fail (a cancel, a raising read above) and before the reporter re-folds it.
-            if tee.captured:
-                named = run_id if run_id is not None else await fresh_db_run_id(conn)
-                paths = write_fixtures(tee.captured, named, fixture_dir=fixture_dir)
-                print(f"[fixtures] wrote {len(paths)} streaming fixture(s) under hunt_{named}/")
-            await conn.close()
-
-    print(
-        f"[hunt] run={run_id} outcome={outcome} reason={reason} brain_calls={len(tee.captured)} "
-        f"spend=${spend:.4f} (ceiling ${COST_CEILING_USD})"
+    return await hunt_smoke.run_capped_hunt(
+        api_key,
+        territory=TERRITORY,
+        thinking=THINKING,
+        stream=True,
+        max_tokens=HUNT_MAX_TOKENS,
+        cost_ceiling_usd=COST_CEILING_USD,
+        max_iterations=MAX_ITERATIONS,
+        client_timeout_s=180.0,
+        db_prefix="rexhunter-think-",
+        fixture_kind="streaming",
+        preflight=count_tokens_preflight,
+        report=_report_findings,
+        inner=inner,
+        fixture_dir=fixture_dir,
+        db_dir=db_dir,
     )
-    _report_findings(tee.captured)
-    return {
-        "run_id": run_id,
-        "outcome": outcome,
-        "reason": reason,
-        "brain_calls": len(tee.captured),
-        "spend": spend,
-        "fixtures": paths,
-    }
 
 
 def main() -> None:
-    api_key, count_only = brain.paid_entry(before="the pre-flight or hunt", paid="hunt")
-
-    async def _go() -> None:
-        if count_only:
-            async with brain.anthropic_client(api_key, timeout=120.0) as client:
-                n = await count_tokens_preflight(client, stub.build_registry())
-            print(f"[count-only] input_tokens={n} — validated, NO paid call made.")
-            return
-        await run_live_hunt(api_key)
-
-    asyncio.run(_go())
+    hunt_smoke.run_main(preflight=count_tokens_preflight, run_live=run_live_hunt)
 
 
 if __name__ == "__main__":
