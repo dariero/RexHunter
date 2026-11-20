@@ -823,6 +823,43 @@ edits: none. 650 tests pass at `89ed4a0` (644 at 71d31ad). Wire: 1 `bb2ef203…c
 `6b9e9a17…98a8` 1519, 3 `3f01481b…c293` 1469, 4 `08e8682c…fd31` 1898, 5 = 2. No subagent, workflow
 or advisor call. Open: the two gaps above, W4-R6 and W4-R8 as dropped, and the W4a entry's list.
 *Next: Darie's.*
+**▶ W5a · Every dependency and CI pin to its latest release – ✅ done on branch `w5-versions`
+(`cd3a09a`→`c18ced2`, 2026-11-20), PR #17.** No API call of any kind, no model change, no request-body
+change; the request headers differ only by the SDK's own version strings. Labels are W5's (cp
+files: this run's checkpoint reports). Darie's request of 20 Nov 2026: every locked package to its
+latest release, the direct floors raised to match, `actions/checkout` and uv in CI to their
+latest. Forks chosen 20 Nov by rex-orchestrator under her delegation: pins-1 and F1-b (a test for
+W5-F1). **Versions** (`cd3a09a`, `uv lock --upgrade` against PyPI on 20 Nov): anthropic 2.6.0 →
+2.11.0, fastapi 0.162.2 → 0.165.0, pydantic 2.14.3 → 2.14.4, pydantic-core 2.50.4 → 2.50.5,
+httpx2 and httpcore2 2.16.0 → 2.16.2, ruff 0.17.4 → 0.17.6, hypothesis 6.170.15 → 6.170.16,
+annotated-doc 0.0.5 → 0.0.7; 39 packages before and after (fastapi 0.165.0 lists `anyio` itself,
+already locked at 4.16.0). Already the latest: aiosqlite 0.22.1, uvicorn 0.54.0, certifi
+2026.10.23, httpx 0.28.1, pyright 1.1.414, pytest 9.2.0. pins-1: the five direct floors in
+pyproject.toml are the new versions (fastapi>=0.165.0, pydantic>=2.14.4, anthropic>=2.11.0,
+ruff>=0.17.6, hypothesis>=6.170.16), so they name what the suite ran on; uv.lock's own entries
+change in those five specifiers only. **CI** (`c18ced2`): `actions/checkout` v6.1.0 → v7.0.1 by
+SHA (`3d3c42e5…90b1`; v7.0.0 blocks fork-PR checkouts under `pull_request_target` and
+`workflow_run`, and this workflow runs on `push` and `pull_request`), uv 0.13.7 → 0.13.9;
+setup-uv v10.3.3 is already the latest. **The SDK bump**, read in its changelog (2.7.0 to
+2.11.0) and its source (2.6.0 against 2.11.0): `_client.py`, `_response.py`, `_streaming.py` and
+`lib/streaming/_messages.py` are unchanged; the `%20` query-string fix in `_base_client.py`
+touches no request of ours (none has a query); every error class the SDK maps is still an
+`APIStatusError`. **W5-F1** (`751d0b6`): httpx2 2.16.1 "Return the response when a redirect has an
+invalid `Location` header and redirects are not followed, instead of raising
+`RemoteProtocolError`". A 307 whose `Location` does not parse was a retryable transport failure,
+so a hunt with `retry_budget=2` sent the request three times; it is now one fatal `<brain>` error,
+like any other redirect. The new `test_a_redirect_with_an_unparseable_location_is_one_fatal_error`
+(tests/test_stage_2c.py, plain and streamed) was red on b04b942's lock (3 requests) and is green
+on the new one. **W5-F2**: a 402 now raises the SDK's new `PaymentRequiredError`, so its stored
+`ErrorEvent.error` names that class where it named `APIStatusError`; still fatal, one request; no
+test pins class names. A correction: src imports `AsyncAPIResponse` from the SDK too (brain.py:43,
+smoke.py:33), beside `anthropic.types.Message`; no private module. Wire (five bodies, a
+MockTransport capture, with headers): the bodies are byte-identical to b04b942's (1
+`bb2ef203…c24d` 1487, 2 `6b9e9a17…98a8` 1519, 3 `3f01481b…c293` 1469, 4 `08e8682c…fd31` 1898,
+5 = 2); the headers differ in `user-agent` and `x-stainless-package-version` (2.6.0 → 2.11.0)
+only. Not read: the ruff, hypothesis, annotated-doc and pydantic-core changelogs (UNVERIFIED).
+Test edits: none. 652 tests pass at `c18ced2` (650 at b04b942). No subagent, workflow or advisor
+call. *Next: the free `count_tokens` pre-flights on the new SDK (Darie's), then W5b.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
