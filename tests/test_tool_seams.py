@@ -21,14 +21,15 @@ import anthropic
 import httpx2
 import pytest
 
-from rexhunter import brain, db
+from rexhunter import brain, db, loop
 from rexhunter.events import ErrorEvent, ToolResultEvent, TrajectoryEvent
-from rexhunter.loop import run_hunt
-from rexhunter.tools import ToolRegistry
+from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision, run_hunt
+from rexhunter.tools import ToolFn, ToolRegistry
 
 pytestmark = pytest.mark.anyio
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
+BrainFactory = Callable[[Sequence[Decision]], Brain]
 type Row = tuple[str, str | None]
 
 MODEL = brain.SMOKE_MODEL
@@ -157,3 +158,71 @@ async def test_a_registered_view_renders_the_tool_result(
     assert len(bodies) == 2
     assert _result_content(bodies[1]) == "gh: Café engineer ✓"  # the view, from the stored args
     assert _results(events) == [POSTING]  # the log keeps the bytes, not the view
+
+
+async def _tool_hunt(
+    tmp_path: Path, scripted_brain: BrainFactory, tool: ToolFn, *, retry_budget: int
+) -> tuple[list[TrajectoryEvent], Row]:
+    reg = ToolRegistry()
+    reg.tool(tool)
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        run_id = await run_hunt(
+            conn,
+            territory="seams",
+            brain=scripted_brain([ToolCallDecision(tool=tool.__name__, args={}), HuntComplete()]),
+            registry=reg,
+            retry_budget=retry_budget,
+        )
+        events = await db.read_events(conn, run_id)
+        row = await _row(conn, run_id)
+    finally:
+        await conn.close()
+    return events, row
+
+
+async def test_a_tool_retry_waits_at_least_its_retry_after(
+    tmp_path: Path, scripted_brain: BrainFactory, retry_waits: list[float]
+) -> None:
+    attempts = 0
+
+    async def board() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise loop.RetryableToolError("busy", retry_after=3.0)
+        return "ok"
+
+    _, row = await _tool_hunt(tmp_path, scripted_brain, board, retry_budget=2)
+    assert retry_waits == [3.0, 3.0]  # above both jitter bounds (0.5 s, 1 s), under the cap
+    assert row == ("completed", None)
+
+
+async def test_a_tool_retry_after_is_cut_to_the_cap(
+    tmp_path: Path, scripted_brain: BrainFactory, retry_waits: list[float]
+) -> None:
+    async def board() -> str:
+        raise loop.RetryableToolError("busy", retry_after=600.0)
+
+    _, row = await _tool_hunt(tmp_path, scripted_brain, board, retry_budget=2)
+    assert retry_waits == [loop.RETRY_AFTER_CAP_S] * 2
+    assert row == ("aborted", "tool failure")
+
+
+@pytest.mark.parametrize(
+    ("name", "retryable"),
+    [("ToolError", False), ("FatalToolError", False), ("RetryableToolError", True)],
+)
+async def test_a_tool_error_keeps_its_response_bytes(
+    name: str, retryable: bool, tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    body = b"\xe9 an error body that is not UTF-8"
+    error_type: type[loop.ToolError] = getattr(loop, name)  # not evaluated at run time
+
+    async def board() -> str:
+        raise error_type("the board said no", raw_response=body)
+
+    events, row = await _tool_hunt(tmp_path, scripted_brain, board, retry_budget=1)
+    errors = [(e.retryable, e.raw_response) for e in events if isinstance(e, ErrorEvent)]
+    assert errors == [(retryable, body)] * (2 if retryable else 1)  # each attempt, base64 both ways
+    assert row == ("aborted", "tool failure")

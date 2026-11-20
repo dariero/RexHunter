@@ -37,12 +37,36 @@ COST_CEILING_USD = 1.0
 # ── Error taxonomy + single-attempt execution (Unit C) ───────────────────────
 
 
-class RetryableToolError(Exception):
+class ToolError(Exception):
+    """A tool failure that carries the response it got: `raw_response` is the body the tool read
+    before it failed, None when none arrived. The loop stores it on the attempt's ErrorEvent
+    (invariant 6), so a board's error body is in the log, not only its status. Fatal unless it is
+    a RetryableToolError (`classify`)."""
+
+    def __init__(self, *args: object, raw_response: bytes | None = None) -> None:
+        super().__init__(*args)
+        self.raw_response = raw_response
+
+
+class RetryableToolError(ToolError):
     """A tool failure the loop may re-try within budget (a transient blip, a 429, a 5xx).
 
     Tools opt INTO retry by raising this (or a subclass). The taxonomy's default is fatal: a
-    plain exception is assumed not to fix itself on a second attempt.
+    plain exception is assumed not to fix itself on a second attempt. `retry_after` is the wait
+    the source asked for, in seconds (a board's `retry-after` header, read by
+    `parse_retry_after`); the retry waits at least that long, cut to RETRY_AFTER_CAP_S.
     """
+
+    def __init__(
+        self, *args: object, raw_response: bytes | None = None, retry_after: float | None = None
+    ) -> None:
+        super().__init__(*args, raw_response=raw_response)
+        self.retry_after = retry_after
+
+
+class FatalToolError(ToolError):
+    """A tool failure no retry can fix (a 404, a body that fails the tool's own boundary), with
+    the response bytes it got."""
 
 
 class BrainCallError(Exception):
@@ -96,8 +120,9 @@ def classify(exc: BaseException) -> bool:
     taught this function (a transport error, a 429 or a 5xx is transient; any other status is
     fatal), so the loop imports no vendor SDK and no transport library.
     Fatal: everything else - a 4xx client error, a BrainParseError / ValidationError (bad bytes
-    never become good on retry), a bug in the tool, an unknown-tool lookup. Retrying a fatal error
-    only burns budget without changing the outcome.
+    never become good on retry), a ToolError that is not retryable (a FatalToolError included), a
+    bug in the tool, an unknown-tool lookup. Retrying a fatal error only burns budget without
+    changing the outcome.
     """
     if isinstance(exc, BrainCallError):
         return exc.retryable
@@ -111,7 +136,8 @@ def classify(exc: BaseException) -> bool:
 # `_constants.py`), drawn with full jitter. A brain retry after a status response that carried
 # `retry-after` waits at least that many seconds, up to RETRY_AFTER_CAP_S, 60 s (W3.4 Cap60: the
 # rate-limits page says to wait that many seconds, and "Earlier retries might fail"; W3.2 cut it at
-# the jitter's 8 s). The jitter keeps its 8 s cap, and a tool retry carries no `retry-after`.
+# the jitter's 8 s). The jitter keeps its 8 s cap. A tool retry waits at least the `retry_after`
+# its RetryableToolError carries (a board's own header), cut the same way.
 BACKOFF_BASE_S = 0.5
 BACKOFF_CAP_S = 8.0
 RETRY_AFTER_CAP_S = 60.0
@@ -280,9 +306,10 @@ async def _run_tool(
 
     resolve -> validate -> ToolCallEvent (write-ahead) -> attempt loop. A success appends a
     ToolResultEvent; each retryable failure appends ErrorEvent(retryable=True), waits a backoff
-    (`backoff_delay`, W3.2-B2) and re-tries within budget; a fatal failure or an exhausted budget
-    appends a final ErrorEvent and aborts. Every append happens here, in the owning task (single
-    writer, invariant 7). The raw request rides on every event so a dead attempt is a pytest
+    (`backoff_delay`, W3.2-B2; at least a RetryableToolError's `retry_after`) and re-tries within
+    budget; a fatal failure or an exhausted budget appends a final ErrorEvent and aborts. Every
+    append happens here, in the owning task (single writer, invariant 7). The raw request rides on
+    every event, and a ToolError's response bytes on its ErrorEvent, so a dead attempt is a pytest
     fixture for free (invariant 6).
     """
     tool_name, args, tool_use_id = decision.tool, decision.args, decision.tool_use_id
@@ -345,11 +372,14 @@ async def _run_tool(
                 retryable=retryable,
                 error=repr(exc),
                 raw_request=raw_request,
+                # the body the tool got before it failed (invariant 6); None when none came
+                raw_response=exc.raw_response if isinstance(exc, ToolError) else None,
                 detail=traceback.format_exc(),
             ),
             publish=publish,
         )
-        return retryable, None  # a tool failure carries no retry-after
+        # a retry waits at least the source's `retry-after`, cut to RETRY_AFTER_CAP_S
+        return retryable, exc.retry_after if isinstance(exc, RetryableToolError) else None
 
     raw_response = await _attempts(
         retry_budget, Exception, lambda: execute_once(tool.fn, kwargs, timeout_s=timeout_s), failed
