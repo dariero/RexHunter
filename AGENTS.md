@@ -82,7 +82,7 @@ the ADR.
   Each `ToolCallEvent` the live brain writes stores the whole assistant turn (`assistant_content`,
   W2.3), and the next call sends it back as stored, every block in order. The live model is
   `claude-sonnet-5-5` (`SMOKE_MODEL`, W2.5); a thinking-off hunt sends that model's row of
-  `brain.THINKING_FLOOR` (`between_tools`; `disabled` on `claude-sonnet-5`), and a model with no
+  `brain.THINKING_FLOOR` (`between_tools`; the `claude-sonnet-5` row was removed in W5), and a model with no
   row fails closed with `ValueError` before any request (W2.2). The loop acts only on a whole turn
   that stopped for its tool call (W3.1): `_drive_stream` ends a call on an SSE error frame, on a
   stream that is not whole (cut before `message_stop`, a block left open, no stop reason) and on a
@@ -956,15 +956,15 @@ after W5-PV1. No subagent, workflow or advisor call. *Next: W5c (the Sonnet 5 pu
   `tests/test_brain_adapter.py`). *Unit 2b (the first paid call) — ✅ done:* one live smoke on
   `claude-sonnet-5` through the 2a adapter (free `count_tokens` pre-flight → one `messages` call →
   persist raw bytes → `parse_decision`) landed and parsed to `ToolCallDecision(tool="sniff")`,
-  captured as `tests/fixtures/smoke_sonnet5.json` (invariant 6, a real adaptive-thinking sibling
+  captured as `tests/fixtures/smoke_sonnet5.json` (removed in W5; invariant 6, a real adaptive-thinking sibling
   block); Sonnet 5 guards (no sampling params / `thinking` / prefill; since W2.5 on Sonnet 5.5 too, as `build_request_body`'s docstring lists them) + `title`-stripped schemas;
   hard one-call guard; `smoke.py` entrypoint. Offline gates `tests/test_smoke_offline.py` +
-  `tests/test_smoke_replay.py`. *Unit 3 (streaming `ThinkingDelta` relay + signed-block replay) — ✅
+  `tests/test_smoke_replay.py` (removed in W5). *Unit 3 (streaming `ThinkingDelta` relay + signed-block replay) – ✅
   done, replay-gated (`c70f2f7`):* hand-rolled SSE `StreamAssembler` (no vendor SDK; since W2.0 it
   reads the SDK's raw stream, still hand-rolled), the write-ahead `ThinkingDelta` relay through the
   P3 hub, and `project_messages` echoing the verbatim signed thinking
   block; one gated live hunt (`claude-sonnet-5`, thinking on, $0.0187) proved call two accepted with
-  the reconstructed signed-block turn, captured + offline-replayed (`tests/test_thinking_hunt_replay.py`).
+  the reconstructed signed-block turn, captured + offline-replayed (`tests/test_thinking_hunt_replay.py`, removed in W5).
   *Later units:* extraction/strict mode, the live ATS (Greenhouse/Lever) adapter.
 - **`P3` · Streaming hub — ✅ done.** Per-viewer broadcast queues + `Last-Event-ID` resume; the
   prototype poll is retired and `/events` streams from the real in-process hub. *Gate (green,
