@@ -275,6 +275,57 @@ async def test_cancelled_cleanup_survives_a_second_cancel(
         await conn.close()
 
 
+async def test_a_second_cancel_does_not_end_the_hunt_before_its_cleanup_write(
+    tmp_path: Path, scripted_brain: BrainFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The shield alone would keep the write running in the background, so the test above passes
+    # either way. This one holds the write and pins that the hunt task waits for it too: a task
+    # that ended first would hand its caller a run still `outcome IS NULL`.
+    reg = ToolRegistry()
+    started = asyncio.Event()
+
+    @reg.tool
+    async def blocker() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    real_finish = db.finish_run
+
+    async def gated_finish(
+        conn: aiosqlite.Connection,
+        run_id: str,
+        *,
+        outcome: str,
+        abort_reason: str | None = None,
+    ) -> None:
+        cleanup_started.set()
+        await release_cleanup.wait()
+        await real_finish(conn, run_id, outcome=outcome, abort_reason=abort_reason)
+
+    monkeypatch.setattr(db, "finish_run", gated_finish)
+
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        brain = scripted_brain([ToolCallDecision(tool=blocker.__name__, args={})])
+        task = asyncio.create_task(run_hunt(conn, territory="gate", brain=brain, registry=reg))
+        await asyncio.wait_for(started.wait(), timeout=2)
+
+        task.cancel()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=2)
+        task.cancel()  # lands while the cleanup write is held
+        done, _ = await asyncio.wait({task}, timeout=0.2)
+        assert not done  # still waiting for its cleanup write
+
+        release_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await outcome_of(conn, await sole_run_id(conn)) == "aborted"
+    finally:
+        await conn.close()
+
+
 # ── Unit 4 · per-territory deadline timing ───────────────────────────────────
 
 

@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from rexhunter import brain, db, render, scheduler, stub, verdicts, viewstate
+from rexhunter.config import env_float, env_int
 from rexhunter.events import Verdict, VerdictEvent
 from rexhunter.hub import Envelope, Hub
 from rexhunter.loop import COST_CEILING_USD
@@ -25,21 +26,11 @@ DB_PATH = os.environ.get("REXHUNTER_DB", "rexhunter.db")
 logger = logging.getLogger("rexhunter")
 
 
-def _env_int(name: str, default: int) -> int:
-    value = os.environ.get(name)
-    return int(value) if value else default
-
-
-def _env_float(name: str, default: float) -> float:
-    value = os.environ.get(name)
-    return float(value) if value else default
-
-
 def _daemon_spend_ceiling_usd() -> float:
     # ONE source for the daemon ceiling: the lifespan's scheduler gate and the board's injected
     # HP denominator (get_viewstate) both read this, so the enforced cap and the displayed cap
     # can never drift.
-    return _env_float("DAEMON_SPEND_CEILING_USD", scheduler.DAEMON_SPEND_CEILING_USD)
+    return env_float("DAEMON_SPEND_CEILING_USD", scheduler.DAEMON_SPEND_CEILING_USD)
 
 
 def surface_crash(task: asyncio.Task[None]) -> None:
@@ -85,8 +76,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 brain_for=brain_for,
                 registry=registry,
                 max_concurrent=cap,
-                max_iterations=_env_int("MAX_ITERATIONS", 50),
-                cost_ceiling_usd=_env_float("COST_CEILING_USD", COST_CEILING_USD),
+                max_iterations=env_int("MAX_ITERATIONS", 50),
+                cost_ceiling_usd=env_float("COST_CEILING_USD", COST_CEILING_USD),
                 daemon_spend_ceiling_usd=_daemon_spend_ceiling_usd(),
                 publish=hub.publish,
                 notify=hub.notify,

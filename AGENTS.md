@@ -860,6 +860,54 @@ MockTransport capture, with headers): the bodies are byte-identical to b04b942's
 only. Not read: the ruff, hypothesis, annotated-doc and pydantic-core changelogs (UNVERIFIED).
 Test edits: none. 652 tests pass at `c18ced2` (650 at b04b942). No subagent, workflow or advisor
 call. *Next: the free `count_tokens` pre-flights on the new SDK (Darie's), then W5b.*
+**▶ W5b · One smoke harness, the two W4 gaps tested, the hub's env knobs, a stale price row – ✅
+done on branch `w5-refactor-cleanup` (`ce8f845`→`6f9ee02`, 2026-11-20), PR #18.** No API call
+from this session, no model change, no wire change: after every commit the five wire-check bodies
+are b04b942's and the headers 6c080ad's. Labels are W5's (cp files: this run's checkpoint
+reports). **Part D** (Darie's terminal, on `6c080ad`, anthropic 2.11.0): the three free
+`--count-only` pre-flights returned 200, `rexhunter.smoke` 659 input tokens, `rexhunter.hunt_smoke`
+793 and `rexhunter.hunt_smoke_thinking` 794; no paid call. Darie's answers of 20 Nov 2026: one
+smoke harness, a clean-up of the loose ends, tests for the W4 gaps. Forks chosen 20 Nov by
+rex-orchestrator under her delegation: harness-1 with a characterisation commit first, and env-1.
+**Commit 0** (`ce8f845`): nothing pinned what the thinking hunt sends (its thinking value, its
+180 s client timeout) or either hunt's `--count-only` path. W5-MV4b, W5-MV5b, W5-MV6b and W5-MV8b
+(the thinking pre-flight body on the floor, the adapter call without `THINKING`, `--count-only`
+ignored, a 120 s timeout) turned nothing red on 6c080ad. The new tests/test_hunt_harness_shapes.py
+(4) pins, per harness, that the pre-flight is the first request less `max_tokens` and `stream`, the
+thinking value, `max_tokens`, `stream` and both requests' read timeout, and, per `main`, that
+`--count-only` sends the pre-flight alone. On `ce8f845`: W5-MV4b 2 red, W5-MV5b 1, W5-MV6b 1,
+W5-MV8b 1. **harness** (`8a8d3f6`): `hunt_smoke.run_capped_hunt` is the teed, capped,
+persist-first hunt both modules ran, given each module's shape and its own pre-flight and reporter;
+`hunt_smoke.run_main` is the shared main; `_hunt_body` and `count_tokens_preflight` take
+`thinking=None` (the model's floor). hunt_smoke_thinking keeps its constants, its SSE reporter,
+`count_tokens_preflight`, a `run_live_hunt` with the same seams and return, and `main`; both
+`python -m` entrypoints are unchanged. Found on the way: tests/test_paid_entrypoint_gates.py
+patches `count_tokens_preflight` and `run_live_hunt` by name in both modules, so each module passes
+its own, looked up when it runs; and the plain path still calls `write_fixtures` with no
+`fixture_dir`, since a caller's keyword would override a test's `functools.partial` and write into
+tests/fixtures. Both hunts send, print and write what they did, byte for byte (four offline
+scenarios, every request with its headers). 437 → 445 lines; six-line windows shared by the two
+files 36 → 0. Mutants on `8a8d3f6`: W5-MV1 (the plain path passes `fixture_dir`) 2 red, W5-MV2
+(fixtures only on success) 2, W5-MV3 (stream off) 4 and then a hang in
+`test_a_cancelled_thinking_hunt_still_writes_what_it_captured` (it waits for a call two that never
+comes; bounded at 150 s), and W5-MV4 to W5-MV8 1, 1, 2, 1 and 1, through commit 0's tests. **W4
+gaps** (`2b15237`): tests/test_stored_timestamps.py (1) reads every column `db.utcnow` stamps
+(runs, trajectory events, prey, pen events, jobs) as ISO 8601 with offset 0, equal to its own
+`isoformat()`, inside the test's clock; a test added to tests/test_scheduler.py holds
+`finish_run`, lands a second cancel and pins that the hunt task stays pending. On `2b15237`:
+W4-MW6 1 red ("Invalid isoformat string: ''"), W4-MW7 1 (the task done), W5-MV9 (naive local
+time) 1, W5-MV10 (a `Z` suffix) 1; each 0 red on 6c080ad. **env** (`9abaa13`, W4-R6's finding):
+`src/rexhunter/config.py` holds `env_int` and `env_float`, server.py's two helpers moved there with
+their bodies unchanged, and
+hub.py reads its two knobs through them, so a set but empty `REXHUNTER_VIEWER_QUEUE_MAXSIZE` or
+`REXHUNTER_HEARTBEAT_INTERVAL_S` takes its default (256, 15.0) where it made `import
+rexhunter.hub` raise; hub.py importing server.py's helpers (env-2) is an import cycle in either
+order (probed). tests/test_env_knobs.py (2) was red on `2b15237` with the two ValueErrors and is
+green on `9abaa13`. **Price row** (`6f9ee02`): `claude-fable-5-1` leaves `cost.PRICE_PER_MTOK`,
+with W5-PV1 (its tests/test_cost.py case); such a usage now prices at the fallback. Test edits:
+W5-PV1 only (one parametrize case removed); every other test change is a new test. 659 tests pass
+at `6f9ee02` (652 at 6c080ad): 656 after commit 0, 658 after the gap tests, 660 after env, 659
+after W5-PV1. No subagent, workflow or advisor call. *Next: W5c (the Sonnet 5 purge).*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill

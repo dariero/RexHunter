@@ -21,15 +21,16 @@ by design — this is the design, not a debt to pre-solve.
 
 import asyncio
 import itertools
-import os
 from collections.abc import Awaitable, Callable
 from typing import NamedTuple
+
+from rexhunter.config import env_float, env_int
 
 # Knobs. VIEWER_QUEUE_MAXSIZE is the per-viewer bounded-queue depth (the drop threshold): a viewer
 # more than this many events behind is dropped rather than allowed to apply back-pressure.
 # HEARTBEAT_INTERVAL_S is the keep-alive cadence that stops intermediaries killing idle connections.
-VIEWER_QUEUE_MAXSIZE = int(os.environ.get("REXHUNTER_VIEWER_QUEUE_MAXSIZE", "256"))
-HEARTBEAT_INTERVAL_S = float(os.environ.get("REXHUNTER_HEARTBEAT_INTERVAL_S", "15"))
+VIEWER_QUEUE_MAXSIZE = env_int("REXHUNTER_VIEWER_QUEUE_MAXSIZE", 256)
+HEARTBEAT_INTERVAL_S = env_float("REXHUNTER_HEARTBEAT_INTERVAL_S", 15.0)
 
 
 class Envelope(NamedTuple):
