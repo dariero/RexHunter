@@ -63,7 +63,7 @@ from rexhunter.loop import (
     ToolCallDecision,
     parse_retry_after,
 )
-from rexhunter.tools import ToolRegistry
+from rexhunter.tools import ToolRegistry, default_view
 lazy from rexhunter import stub  # lazy: the stub path pulls in no adapter/client machinery
 
 # Reserved tool names that map to terminal decisions rather than a registry dispatch. Unit 2a's
@@ -754,7 +754,22 @@ def _seed_directive(territory: str) -> str:
     )
 
 
-def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list[dict[str, Any]]:
+def _render_result(event: ToolResultEvent, registry: ToolRegistry | None) -> str:
+    # Rendered again from the stored bytes on every call, through the tool's own view; a tool not
+    # in the registry, or no registry at all, gets the default rendering.
+    view = (
+        registry.get(event.tool).view
+        if registry is not None and event.tool in registry
+        else default_view
+    )
+    return view(event.raw_request, event.raw_response)
+
+
+def project_messages(
+    territory: str,
+    context: Sequence[TrajectoryEvent],
+    registry: ToolRegistry | None = None,
+) -> list[dict[str, Any]]:
     """Fold the trajectory log into a valid Anthropic `messages` array (P5 Unit 2c). This is a
     PROJECTION of the log (invariant 2), derived per brain call — not a second stored chat history.
     The seed directive opens it; then each event maps to its conversational turn:
@@ -764,7 +779,10 @@ def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list
         every block in order: thinking and redacted_thinking blocks, text, the tool_use with its
         `caller` and the model's own `input`. An event written before W2.3 gets the old shape: its
         signed thinking block (if any), then a `tool_use` rebuilt from id/name/`raw_request`;
-      - ToolResultEvent  -> a user turn with the matching `tool_result` (paired by `tool_use_id`);
+      - ToolResultEvent  -> a user turn with the matching `tool_result` (paired by `tool_use_id`),
+        its content the tool's view of the stored bytes (`registry`); a tool that registers no
+        view, or a call with no registry, gets the bytes decoded as UTF-8, any invalid byte
+        shown escaped;
       - a FATAL tool ErrorEvent -> an `is_error` tool_result paired to the open tool_use (ErrorEvent
         carries no id, so we pair it with the last-opened call).
 
@@ -810,7 +828,7 @@ def project_messages(territory: str, context: Sequence[TrajectoryEvent]) -> list
                         {
                             "type": "tool_result",
                             "tool_use_id": event.tool_use_id,
-                            "content": event.raw_response.decode(),
+                            "content": _render_result(event, registry),
                         }
                     ],
                 }
@@ -1134,7 +1152,7 @@ def adapter_brain_for(
             body = build_request_body(
                 model=model,
                 max_tokens=max_tokens,
-                messages=project_messages(territory, context),
+                messages=project_messages(territory, context, registry),
                 tools=tools,
                 system=HUNT_SYSTEM_PROMPT,
                 thinking=thinking,
