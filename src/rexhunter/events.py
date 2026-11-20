@@ -13,8 +13,9 @@ in `P2.1` goes live. Tool/error events carry the raw request and response *bytes
 operated on (invariant 6) - which is why the shared base encodes bytes as base64.
 """
 
+import json
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -88,6 +89,40 @@ class PreyCapturedEvent(_Event):
     raw_posting: bytes
     board: str = ""
     posting_id: str = ""
+
+    @property
+    def label(self) -> str:
+        """The pen card's text, derived from the stored bytes, never stored apart from them
+        (invariant 5): "title \N{EN DASH} location (board)". A capture from before catch by
+        reference (`board == ""`), or one whose bytes carry no title, shows its bytes decoded,
+        as a capture did before."""
+        title = _posting_title(self.raw_posting) if self.board else None
+        if title is None:
+            return self.raw_posting.decode(errors="replace")
+        return f"{title} ({self.board})"
+
+
+def _text_at(body: object, *path: str) -> str | None:
+    for key in path:
+        if not isinstance(body, dict):
+            return None
+        body = cast("dict[str, object]", body).get(key)
+    return body if isinstance(body, str) else None
+
+
+def _posting_title(raw_posting: bytes) -> str | None:
+    # The title, then the location after an en dash, from either documented board shape
+    # (Greenhouse: `title`, `location.name`; Lever: `text`, `categories.location`), or None when
+    # the bytes carry no title. Never raises: the pen renders whatever bytes it holds.
+    try:
+        body: object = json.loads(raw_posting.decode("utf-8-sig"))
+    except ValueError, RecursionError:
+        return None
+    title = _text_at(body, "title") or _text_at(body, "text")
+    if title is None:
+        return None
+    location = _text_at(body, "location", "name") or _text_at(body, "categories", "location")
+    return f"{title} \N{EN DASH} {location}" if location else title
 
 
 class ErrorEvent(_Event):

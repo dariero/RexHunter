@@ -18,13 +18,13 @@ import json
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiosqlite
 import pytest
 from pydantic import ValidationError
 
-from rexhunter import brain, db, events, stub, verdicts, view
+from rexhunter import brain, db, events, server, stub, verdicts, view, viewstate
 from rexhunter.events import ErrorEvent, PreyCapturedEvent, ToolCallEvent, Verdict
 from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision, run_hunt
 from rexhunter.tools import ToolRegistry
@@ -336,6 +336,46 @@ async def test_two_concurrent_hunts_catching_one_posting_pen_it_once(
     finally:
         await first.close()
         await second.close()
+
+
+@pytest.mark.parametrize(
+    ("bodies", "ref", "label"),
+    [
+        (
+            BODIES,
+            ("gym-greenhouse", "101"),
+            "Staff ML Engineer \N{EN DASH} Remote (gym-greenhouse)",
+        ),
+        (BODIES, ("gym-lever", "lv-7"), "AI Platform Engineer \N{EN DASH} Sydney (gym-lever)"),
+        ({("gym-x", "1"): b'{"title": "ML Engineer"}'}, ("gym-x", "1"), "ML Engineer (gym-x)"),
+        ({("gym-x", "1"): b"no title here"}, ("gym-x", "1"), "no title here"),
+    ],
+    ids=["greenhouse", "lever", "no-location", "no-title"],
+)
+async def test_the_pen_label_is_derived_from_the_board_bytes(
+    bodies: dict[tuple[str, str], bytes],
+    ref: tuple[str, str],
+    label: str,
+    tmp_path: Path,
+    scripted_brain: BrainFactory,
+) -> None:
+    posting = _ref(*ref)
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        await _hunt(
+            conn,
+            scripted_brain,
+            [_read(posting), HuntComplete(catch=[posting])],
+            _registry(bodies),
+            territory=ref[0],
+        )
+        assert [p[2] for p in await _pen(conn)] == [label]  # prey.posting
+        pen = cast("list[dict[str, str]]", (await server.snapshot_state(conn))["pen"])
+        assert [card["posting"] for card in pen] == [label]  # the snapshot
+        state = await viewstate.build_viewstate(conn, datetime(2026, 11, 21, 9, tzinfo=UTC))
+        assert [card.posting for card in state.pen] == [label]  # the log's projection
+    finally:
+        await conn.close()
 
 
 async def test_an_old_prey_table_gains_the_columns(tmp_path: Path) -> None:

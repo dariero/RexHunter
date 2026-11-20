@@ -65,8 +65,9 @@ async def capture_prey(
 
     The PreyCapturedEvent (run-scoped, invariant 7; raw posting bytes, invariant 6) and the prey
     projection row are written in ONE transaction — a single commit. A crash mid-capture leaves
-    NEITHER durable (atomicity), so the log and the pen never disagree about a capture. A capture
-    with no `board` (the form before catch by reference) stores NULL there and is never a duplicate.
+    NEITHER durable (atomicity), so the log and the pen never disagree about a capture. The row's
+    `posting` is the event's derived label. A capture with no `board` (the form before catch by
+    reference) stores NULL there and is never a duplicate.
     """
     prey_id = str(uuid.uuid4())
     now = db.utcnow()
@@ -95,7 +96,7 @@ async def capture_prey(
                     prey_id,
                     run_id,
                     territory,
-                    raw_posting.decode(errors="replace"),
+                    event.label,
                     AWAITING,
                     now,
                     board or None,
