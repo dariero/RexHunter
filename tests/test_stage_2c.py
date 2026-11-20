@@ -454,6 +454,36 @@ async def test_a_redirect_is_never_followed(
     assert row == ("aborted", "brain call failed")
 
 
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_redirect_with_an_unparseable_location_is_one_fatal_error(
+    stream: bool, tmp_path: Path, mock_anthropic: MockAnthropic
+) -> None:
+    # httpx2 before 2.16.1 raised RemoteProtocolError while it built `next_request` for a 3xx whose
+    # Location does not parse, even with redirects off, so the adapter took it for a transport
+    # failure and re-sent the paid body up to `retry_budget` times. From 2.16.1 the 3xx comes back
+    # as a response: the same one fatal <brain> error as any other redirect.
+    seen: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(str(request.url))
+        return httpx2.Response(307, headers={"location": "http://[::1/"}, content=b"moved")
+
+    async with mock_anthropic(handler) as client:
+        brain_for = brain.adapter_brain_for(
+            client=client,
+            model=brain.SMOKE_MODEL,
+            registry=_sniff_registry(),
+            thinking=brain.HUNT_THINKING if stream else None,
+            stream=stream,
+        )
+        errors, row = await _hunt_errors(tmp_path / "rex.db", brain_for("mock-gym"))
+    assert seen == [brain.MESSAGES_URL]  # one request, never re-sent
+    assert len(errors) == 1
+    assert errors[0].tool == "<brain>" and errors[0].retryable is False
+    assert errors[0].raw_response == b"moved"
+    assert row == ("aborted", "brain call failed")
+
+
 def _connect_error(request: httpx2.Request) -> Exception:
     return httpx2.ConnectError("refused", request=request)
 
