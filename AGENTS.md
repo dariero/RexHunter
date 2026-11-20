@@ -142,10 +142,10 @@ slice's gate (ADR Definition-of-done) is green.
 Unit 2a (provider adapter, offline) ✅ **done** (`edd4ec8`) · Unit 2b (the first paid call) ✅
 **done** — one real Sonnet 5 call landed and parsed (`tool=sniff`), captured as a golden fixture
 (`tests/fixtures/smoke_sonnet5.json`, invariant 6; it carries a live adaptive-thinking sibling
-block, so it validates the 2a lenient scan on genuine output). `SMOKE_MODEL = "claude-sonnet-5"`;
+block, so it validates the 2a lenient scan on genuine output). `SMOKE_MODEL = "claude-sonnet-5"` (`"claude-sonnet-5-5"` since W2.5);
 `build_tools` strips `title` from the derived schemas (Anthropic accepted them — confirmed by the
 free `count_tokens` pre-flight); a shared `build_request_body` holds the Sonnet 5 guards (no
-`temperature`/`top_p`/`top_k`, no `thinking`, no prefill); `smoke.py` is the paid entrypoint
+`temperature`/`top_p`/`top_k`, no `thinking`, no prefill; since W2.5 on Sonnet 5.5 too, as its docstring lists them); `smoke.py` is the paid entrypoint
 (`--count-only` free pre-flight → one `messages` call → persist raw bytes → `parse_decision`),
 hard one-call guard. **`P5` Unit 2c — brain-in-loop — ✅ done. ADR upgrade-map stage 3 CLOSED:** the
 LLM drives a full hunt end to end (plan → tool runs → observation threads back into `messages` → next
@@ -156,7 +156,7 @@ projects the trajectory log into an Anthropic `messages` array (inv 2, `project_
 (429/5xx/timeouts → retryable; since W2.0 the adapter maps SDK/transport errors to a provider-neutral
 `BrainCallError` that `classify` honours, and loop.py imports no httpx), and
 `select_brain_for`/`REXHUNTER_BRAIN` gate the spender surface (stub default, opt-in `live`). The live
-loop path sends `thinking: {type: "disabled"}` + `tool_choice: {disable_parallel_tool_use: true}` –
+loop path sends `thinking: {type: "disabled"}` (`{type: "between_tools"}` since W2.5) + `tool_choice: {disable_parallel_tool_use: true}` –
 bare one-`tool_use` replay turns until thinking
 capture lands in Unit 3. *2c.2 (gated live) — ✅ done:* one budget-capped hunt (`rexhunter.hunt_smoke`,
 `COST_CEILING_USD=0.05`, `MAX_ITERATIONS=3`) on `SMOKE_MODEL` against the mock-gym board — 2 brain
@@ -185,7 +185,7 @@ reconnects via `Last-Event-ID` with zero gaps / zero dups (catch-up + splice + d
 ≤-high-water drop); a full-queue viewer is dropped while the hunt completes unslowed. Verified
 end-to-end through the real uvicorn server (curl `/events` streamed a full hunt's
 `tool_call`/`tool_result`/`prey_captured` frames + heartbeats; `/snapshot` `latest_id` 0→3). Thinking stays
-`{type:"disabled"}` — P3 built its render target, does not consume it.
+`{type:"disabled"}` (`{type:"between_tools"}` since W2.5) — P3 built its render target, does not consume it.
 **▶ `P5` · Unit 3 — the `ThinkingDelta` relay — ✅ done.** Thinking is back on and Rex's reasoning
 streams through the P3 hub. *`3a` (streaming transport, offline) — ✅ done (`a3e05b4`):* `brain.py`
 `iter_sse_events` + `StreamAssembler` (90 lines, under the frugality threshold — no vendor SDK; invs
@@ -781,7 +781,7 @@ W4.*
   `claude-sonnet-5` through the 2a adapter (free `count_tokens` pre-flight → one `messages` call →
   persist raw bytes → `parse_decision`) landed and parsed to `ToolCallDecision(tool="sniff")`,
   captured as `tests/fixtures/smoke_sonnet5.json` (invariant 6, a real adaptive-thinking sibling
-  block); Sonnet 5 guards (no sampling params / `thinking` / prefill) + `title`-stripped schemas;
+  block); Sonnet 5 guards (no sampling params / `thinking` / prefill; since W2.5 on Sonnet 5.5 too, as `build_request_body`'s docstring lists them) + `title`-stripped schemas;
   hard one-call guard; `smoke.py` entrypoint. Offline gates `tests/test_smoke_offline.py` +
   `tests/test_smoke_replay.py`. *Unit 3 (streaming `ThinkingDelta` relay + signed-block replay) — ✅
   done, replay-gated (`c70f2f7`):* hand-rolled SSE `StreamAssembler` (no vendor SDK; since W2.0 it
