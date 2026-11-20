@@ -4,22 +4,22 @@ version = "0.1.0"
 description = "Local-first autonomous job-hunting agent on a 'terrarium' model."
 requires-python = ">=3.15"
 dependencies = [
-    "fastapi>=0.162.2",
+    "fastapi>=0.165.0",
     "uvicorn>=0.54.0",
     "aiosqlite>=0.22.1",
-    "pydantic>=2.14.3",
-    "anthropic>=2.6.0",
+    "pydantic>=2.14.4",
+    "anthropic>=2.11.0",
     "certifi>=2026.10.23",
 ]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.17.4",
+    "ruff>=0.17.6",
     # [nodejs]: pyright runs on a lockfile-pinned Node (nodejs-wheel-binaries), never the
     # machine's — an old global Node fails to parse this file and pyright exits 3.
     "pyright[nodejs]>=1.1.414",
     "pytest>=9.2",
-    "hypothesis>=6.170.15",  # property-based DoD for the projection reducer (view.py)
+    "hypothesis>=6.170.16",  # property-based DoD for the projection reducer (view.py)
     "httpx>=0.28.1",  # the tests' ASGI client; src uses httpx2, the SDK's client
     # Async tests via anyio's pytest plugin (ships with starlette); no extra dep.
 ]
