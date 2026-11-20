@@ -16,6 +16,7 @@ Unit 1 (here): `capture_prey`. The verdict machine and the enqueued follow-up jo
 
 import asyncio
 import logging
+import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -53,19 +54,28 @@ async def capture_prey(
     run_id: str,
     *,
     territory: str,
-    posting: str,
+    raw_posting: bytes,
+    board: str = "",
+    posting_id: str = "",
     publish: db.PublishFn | None = None,
 ) -> str:
-    """Capture one posting into the pen. Returns the new prey_id.
+    """Capture one posting into the pen. Returns the new prey_id, or, when the posting (`board`,
+    `posting_id`) is already in the pen in any status, the id of that row: it is never penned
+    twice, and this capture writes nothing.
 
     The PreyCapturedEvent (run-scoped, invariant 7; raw posting bytes, invariant 6) and the prey
     projection row are written in ONE transaction — a single commit. A crash mid-capture leaves
-    NEITHER durable (atomicity), so the log and the pen never disagree about a capture.
+    NEITHER durable (atomicity), so the log and the pen never disagree about a capture. A capture
+    with no `board` (the form before catch by reference) stores NULL there and is never a duplicate.
     """
     prey_id = str(uuid.uuid4())
     now = db.utcnow()
     event = events.PreyCapturedEvent(
-        prey_id=prey_id, territory=territory, raw_posting=posting.encode()
+        prey_id=prey_id,
+        territory=territory,
+        raw_posting=raw_posting,
+        board=board,
+        posting_id=posting_id,
     )
     payload = event.model_dump_json()
     # Reuse the log's append SQL but DON'T go through db.append_event — its per-call commit would
@@ -76,11 +86,36 @@ async def capture_prey(
             (run_id, event.type, payload, now, run_id),
         )
         event_id = cursor.lastrowid
-        await conn.execute(
-            "INSERT INTO prey (id, run_id, territory, posting, status, captured_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (prey_id, run_id, territory, posting, AWAITING, now),
-        )
+        try:
+            await conn.execute(
+                "INSERT INTO prey"
+                " (id, run_id, territory, posting, status, captured_at, board, posting_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    prey_id,
+                    run_id,
+                    territory,
+                    raw_posting.decode(errors="replace"),
+                    AWAITING,
+                    now,
+                    board or None,
+                    posting_id if board else None,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            if exc.sqlite_errorname != "SQLITE_CONSTRAINT_UNIQUE":
+                raise
+            # The posting is already in the pen (the unique index on board and posting_id decides,
+            # a race between two hunts included): drop this capture's event too.
+            await conn.rollback()
+            rows = list(
+                await conn.execute_fetchall(  # one worker call: no statement left open
+                    "SELECT id FROM prey WHERE board = ? AND posting_id = ?", (board, posting_id)
+                )
+            )
+            if not rows:  # pragma: no cover - the index raised for a row that exists
+                raise
+            return str(rows[0][0])
         await conn.commit()
     except BaseException:
         # A cancel or an error between the two INSERTs leaves the first pending on this

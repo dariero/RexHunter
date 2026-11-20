@@ -131,7 +131,9 @@ async def test_boot_crash_sweep_marks_the_run_but_leaves_prey_untouched(
 
     seed = await db.connect(db_path)
     run_id = await db.start_run(seed, territory="gate")
-    prey_id = await verdicts.capture_prey(seed, run_id, territory="gate", posting="posting:gate")
+    prey_id = await verdicts.capture_prey(
+        seed, run_id, territory="gate", raw_posting=b"posting:gate"
+    )
     await seed.close()  # the process "dies" — the run never reached finish_run
 
     def brain_for(_territory: str) -> Brain:

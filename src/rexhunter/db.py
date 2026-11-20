@@ -63,7 +63,9 @@ CREATE TABLE IF NOT EXISTS prey (
     captured_at TEXT NOT NULL,
     decided_at  TEXT,                              -- set on a verdict, cleared on re-entry
     reason      TEXT,                              -- RELEASE: labelled rejection data
-    provenance  TEXT                               -- AMBER: why shelved
+    provenance  TEXT,                              -- AMBER: why shelved
+    board       TEXT,                              -- the catch reference; NULL before it
+    posting_id  TEXT
 );
 
 -- The verdict log (ADR pillar 4): NOT run-scoped — a verdict arrives after the hunt has exited,
@@ -132,12 +134,24 @@ async def _bootstrap(conn: aiosqlite.Connection) -> None:
     # `runs`, so a database created before the ceiling columns would die on start_run's INSERT
     # ("no such column") while every fresh-DB gate stayed green. A nullable ADD COLUMN is O(1)
     # in SQLite (no table rewrite); this fires only when a column is genuinely missing — an
-    # upgrade never strands an existing log (DoD #1's spirit).
-    async with conn.execute("PRAGMA table_info(runs)") as cursor:
-        columns = {str(row[1]) for row in await cursor.fetchall()}
-    for name, decl in (("cost_ceiling_usd", "REAL"), ("max_iterations", "INTEGER")):
-        if name not in columns:
-            await conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {decl}")
+    # upgrade never strands an existing log (DoD #1's spirit). The same holds for `prey` and its
+    # reference columns, which capture_prey's INSERT names.
+    for table, wanted in (
+        ("runs", (("cost_ceiling_usd", "REAL"), ("max_iterations", "INTEGER"))),
+        ("prey", (("board", "TEXT"), ("posting_id", "TEXT"))),
+    ):
+        async with conn.execute(f"PRAGMA table_info({table})") as cursor:
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+        for name, decl in wanted:
+            if name not in columns:
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    # A posting is penned once, in any status: the index decides a race between two hunts. It
+    # comes after the column-ensure, so a pre-existing `prey` has the columns it names; partial,
+    # so a capture from before catch by reference (board NULL) is never a duplicate.
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_prey_posting ON prey (board, posting_id)"
+        " WHERE board IS NOT NULL"
+    )
     await conn.commit()
 
 

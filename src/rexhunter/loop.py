@@ -553,7 +553,11 @@ async def _drive(
             case HuntComplete():
                 for posting in decision.catch:
                     await verdicts.capture_prey(
-                        conn, run_id, territory=territory, posting=posting, publish=publish
+                        conn,
+                        run_id,
+                        territory=territory,
+                        raw_posting=posting.encode(),
+                        publish=publish,
                     )
                 return "completed", None
             case NeedsHelp():

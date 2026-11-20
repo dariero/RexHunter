@@ -65,7 +65,7 @@ async def test_capture_prey_also_publishes_post_commit(tmp_path: Path) -> None:
     try:
         run_id = await db.start_run(writer, territory="gate")
         prey_id = await verdicts.capture_prey(
-            writer, run_id, territory="gate", posting="job-1", publish=hub.publish
+            writer, run_id, territory="gate", raw_posting=b"job-1", publish=hub.publish
         )
 
         env = queue.get_nowait()

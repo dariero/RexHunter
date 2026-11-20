@@ -106,7 +106,7 @@ async def test_capture_prey_is_atomic(tmp_path: Path) -> None:
 
     conn.execute = fail_on_prey_insert  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
-        await verdicts.capture_prey(conn, run_id, territory="t", posting="posting:acme")
+        await verdicts.capture_prey(conn, run_id, territory="t", raw_posting=b"posting:acme")
     conn.execute = real_execute  # type: ignore[method-assign]
     await conn.rollback()  # discard the broken transaction
     await conn.close()
@@ -208,7 +208,9 @@ async def _pen_one(
 ) -> str:
     """Capture one posting and return its prey_id (the verdict tests' fixture)."""
     run_id = await db.start_run(conn, territory=territory)
-    return await verdicts.capture_prey(conn, run_id, territory=territory, posting=posting)
+    return await verdicts.capture_prey(
+        conn, run_id, territory=territory, raw_posting=posting.encode()
+    )
 
 
 async def prey_status(conn: aiosqlite.Connection, prey_id: str) -> tuple[str, str | None]:

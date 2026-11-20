@@ -33,7 +33,7 @@ async def test_every_stored_timestamp_is_iso_8601_utc_from_its_write(tmp_path: P
         run_id = await db.start_run(conn, territory="mock-gym")
         event = ToolCallEvent(tool="sniff", raw_request=b"{}", tool_use_id="toolu_1")
         await db.append_event(conn, run_id, event)
-        prey_id = await verdicts.capture_prey(conn, run_id, territory="mock-gym", posting="p")
+        prey_id = await verdicts.capture_prey(conn, run_id, territory="mock-gym", raw_posting=b"p")
         assert await verdicts.submit_verdict(conn, prey_id, Verdict.FEAST)  # stamps the pen + job
         await db.finish_run(conn, run_id, outcome="completed")
         stored: dict[str, list[str | None]] = {}
