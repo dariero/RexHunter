@@ -76,12 +76,18 @@ class PreyCapturedEvent(_Event):
     """A hunt caught a posting worth a human verdict. Run-scoped (the owning hunt writes it,
     invariant 7); carries the raw posting bytes (invariant 6). The `prey` projection row is
     inserted in the SAME transaction as this event (see verdicts.capture_prey), so the pen is
-    rebuildable from the log: this event is the capture half, VerdictEvent the lifecycle half."""
+    rebuildable from the log: this event is the capture half, VerdictEvent the lifecycle half.
+
+    `board` and `posting_id` are the reference the catch named; `raw_posting` is then the board's
+    own bytes for it, the response of the run's read of that posting. Both are "" on a capture
+    from before catch by reference, so every older log still decodes."""
 
     type: Literal["prey_captured"] = "prey_captured"
     prey_id: str  # the pen row this event creates; makes the rebuild deterministic
     territory: str
     raw_posting: bytes
+    board: str = ""
+    posting_id: str = ""
 
 
 class ErrorEvent(_Event):
@@ -216,6 +222,18 @@ class BrainParseError(Exception):
 # A second log, NOT the trajectory union: a verdict arrives after the run has exited, from the
 # POST handler, so it is not a run-scoped trajectory event (invariant 7). It crosses the SAME
 # validation boundary (invariant 3) on read, via decode_verdict_event below.
+
+
+class PostingRef(BaseModel):
+    """One posting on one board: the arguments a posting-source tool (`read_posting`) took. A
+    catch names its postings this way, and capture resolves each reference against the run's own
+    posting-source results, so only a posting the run read reaches the pen. Frozen, so equal
+    references are one key."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    board: str
+    posting_id: str
 
 
 class Verdict(StrEnum):
