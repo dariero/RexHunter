@@ -110,7 +110,7 @@ def _sse(thinking: str, sig: str, tool_id: str, name: str, tool_input: dict[str,
 
 
 CALL1 = _sse("Scouting.", "SIG-1==", "toolu_1", "sniff", {"prey": "mock-gym"})
-CALL2 = _sse("Done.", "SIG-2==", "toolu_2", "hunt_complete", {"catch": ["posting:mock-gym"]})
+CALL2 = _sse("Done.", "SIG-2==", "toolu_2", "hunt_complete", {"catch": []})
 
 
 async def test_harness_full_path_runs_offline_and_writes_fixtures(tmp_path: Path) -> None:

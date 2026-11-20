@@ -19,6 +19,8 @@ from typing import Any, get_type_hints
 
 from pydantic import BaseModel, ConfigDict, create_model
 
+from rexhunter.events import PostingRef
+
 ToolFn = Callable[..., Awaitable[Any]]
 
 # What the model is shown for one tool result, from the stored request and response bytes. A
@@ -33,9 +35,21 @@ def default_view(raw_request: bytes, raw_response: bytes) -> str:
     return raw_response.decode(errors="backslashreplace")
 
 
+def _takes_a_posting_ref(args_model: type[BaseModel]) -> bool:
+    # The stored request of a posting source is its args model's JSON, so the model must have
+    # exactly a PostingRef's required fields and types for that request to validate as one.
+    fields = args_model.model_fields
+    ref_fields = PostingRef.model_fields
+    return fields.keys() == ref_fields.keys() and all(
+        fields[name].annotation == ref_fields[name].annotation and fields[name].is_required()
+        for name in fields
+    )
+
+
 class RegisteredTool:
     """A tool bound to the one args-model derived from its signature, and the view that renders
-    its results for the model."""
+    its results for the model. A posting source is a tool whose stored request is a PostingRef:
+    its results are what a catch reference resolves against."""
 
     def __init__(
         self,
@@ -43,14 +57,18 @@ class RegisteredTool:
         fn: ToolFn,
         args_model: type[BaseModel],
         view: ToolView = default_view,
+        posting_source: bool = False,
     ) -> None:
         self.name = name
         self.fn = fn
         self.args_model = args_model
         self.view = view
+        self.posting_source = posting_source
 
     @classmethod
-    def from_function(cls, fn: ToolFn, *, view: ToolView = default_view) -> RegisteredTool:
+    def from_function(
+        cls, fn: ToolFn, *, view: ToolView = default_view, posting_source: bool = False
+    ) -> RegisteredTool:
         if not inspect.iscoroutinefunction(fn):
             raise TypeError(f"@rex_tool requires an async function: {fn.__name__!r}")
         hints = get_type_hints(fn)
@@ -69,7 +87,18 @@ class RegisteredTool:
             __config__=ConfigDict(extra="forbid"),
             **fields,
         )
-        return cls(name=fn.__name__, fn=fn, args_model=args_model, view=view)
+        if posting_source and not _takes_a_posting_ref(args_model):
+            raise TypeError(
+                f"tool {fn.__name__!r}: a posting source takes exactly"
+                " (board: str, posting_id: str)"
+            )
+        return cls(
+            name=fn.__name__,
+            fn=fn,
+            args_model=args_model,
+            view=view,
+            posting_source=posting_source,
+        )
 
     @property
     def json_schema(self) -> dict[str, Any]:
@@ -93,13 +122,17 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, RegisteredTool] = {}
 
-    def tool(self, fn: ToolFn, *, view: ToolView = default_view) -> ToolFn:
+    def tool(
+        self, fn: ToolFn, *, view: ToolView = default_view, posting_source: bool = False
+    ) -> ToolFn:
         """Decorator: register `fn`, deriving its args-model from the signature. `view` renders
         its results for the model (`brain.project_messages`); without one, the bytes are decoded.
+        `posting_source` marks a tool whose results a catch reference resolves against; its
+        signature must be exactly (board: str, posting_id: str), checked here.
 
         Returns the function unchanged — the contract lives in the registry, not in a wrapper.
         """
-        registered = RegisteredTool.from_function(fn, view=view)
+        registered = RegisteredTool.from_function(fn, view=view, posting_source=posting_source)
         if registered.name in self._tools:
             raise ValueError(f"tool already registered: {registered.name!r}")
         self._tools[registered.name] = registered

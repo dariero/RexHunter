@@ -22,7 +22,7 @@ import aiosqlite
 import pytest
 
 from rexhunter import db, server
-from rexhunter.events import SniffEvent
+from rexhunter.events import PostingRef, SniffEvent
 from rexhunter.hub import Envelope, Hub
 from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision, run_hunt
 from rexhunter.tools import ToolRegistry
@@ -36,21 +36,22 @@ TERRITORY = "mock-gym"
 # ── A fast, deterministic hunt: tool_call → tool_result → prey_captured (3 events) ────────────
 
 
-async def peek() -> str:
+async def peek(board: str, posting_id: str) -> str:
     return "seen"  # a no-sleep tool so the gate runs at full speed (unlike stub.sniff's beat)
 
 
 def gate_registry() -> ToolRegistry:
     reg = ToolRegistry()
-    reg.tool(peek)
+    reg.tool(peek, posting_source=True)
     return reg
 
 
-def gate_decisions() -> list[Decision]:
+def gate_decisions(posting_id: str = "job-1") -> list[Decision]:
     # one tool round then done-with-a-catch: emits ToolCallEvent + ToolResultEvent + a
     # PreyCapturedEvent (the SECOND trajectory writer, verdicts.capture_prey — proves the whole
     # publish choke set streams, not just db.append_event).
-    return [ToolCallDecision(tool=peek.__name__, args={}), HuntComplete(catch=["job-1"])]
+    job = PostingRef(board=TERRITORY, posting_id=posting_id)
+    return [ToolCallDecision(tool=peek.__name__, args=job.model_dump()), HuntComplete(catch=[job])]
 
 
 async def _hunt(conn: aiosqlite.Connection, hub: Hub, brain: Brain) -> str:
@@ -191,7 +192,8 @@ async def test_full_queue_viewer_dropped_hunt_completes_unslowed(
         # stress: a viewer whose maxsize-1 queue overflows immediately and is never drained.
         stuck_hub = Hub(maxsize=1)
         stuck_id, _stuck_q = stuck_hub.register()
-        stuck_run = await _hunt(conn, stuck_hub, scripted_brain(gate_decisions()))
+        # another posting: the same one, already in the pen, would write no capture (by design)
+        stuck_run = await _hunt(conn, stuck_hub, scripted_brain(gate_decisions("job-2")))
         stuck_events = await db.read_events(conn, stuck_run)
 
         async with conn.execute("SELECT outcome FROM runs WHERE id = ?", (stuck_run,)) as cur:

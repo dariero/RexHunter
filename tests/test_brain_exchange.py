@@ -62,7 +62,11 @@ NEEDS_HELP: dict[str, Any] = {
     "name": "needs_help",
     "input": {},
 }
-CATCH: dict[str, Any] = {**SNIFF, "name": "hunt_complete", "input": {"catch": ["posting:x"]}}
+CATCH: dict[str, Any] = {  # a reference this run never read: its capture is a `<capture>` error
+    **SNIFF,
+    "name": "hunt_complete",
+    "input": {"catch": [{"board": "mock-gym", "posting_id": "x"}]},
+}
 USAGE: dict[str, Any] = {"input_tokens": 100, "output_tokens": 20}
 
 
@@ -342,7 +346,7 @@ OUTCOMES: list[tuple[str, list[Respond], bool, list[str], tuple[str, str | None]
         "plain-hunt-complete",
         [_ok(_plain("tool_use", [CATCH]))],
         False,
-        [E, U, "prey_captured"],
+        [E, U, E_],
         ("completed", None),
     ),
     ("plain-refusal", [_ok(_plain("max_tokens", [SNIFF]))], False, [E, U, E_], MALFORMED),
@@ -414,7 +418,7 @@ def test_the_exchange_never_reaches_the_tools_the_model_sees() -> None:
     # HuntComplete and NeedsHelp carry the exchange and the usage, and also derive the terminal
     # tools' `input_schema` (`brain.build_tools`). Both carriers stay out of it: `exchange` since
     # W3.3 (the wire check found it there before `SkipJsonSchema`), `usage` since W3.4 (W3.3-F1).
-    # So `catch` is the one property left, and no tool carries a `$defs` entry.
+    # So `catch` is the one property left, and the one `$defs` entry is its PostingRef.
     tools = {tool["name"]: tool["input_schema"] for tool in brain.build_tools(_reg())}
     properties = {
         name: set(tools[name].get("properties", {})) for name in ("hunt_complete", "needs_help")
@@ -422,7 +426,7 @@ def test_the_exchange_never_reaches_the_tools_the_model_sees() -> None:
     assert properties == {"hunt_complete": {"catch"}, "needs_help": set()}
     defs = {key for schema in tools.values() for key in schema.get("$defs", {})}
     assert "BrainExchangeEvent" not in defs
-    assert defs == set()  # F1 (W3.3-F1): UsageEvent's entry left with `usage`
+    assert defs == {"PostingRef"}  # F1 (W3.3-F1): UsageEvent's entry left with `usage`
 
 
 async def test_a_brain_that_reports_no_bytes_writes_no_exchange(tmp_path: Path) -> None:

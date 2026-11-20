@@ -122,7 +122,7 @@ def _sse(
 
 # Call 1 reasons then sniffs; call 2 reasons then ends the hunt.
 CALL1 = _sse(["Scouting ", "mock-gym."], SIG1, "toolu_1", "sniff", {"prey": "mock-gym"})
-CALL2 = _sse(["Enough — capturing."], SIG2, "toolu_2", "hunt_complete", {"catch": ["posting:mg"]})
+CALL2 = _sse(["Enough — capturing."], SIG2, "toolu_2", "hunt_complete", {"catch": []})
 EXPECTED_DELTAS = ["Scouting ", "mock-gym.", "Enough — capturing."]
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]

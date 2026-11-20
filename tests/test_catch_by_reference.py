@@ -13,8 +13,9 @@ own line. Every body is built here from literals; nothing under tests/fixtures/ 
 written. No brain call reaches a network: the brains are scripted.
 """
 
+import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,10 +24,15 @@ import aiosqlite
 import pytest
 from pydantic import ValidationError
 
-from rexhunter import db, events, verdicts, view
-from rexhunter.events import PreyCapturedEvent, Verdict
+from rexhunter import brain, db, events, stub, verdicts, view
+from rexhunter.events import ErrorEvent, PreyCapturedEvent, ToolCallEvent, Verdict
+from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision, run_hunt
+from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
+
+BrainFactory = Callable[[Sequence[Decision]], Brain]
+type Row = tuple[str, str | None]
 
 GREENHOUSE = json.dumps(
     {
@@ -37,6 +43,76 @@ GREENHOUSE = json.dumps(
         "content": "&lt;p&gt;Train and ship models.&lt;/p&gt;",
     }
 ).encode()
+LEVER = json.dumps(
+    {
+        "id": "lv-7",
+        "text": "AI Platform Engineer",
+        "categories": {"location": "Sydney", "team": "Platform"},
+        "hostedUrl": "https://jobs.example.invalid/wombatworks/lv-7",
+        "descriptionPlain": "Build the platform.",
+    }
+).encode()
+BODIES: dict[tuple[str, str], bytes] = {
+    ("gym-greenhouse", "101"): GREENHOUSE,
+    ("gym-lever", "lv-7"): LEVER,
+}
+
+
+def _ref(board: str, posting_id: str) -> events.PostingRef:
+    return events.PostingRef(board=board, posting_id=posting_id)
+
+
+def _registry(bodies: dict[tuple[str, str], bytes] | None = None) -> ToolRegistry:
+    table = BODIES if bodies is None else bodies
+
+    async def read_posting(board: str, posting_id: str) -> bytes:
+        """Read one posting."""
+        return table[(board, posting_id)]
+
+    async def list_postings(board: str) -> bytes:
+        """List a board's postings."""
+        ids = [posting_id for (b, posting_id) in table if b == board]
+        return json.dumps({"board": board, "postings": ids}).encode()
+
+    async def glance(board: str, posting_id: str) -> bytes:
+        """Glance at a posting: the same arguments, but no posting source."""
+        return table[(board, posting_id)]
+
+    reg = ToolRegistry()
+    reg.tool(read_posting, posting_source=True)
+    reg.tool(list_postings)
+    reg.tool(glance)
+    return reg
+
+
+def _read(ref: events.PostingRef) -> ToolCallDecision:
+    return ToolCallDecision(tool="read_posting", args=ref.model_dump())
+
+
+async def _row(conn: aiosqlite.Connection, run_id: str) -> Row:
+    async with conn.execute(
+        "SELECT outcome, abort_reason FROM runs WHERE id = ?", (run_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    return str(row[0]), row[1]
+
+
+async def _hunt(
+    conn: aiosqlite.Connection,
+    scripted_brain: BrainFactory,
+    decisions: Sequence[Decision],
+    reg: ToolRegistry | None = None,
+    *,
+    territory: str = "gym-greenhouse",
+) -> tuple[str, list[events.TrajectoryEvent], Row]:
+    run_id = await run_hunt(
+        conn,
+        territory=territory,
+        brain=scripted_brain(decisions),
+        registry=_registry() if reg is None else reg,
+    )
+    return run_id, await db.read_events(conn, run_id), await _row(conn, run_id)
 
 
 async def _pen(conn: aiosqlite.Connection) -> list[tuple[Any, ...]]:
@@ -48,6 +124,10 @@ async def _pen(conn: aiosqlite.Connection) -> list[tuple[Any, ...]]:
 
 def _captures(evs: Sequence[events.TrajectoryEvent]) -> list[PreyCapturedEvent]:
     return [e for e in evs if isinstance(e, PreyCapturedEvent)]
+
+
+def _capture_errors(evs: Sequence[events.TrajectoryEvent]) -> list[ErrorEvent]:
+    return [e for e in evs if isinstance(e, ErrorEvent) and e.tool == "<capture>"]
 
 
 def test_a_posting_ref_is_two_strings_and_nothing_else() -> None:
@@ -62,6 +142,134 @@ def test_a_posting_ref_is_two_strings_and_nothing_else() -> None:
     ):
         with pytest.raises(ValidationError):
             events.PostingRef.model_validate(wrong)
+
+
+def test_hunt_complete_schema_carries_board_and_posting_id() -> None:
+    tools = {
+        tool["name"]: tool["input_schema"] for tool in brain.build_tools(stub.build_registry())
+    }
+    schema = tools["hunt_complete"]
+    items = schema["properties"]["catch"]["items"]
+    assert items == {"$ref": "#/$defs/PostingRef"}
+    ref = schema["$defs"]["PostingRef"]
+    assert ref == {
+        "additionalProperties": False,
+        "properties": {"board": {"type": "string"}, "posting_id": {"type": "string"}},
+        "required": ["board", "posting_id"],
+        "type": "object",
+    }  # the class docstring is not in it: written for readers of the code, not for the model
+
+
+def test_a_posting_source_must_take_exactly_a_reference() -> None:
+    reg = ToolRegistry()
+
+    async def read_posting(board: str, posting_id: str) -> bytes:
+        return b""
+
+    async def by_board(board: str) -> bytes:
+        return b""
+
+    async def by_number(board: str, posting_id: int) -> bytes:
+        return b""
+
+    reg.tool(read_posting, posting_source=True)
+    assert reg.get("read_posting").posting_source is True
+    for wrong in (by_board, by_number):
+        with pytest.raises(TypeError, match="a posting source takes exactly"):
+            reg.tool(wrong, posting_source=True)
+
+
+async def test_a_read_posting_is_penned_with_the_board_bytes(
+    tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    ref = _ref("gym-greenhouse", "101")
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        _, evs, row = await _hunt(conn, scripted_brain, [_read(ref), HuntComplete(catch=[ref])])
+        assert row == ("completed", None)
+        (capture,) = _captures(evs)
+        assert capture.raw_posting == GREENHOUSE  # the board's bytes, as the read returned them
+        assert (capture.board, capture.posting_id) == ("gym-greenhouse", "101")
+        assert [p[:2] for p in await _pen(conn)] == [("gym-greenhouse", "101")]
+        assert _capture_errors(evs) == []
+    finally:
+        await conn.close()
+
+
+async def test_the_latest_read_of_a_posting_gives_its_bytes(
+    tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    reads = iter([b"first read", GREENHOUSE])
+    reg = ToolRegistry()
+
+    async def read_posting(board: str, posting_id: str) -> bytes:
+        return next(reads)
+
+    reg.tool(read_posting, posting_source=True)
+    ref = _ref("gym-greenhouse", "101")
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        _, evs, _ = await _hunt(
+            conn, scripted_brain, [_read(ref), _read(ref), HuntComplete(catch=[ref])], reg
+        )
+        assert [c.raw_posting for c in _captures(evs)] == [GREENHOUSE]
+    finally:
+        await conn.close()
+
+
+async def test_an_unread_reference_is_rejected_and_never_penned(
+    tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    read, unread = _ref("gym-greenhouse", "101"), _ref("gym-greenhouse", "999")
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        _, evs, row = await _hunt(
+            conn, scripted_brain, [_read(read), HuntComplete(catch=[unread, read])]
+        )
+        assert row == ("completed", None)  # the run completes; the resolved rest is penned
+        (error,) = _capture_errors(evs)
+        assert (error.retryable, error.error) == (False, "unresolved catch reference")
+        assert json.loads(error.raw_request) == {"board": "gym-greenhouse", "posting_id": "999"}
+        assert [p[:2] for p in await _pen(conn)] == [("gym-greenhouse", "101")]
+    finally:
+        await conn.close()
+
+
+async def test_a_listed_but_unread_reference_is_rejected(
+    tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    # The posting appears in a list, and in the result of a tool that takes the same arguments
+    # but is no posting source: neither is the run's read of it.
+    ref = _ref("gym-greenhouse", "101")
+    decisions = [
+        ToolCallDecision(tool="list_postings", args={"board": "gym-greenhouse"}),
+        ToolCallDecision(tool="glance", args=ref.model_dump()),
+        HuntComplete(catch=[ref]),
+    ]
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        _, evs, row = await _hunt(conn, scripted_brain, decisions)
+        assert row == ("completed", None)
+        assert len(_capture_errors(evs)) == 1
+        assert _captures(evs) == []
+        assert await _pen(conn) == []
+    finally:
+        await conn.close()
+
+
+async def test_a_duplicate_reference_in_one_catch_is_penned_once(
+    tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    read, unread = _ref("gym-greenhouse", "101"), _ref("gym-greenhouse", "999")
+    catch = [read, read, unread, unread]
+    conn = await db.connect(tmp_path / "rex.db")
+    try:
+        _, evs, _ = await _hunt(conn, scripted_brain, [_read(read), HuntComplete(catch=catch)])
+        assert len(_captures(evs)) == 1
+        assert len(_capture_errors(evs)) == 1  # each distinct reference is handled once
+        assert len(await _pen(conn)) == 1
+    finally:
+        await conn.close()
 
 
 @pytest.mark.parametrize(
@@ -103,6 +311,31 @@ async def test_a_posting_already_in_the_pen_is_not_penned_again(
         assert _captures(await db.read_events(conn, second_run)) == []  # no second event
     finally:
         await conn.close()
+
+
+async def test_two_concurrent_hunts_catching_one_posting_pen_it_once(
+    tmp_path: Path, scripted_brain: BrainFactory
+) -> None:
+    ref = _ref("gym-greenhouse", "101")
+    db_path = tmp_path / "rex.db"
+    first, second = await db.connect(db_path), await db.connect(db_path)
+    try:
+        results = await asyncio.gather(
+            *(
+                _hunt(conn, scripted_brain, [_read(ref), HuntComplete(catch=[ref])])
+                for conn in (first, second)
+            )
+        )
+        assert [row for _, _, row in results] == [("completed", None)] * 2
+        assert sum(len(_captures(evs)) for _, evs, _ in results) == 1
+        assert [_capture_errors(evs) for _, evs, _ in results] == [
+            [],
+            [],
+        ]  # a duplicate is no error
+        assert len(await _pen(first)) == 1
+    finally:
+        await first.close()
+        await second.close()
 
 
 async def test_an_old_prey_table_gains_the_columns(tmp_path: Path) -> None:
@@ -153,3 +386,11 @@ def test_a_capture_event_from_before_p2_4_still_decodes() -> None:
     row = view.LogRow(id=1, seq=0, run_id="r0", created_at="2026-11-01T00:00:00+00:00", event=event)
     state = view.project([row], datetime(2026, 11, 21, 9, tzinfo=UTC))
     assert [card.posting for card in state.pen] == ["posting:mock-gym"]
+
+
+def test_project_messages_skips_a_capture_error() -> None:
+    call = ToolCallEvent(tool="sniff", raw_request=b"{}", tool_use_id="toolu_1")
+    error = ErrorEvent(
+        tool="<capture>", retryable=False, error="unresolved catch reference", raw_request=b"{}"
+    )
+    assert brain.project_messages("gym", [call, error]) == brain.project_messages("gym", [call])
