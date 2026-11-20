@@ -13,6 +13,7 @@ unhandled exception escaping the loop.
 import asyncio
 import json
 import logging
+import math
 import random
 import traceback
 from collections.abc import Awaitable, Callable
@@ -130,6 +131,19 @@ def backoff_delay(retry: int, *, retry_after: float | None = None) -> float:
     if retry_after is not None:
         delay = max(delay, min(retry_after, RETRY_AFTER_CAP_S))
     return delay
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    """A `retry-after` header as seconds, or None: absent, or not a finite number of seconds that
+    is not negative (an HTTP-date included), the header is ignored. One reader for every source
+    that sends the header: the brain's provider and a board."""
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 def _to_bytes(result: object) -> bytes:

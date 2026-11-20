@@ -30,7 +30,6 @@ SDK. `request_headers` is gone: the factory owns the headers.
 """
 
 import json
-import math
 import os
 import ssl
 import sys
@@ -62,6 +61,7 @@ from rexhunter.loop import (
     NeedsHelp,
     ThinkingSink,
     ToolCallDecision,
+    parse_retry_after,
 )
 from rexhunter.tools import ToolRegistry
 lazy from rexhunter import stub  # lazy: the stub path pulls in no adapter/client machinery
@@ -1070,8 +1070,9 @@ def brain_call_error(
     The error body rides along (invariant 6). The message names the real cause, not the SDK's
     generic wrapper text, as HEAD's ErrorEvent did. The stream checks in `_drive_stream` raise
     their BrainCallError directly; this translates only what the SDK and the transport raise. A
-    status response's `retry-after` header rides along too (W3.2-B2, `_retry_after`), for the
-    loop's backoff. `exchange` is the attempt's raw I/O (W3.3), passed through for the loop."""
+    status response's `retry-after` header rides along too (W3.2-B2, `loop.parse_retry_after`),
+    for the loop's backoff. `exchange` is the attempt's raw I/O (W3.3), passed through for the
+    loop."""
     if isinstance(exc, anthropic.APIStatusError):
         code = exc.status_code
         return BrainCallError(
@@ -1079,22 +1080,10 @@ def brain_call_error(
             retryable=_retryable_status(code),
             status=code,
             raw_response=exc.response.content,
-            retry_after=_retry_after(exc.response.headers.get("retry-after")),
+            retry_after=parse_retry_after(exc.response.headers.get("retry-after")),
             exchange=exchange,
         )
     return BrainCallError(repr(exc.__cause__ or exc), retryable=True, exchange=exchange)
-
-
-def _retry_after(value: str | None) -> float | None:
-    """A `retry-after` header as seconds (W3.2-B2), or None: absent, or not a finite number of
-    seconds that is not negative (an HTTP-date included), the header is ignored."""
-    if value is None:
-        return None
-    try:
-        seconds = float(value)
-    except ValueError:
-        return None
-    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 def _is_transport_failure(exc: anthropic.APIConnectionError) -> bool:
