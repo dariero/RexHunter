@@ -1,0 +1,66 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5-5","id":"msg_011ChD1Uj1xwT8JH7QpnW5Us","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":1372,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard","inference_geo":"global","speed":"standard"},"diagnostics":null}            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}     }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" post"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ings I"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"'m seeing are all just"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" echoes, with"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" no real "}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ones among"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" them, so the"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" right label"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" here"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" is needs_help."}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQS2gUKEAgUGAI4AUIIdGhpbmtpbmcSDF5Xh299UxGlgSvKbRoMKRBBesVfe/TOEOziIjATNiUTA1CIa5B0SfBXo++QcIknBGQN4DbfMtIuy5/H75nP83YgpzcGweiN2OyYFGAq9wS49x3W3WX2Kdn58/hnsG/8k1QmuKPFlc1CA1MgYg7FajWpvaOHzRIs3yxk7gN+2A3KjFIkaAGs325A0Aarkd0uNPAxjvq7st4Q5THbpQdG+hW4a+uWPbZsHT2KPXAXBCMEGWUzAttHYdvElyH36GWAuYTUgybpaWSqJq0v4Yb/lB/gszSjKvn4v4ykBiWu82OccOReTe/35QZ9PrBfDL+HEsL4wTEru+wYegCV/ZvaDWWBndZfKY5qQ6k0JkO/0AfB3Y6GO9iCts0YENAc/0+vp9+a8+oQ95EGwG3Elt1w+0NhQf3uWpXWRO2BzQXi8yBl8vaKMeyaBSGszzZrdlwSv68oAwOEFUjP94d8jADygm8aTTJusAKHyv6Pa5/jrn0ZuC/yLRlsHI9Ockrb2JPafmoK3n2klC68KGT+dm34YspapZ49k0h9DH/pWDUfGy5U0wv49brjKzeDOoZjcE+ngYiTnuKZlHdWQVCGLGM+wzEHK0xdpqqoQEH7mB04zClVzHZE4DVAQG+2AJn+724xBHDwQZyiOfZx7xn6Cvmx6T6LOm4quiaDS4dv1bCH1IEshJthG7CYRKuquOE7RwvEWR/1Pl4EdoeesEyyuIO7tH0vR/s7+kqLKXiaUgqCKah3JYcfsMFUaiJedp57AQ7fo/Il9y2vnwD+u7UZs0u1drKEXY0J5uIzJ6GPa4FqEAyVw5jwyrfeIKnJWuN1NlY6wHfna8o+H9BMCAtoqbFQmsHDQ5rWuM72iezAGajfXNOUrvj5Z0Wp9cXLikc86Dk/zP4ScVZKs3KrGYyBNxPdY5wu0ZANyGV2o26HUfbyN9zwicqnMXTfGAE="}    }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0    }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_014UYkDqEXHc7fXmGm7xZLHd","name":"needs_help","input":{},"caller":{"type":"direct"}}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1           }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":1372,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":46,"output_tokens_details":{"thinking_tokens":20}}               }
+
+event: message_stop
+data: {"type":"message_stop"        }
+

@@ -30,8 +30,8 @@ if echo "$CMD" | grep -qiE 'linkedin\.com|seek\.com|indeed\.com'; then
   exit 2
 fi
 
-# NOTE: direct push to main is intentionally NOT blocked here. RexHunter is solo and
-# direct-to-main by design. Push safety lives one layer down, in the pre-push git hook
-# (.githooks/pre-push) — ruff + pyright + pytest must be green before a push leaves.
+# NOTE: a push to main is not blocked here. Changes reach main through a pull request, and the
+# required CI check `quality` must be green first (branch protection, strict, admins included).
+# The pre-push git hook (.githooks/pre-push) runs ruff, pyright and pytest before a push leaves.
 
 exit 0

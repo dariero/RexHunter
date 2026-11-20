@@ -1,0 +1,102 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5-5","id":"msg_011ChD1Y5UMgXQwJWucm2WFV","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":1158,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":6,"service_tier":"standard","inference_geo":"global","speed":"standard"},"diagnostics":null}               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}         }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" sniff only"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" ech"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"oed back, with"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" no real postings to"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" go"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" on. I'm weighing"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" whether to finish with an emp"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ty catch or a needs_"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"help fl"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ag, and wh"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ether a couple more sniff"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"s would change"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" anything. The honest read"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" so"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" far is that nothing real has"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" tur"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ned up, so I'll try"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" one more variation before deciding"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQS/AYKEAgUGAI4AUIIdGhpbmtpbmcSDM/8JJ8iV903FzdD0xoMA1PBdinJrV7vIbnAIjDgVx6CCmSaa9DiyvvXp5a08SzQork6LCcA1Axj/vW0AoKrihmU5bHNEqPDdqK9Fy4qmQaLzZPjmEkwX23882TPCNZbn45F1QmRkTlhAWpGgTEKd5k4HUfanDYOIpYTtmTOg1xDUIEP0wMpUlkc6AgwipNNiT/ExfT6AbspD43FLgo9TOWzxAhHqGS0fAt6KiYwmRdUms+3oNaWF6LYp9boplgArHe3ZuYBJBT6Y39G1OQ7rr8ER5CHh0/CEnVtc4rIqn0K+aCqCI1qVc8ITZt2uNz+GBkmxtCGZC/NHcPhlXJKdaxzvfBZ5Cl2m90B1cmXRwD6RCg78givvGHDBwjXc9GUfgp7ZnLXZtGFYec6/wNVUpK0HjuDBW9LmsYzHXBWRLdwgi5ijVIbhhk9LyNHdr/iChgxCGLPL94+sCZn1gkyH4bkuIYia0yUNCsGBXzD8JslI2IldeoVuuD8WPQ5NNThRD6J4cb5BQpNh+bsxRBC9afn9HhGNixeWvnCQjiCTgYAGhBm7zNmo6/31OMpDVBw1/ooNdFPBxJwnmoRY5JyrUylC0Z0X1kJMsRjeNIBY1nycI66wCh2QWFCLTxyECqhFp9SISDTDapE8iJOF170G9xljLY3JxbcgyZkBuS6+3uMaxdDK5CM04EAmF1uXZxk/Vd9K2x0641KnMyY4n9vl6L1U0/l2Tnwqlsx5OKBC4+EHOgcX0Y7jj+E1aXdfP8bbq+BcbkSitS7/8kIz8Y2z4o8ViAPQ2bvP1AFpPQh5/pXif5ysggCajD5KK1NxKXAqH3L87p3KXpnqdAQVnpeYOJuPuN8lCfHetQu4Yh6kAp/wDUprLygGI9c+YIWz/8J1Sj/6Ws8YsFQHE3pdBbdgYzj+snAEWeDT4UuRKHL6u/HMya1YnLDtWSgrBwQRSaZUR9WWkcyYk43d0cwFVf0cxOE6mXO5Q4Pj4A1uURjo2b7gR7C9CU/IUHDGpHhbv9SpYn87aJ+/iuUvxJAXFjrc+8uAeMWUaJlHvKbiavYn3IHgLOx6lYlX7gfI2ViB2QolURTqskRjl7+FLf+8iIq7RxRPjOgBP4RHbgaUCrdxieCZpwTukvArhtbLrfeeOLQJdcykbt2vO/SGAE="}            }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0       }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01LtbZjZ7VHm7pidT3sZhLfL","name":"sniff","input":{},"caller":{"type":"direct"}}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"prey\""}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":": \"mock"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"-gym\"}"} }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1    }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":1158,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":149,"output_tokens_details":{"thinking_tokens":98}}           }
+
+event: message_stop
+data: {"type":"message_stop"        }
+

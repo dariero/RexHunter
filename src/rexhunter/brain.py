@@ -728,11 +728,18 @@ def build_tools(registry: ToolRegistry) -> list[dict[str, Any]]:
         }
         for tool in registry.registered()
     ]
+    # A terminal model's class docstring is written for readers of loop.py, and pydantic puts it at
+    # the schema's top level, where the model would read it on every request. It is dropped here:
+    # the tool-level description is the text meant for the model, and field descriptions stay.
     tools.extend(
         {
             "name": name,
             "description": description,
-            "input_schema": _strip_titles(model.model_json_schema()),
+            "input_schema": {
+                key: value
+                for key, value in _strip_titles(model.model_json_schema()).items()
+                if key != "description"
+            },
         }
         for name, model, description in _TERMINAL_TOOLS
     )

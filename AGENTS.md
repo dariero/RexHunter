@@ -142,10 +142,10 @@ slice's gate (ADR Definition-of-done) is green.
 Unit 2a (provider adapter, offline) ✅ **done** (`edd4ec8`) · Unit 2b (the first paid call) ✅
 **done** — one real Sonnet 5 call landed and parsed (`tool=sniff`), captured as a golden fixture
 (`tests/fixtures/smoke_sonnet5.json`, invariant 6; it carries a live adaptive-thinking sibling
-block, so it validates the 2a lenient scan on genuine output). `SMOKE_MODEL = "claude-sonnet-5"`;
+block, so it validates the 2a lenient scan on genuine output). `SMOKE_MODEL = "claude-sonnet-5"` (`"claude-sonnet-5-5"` since W2.5);
 `build_tools` strips `title` from the derived schemas (Anthropic accepted them — confirmed by the
 free `count_tokens` pre-flight); a shared `build_request_body` holds the Sonnet 5 guards (no
-`temperature`/`top_p`/`top_k`, no `thinking`, no prefill); `smoke.py` is the paid entrypoint
+`temperature`/`top_p`/`top_k`, no `thinking`, no prefill; since W2.5 on Sonnet 5.5 too, as its docstring lists them); `smoke.py` is the paid entrypoint
 (`--count-only` free pre-flight → one `messages` call → persist raw bytes → `parse_decision`),
 hard one-call guard. **`P5` Unit 2c — brain-in-loop — ✅ done. ADR upgrade-map stage 3 CLOSED:** the
 LLM drives a full hunt end to end (plan → tool runs → observation threads back into `messages` → next
@@ -156,7 +156,7 @@ projects the trajectory log into an Anthropic `messages` array (inv 2, `project_
 (429/5xx/timeouts → retryable; since W2.0 the adapter maps SDK/transport errors to a provider-neutral
 `BrainCallError` that `classify` honours, and loop.py imports no httpx), and
 `select_brain_for`/`REXHUNTER_BRAIN` gate the spender surface (stub default, opt-in `live`). The live
-loop path sends `thinking: {type: "disabled"}` + `tool_choice: {disable_parallel_tool_use: true}` –
+loop path sends `thinking: {type: "disabled"}` (`{type: "between_tools"}` since W2.5) + `tool_choice: {disable_parallel_tool_use: true}` –
 bare one-`tool_use` replay turns until thinking
 capture lands in Unit 3. *2c.2 (gated live) — ✅ done:* one budget-capped hunt (`rexhunter.hunt_smoke`,
 `COST_CEILING_USD=0.05`, `MAX_ITERATIONS=3`) on `SMOKE_MODEL` against the mock-gym board — 2 brain
@@ -185,7 +185,7 @@ reconnects via `Last-Event-ID` with zero gaps / zero dups (catch-up + splice + d
 ≤-high-water drop); a full-queue viewer is dropped while the hunt completes unslowed. Verified
 end-to-end through the real uvicorn server (curl `/events` streamed a full hunt's
 `tool_call`/`tool_result`/`prey_captured` frames + heartbeats; `/snapshot` `latest_id` 0→3). Thinking stays
-`{type:"disabled"}` — P3 built its render target, does not consume it.
+`{type:"disabled"}` (`{type:"between_tools"}` since W2.5) — P3 built its render target, does not consume it.
 **▶ `P5` · Unit 3 — the `ThinkingDelta` relay — ✅ done.** Thinking is back on and Rex's reasoning
 streams through the P3 hub. *`3a` (streaming transport, offline) — ✅ done (`a3e05b4`):* `brain.py`
 `iter_sse_events` + `StreamAssembler` (90 lines, under the frugality threshold — no vendor SDK; invs
@@ -732,6 +732,48 @@ taken while the daemon idled (`PRAGMA integrity_check` ok). The DB stays outside
 (`~/dev/agent-reports/RexHunter/live-2026-11-20/rex.db`); making fixtures from it is Darie's.
 Still unseen live: hunt_smoke's capture-1 tee, a retry, a cut stream and an error frame. *Next:
 W4.*
+**▶ W4a · No class docstrings in the terminal schemas, a live-hunt replay, small docs – ✅ done on
+branch `w4-wire-fixture-docs` (`7c553a7`→`cb04b01`, 2026-11-20), PR #15.** Offline: no API call of
+any kind, no model change; one approved wire change (`doc`). Labels are W4's (cp files: this run's
+checkpoint reports). Darie's answers of 20 Nov 2026 to the planner's four questions, each the
+recommended option: the docstrings out of the schema; a fixture from the live hunt; R10, `httpx`
+to the dev group (W4b); the orchestrator answers the stops and merges, after a ping; A8 and A9
+left as they are; "max iterations" in the RV14 note; pointers in the history lines; C10, a comment
+in the hook. Forks chosen 20 Nov by rex-orchestrator under her delegation: doc-1, live-1. The
+channel: a user-level `crossSessionInbound: hold` setting made the orchestrator's session hold every
+inbound message (likely the W3.4b cause too), so the ping from `rex-w4` waited for Darie's approval
+there; she approved it and removed the setting, the pong came back, and cp1 to cp3 arrived with no
+hold. **doc**
+(`7c553a7`): the class docstrings of `HuntComplete` and `NeedsHelp` (loop.py:180, :197), notes for
+readers ("The outcome lives in runs (like P1) - no terminal event", "P2.2 ends the run cleanly"),
+reached the model in every request as the top-level `description` of the `hunt_complete` and
+`needs_help` input schemas. `build_tools` now drops that key after `_strip_titles`; the tool-level
+descriptions, the properties and any field description stay. Wire (five bodies, a MockTransport
+capture), the new baselines: 1 `bb2ef203…c24d` 1487 B, 2 `6b9e9a17…98a8` 1519, 3 `3f01481b…c293`
+1469, 4 `08e8682c…fd31` 1898, 5 = 2; each 717 B shorter than at b7cf381 and equal to it, byte for
+byte, with the two `"description"` spans cut. Reds at b7cf381: tests/test_terminal_schemas.py:26
+and :65 (`'description'` still in the schema). Mutants W4-MW1 to MW3, 2, 1 and 1 red; MW3 (field
+descriptions dropped too) goes red only through a stand-in model, as no terminal field has a
+description. **live** (`12cb4b5`): `tests/fixtures/daemon_sonnet_5_5_2026-11-20/` keeps two of
+Part C's six runs, one per outcome, `058dc53e…` (completed, an empty catch) and `5e555e12…`
+(needs_help): each response's bytes as the daemon's log stored them (`call_0{1,2,3}.json`, 2372 to
+6532 B), read from a copy of the live DB, byte-equal to the stored `raw_response`, with no secret
+pattern and LF only. No request bytes are kept, so the fixture does not pin the wire.
+tests/test_daemon_sonnet_5_5_hunt_replay.py (8) re-drives each run through the adapter on
+`claude-sonnet-5-5` under the daemon's caps and reproduces its log (DoD #5 on live daemon data):
+the outcome and the run's caps, the event types, the payloads other than the exchanges (a sha256
+against the live log's), each exchange's status and response bytes, the relayed thinking (41 and
+33 deltas), the usage and its fold ($0.010840, $0.010226), the tool calls, and each request's shape
+and its echo of the stored turns. In a scratch check outside the suite, the replay on b7cf381
+rebuilt all six live requests byte for byte; from `7c553a7` each is 717 B shorter and equal to the
+live request less the two keys.
+Mutants W4-MW4 (one response byte changed) 2 red, MW5 (the wrong model) 4 red. **Docs:** the
+ADR:132 note gains a "max iterations" sentence (`0ee5252`, W3.2-R2-RV14); five history lines get a
+pointer each, with no reflow (`cb04b01`: :145, :148, :159, :188, :784); and
+`.claude/hooks/guard-bash.sh:33-35` states the PR rule, its code unchanged (C10). Test edits:
+none. 644 tests pass at `cb04b01` (633 at b7cf381): tests/test_terminal_schemas.py (3) and the
+replay (8). No subagent, workflow or advisor call. Open: the W3.4b entry's list less C10;
+capture-2 was not chosen. *Next: W4b (the behaviour-preserving refactor).*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
@@ -781,7 +823,7 @@ W4.*
   `claude-sonnet-5` through the 2a adapter (free `count_tokens` pre-flight → one `messages` call →
   persist raw bytes → `parse_decision`) landed and parsed to `ToolCallDecision(tool="sniff")`,
   captured as `tests/fixtures/smoke_sonnet5.json` (invariant 6, a real adaptive-thinking sibling
-  block); Sonnet 5 guards (no sampling params / `thinking` / prefill) + `title`-stripped schemas;
+  block); Sonnet 5 guards (no sampling params / `thinking` / prefill; since W2.5 on Sonnet 5.5 too, as `build_request_body`'s docstring lists them) + `title`-stripped schemas;
   hard one-call guard; `smoke.py` entrypoint. Offline gates `tests/test_smoke_offline.py` +
   `tests/test_smoke_replay.py`. *Unit 3 (streaming `ThinkingDelta` relay + signed-block replay) — ✅
   done, replay-gated (`c70f2f7`):* hand-rolled SSE `StreamAssembler` (no vendor SDK; since W2.0 it
