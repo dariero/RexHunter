@@ -1,0 +1,102 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5-5","id":"msg_011ChD1U6x3DdUJT9cmscoXZ","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":1158,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"global","speed":"standard"},"diagnostics":null}    }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}            }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The s"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"niff came"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" back as"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" just"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" an echo with"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" no real postings, so the"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" tool isn't gi"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ving me anything usable. I"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"'m we"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ighing wh"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ether to close the hunt with"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" an empty catch or fl"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ag need"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"s_help, since"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" need"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"s_help fe"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"els more honest here"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":". I'll try one more s"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"niff first"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"."}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQShwgKEAgUGAI4AUIIdGhpbmtpbmcSDL6RxlrYLQNCi6+J/xoM8grbnBZo5h6qGZ34IjAXRJXT8nZAMrISbDss8mqL2zpwK8cmM+1zOrqYODUolzW0+Ol88tHSCxxKmomnIdUqpAf3EsSfOI5UmL9zI1vR4umgQXOBs3km1v8nu85rSUFtAcQEdR439oPVtR8IORVMuCnu3/hL3jYv4Ob+XwUxzcwO6slUzLqF4W8vLFatB1bSZEjw9FQwNoCK9oCW44r+bH9JG1jewan7FAS/DJsrBnoypbg7YL8SI2RiamtJmDhhk/mWyA1X2BVujnevcHPW62rbuxTALWycOmO+7HyhtQd1jBCODLrpLCqXRjEQ3eNMPBMhGJEVAXsuBWwauLQM9sS/2ttoEEysYLWO6YU2WWjbZXlU5ZkV2BKzWRR8vIWWzxmnZ7evVDJo2Y/vRSiAxOcrI4gS2LZOyXHKn37FK/Xwefgi8u7Wd4PZk/TjXAOrsFsm5nAn4ewFQdkqRtDWC/6+Se76PIB1HxEZT1/MkDb9Lhwp847muGntOSInbDy5aK6ubqy9B2G3iq23pGSjz6ABCnXw7CJ2xhZpnMdYQewmlz23Kxh1PeRN5dOZvsCWqfBhM0e6C9Rs7hI/d9y5BVbtVQCdmWwBZUUsQp8d9ZswVxd4Joe86DU/tvnkg0Uw9PAoWcpIMLgNInHQoM7s9v5qGpgEoGwT/LQCDT8YIAh/MxkkyvCqC/31nIJslTk2YYIHXQ+n4OyD2m9k28p35EyBH+CKRcgs3GEz2znRNpPXNLQijegxSJQ/RHbTyO04cI5M+0WeokxyJrakYiuI4JLo5ze9AQ7M/mJPfEYbNxt17k4Js6faJ8rbXNcovl/MoIDtte1jXnAk8ro04muPkNW087tImAncoBzAwwCYsuce7y8e/5PfynqLXedO14YRTIIBgcTcet8au/rrMMgfN7kt+moms0lV+8nB3kTOrvikUZz43b369qqu/aX6z4Vm6fHnF1+ZT7owhcM6o5UXtzvII8yGlz603w+CWF824grhIl6Oi/YM4DKcP7zqCYqZWpK7UrgsLufSzuIhyS3v1RAev7eNC/jCIyG7Tqw/4dP5YqgwYAK0x/ntfzhWJqCoVYh3ZCN26WvPbfCRsxVSCgvqO9YcaggTjnqzecxffxv0/aqMnqodFgFjamZioToXpQ46yDbr8wn0qhs/CqWLb2O7ZCLFZMuH8A0kfCavWeiVLmHkJZcUwVSqSKYoHTR0c6xDsjEjPlCfC/iIceuHYhlnBKucUMFMwcOws8pkOaZWqje2aJNupTzYCF1GOCKiD/a7yN73rkk3x/Q9XiPiLmiasdkTwzJLAD61goFXbTMQ2S+BGRgB"}      }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0           }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01DRseHAtY97r9cttKFiqpwT","name":"sniff","input":{},"caller":{"type":"direct"}}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"prey\""}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":": \"mock"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"-gym\"}"}   }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1         }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":1158,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":197,"output_tokens_details":{"thinking_tokens":146}}   }
+
+event: message_stop
+data: {"type":"message_stop"}
+
