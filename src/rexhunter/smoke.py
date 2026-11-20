@@ -22,7 +22,6 @@ Sequence (persist-first, one call, no retry — the hard one-call guard):
 
 import asyncio
 import json
-import os
 import re
 import sys
 from datetime import UTC, datetime
@@ -195,14 +194,7 @@ async def run_smoke(
 
 
 def main() -> None:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise SystemExit("ANTHROPIC_API_KEY is not set — export it before the smoke call.")
-    count_only = "--count-only" in sys.argv  # FREE pre-flight only; spends NOTHING.
-    if not count_only and os.environ.get("REXHUNTER_BRAIN") != "live":
-        raise SystemExit(
-            "refusing to spend: set REXHUNTER_BRAIN=live to run the paid smoke (opt-in only)."
-        )
+    api_key, count_only = brain.paid_entry(before="the smoke call", paid="smoke")
 
     async def _go() -> None:
         # max_retries=0 (brain.anthropic_client): exactly one messages call, the hard one-call

@@ -33,6 +33,7 @@ import json
 import math
 import os
 import ssl
+import sys
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from typing import Any, cast
 
@@ -1236,6 +1237,22 @@ def adapter_brain_for(
         return brain
 
     return brain_for
+
+
+def paid_entry(*, before: str, paid: str) -> tuple[str, bool]:
+    # The gate the three paid entrypoints share (smoke, hunt_smoke, hunt_smoke_thinking), in
+    # their order: the key, or a typed exit before any client exists; then, unless
+    # `--count-only` asks for the free pre-flight alone, the second opt-in, the one
+    # `select_brain_for` asks the daemon for. Returns the key and whether the run is count-only.
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise SystemExit(f"ANTHROPIC_API_KEY is not set — export it before {before}.")
+    count_only = "--count-only" in sys.argv  # the free pre-flight only: it spends nothing
+    if not count_only and os.environ.get("REXHUNTER_BRAIN") != "live":
+        raise SystemExit(
+            f"refusing to spend: set REXHUNTER_BRAIN=live to run the paid {paid} (opt-in only)."
+        )
+    return api_key, count_only
 
 
 def select_brain_for(

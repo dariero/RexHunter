@@ -22,8 +22,6 @@ replay test re-drives them through the streaming assembler with zero spend.
 """
 
 import asyncio
-import os
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -178,20 +176,14 @@ async def run_live_hunt(
 
 
 def main() -> None:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise SystemExit("ANTHROPIC_API_KEY is not set — export it before the pre-flight or hunt.")
+    api_key, count_only = brain.paid_entry(before="the pre-flight or hunt", paid="hunt")
 
     async def _go() -> None:
-        if "--count-only" in sys.argv:
+        if count_only:
             async with brain.anthropic_client(api_key, timeout=120.0) as client:
                 n = await count_tokens_preflight(client, stub.build_registry())
             print(f"[count-only] input_tokens={n} — validated, NO paid call made.")
             return
-        if os.environ.get("REXHUNTER_BRAIN") != "live":
-            raise SystemExit(
-                "refusing to spend: set REXHUNTER_BRAIN=live to run the paid hunt (opt-in only)."
-            )
         await run_live_hunt(api_key)
 
     asyncio.run(_go())
