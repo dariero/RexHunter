@@ -14,8 +14,8 @@ Sequence (persist-first, one call, no retry — the hard one-call guard):
   3. ONE `messages` call on `SMOKE_MODEL` (the live model) via the shared adapter request shape;
   4. on 200, persist the raw response bytes (inv 6) BEFORE parse/assert can throw, the money-analog
      of "make the deliverable durable first", into a NEW `smoke_<model>_<UTC time>.json` reserved
-     with "xb" before step 2 (F8: an existing name refuses at $0; smoke_sonnet5.json stays the
-     recorded fixture);
+     with "xb" before step 2 (F8: an existing name refuses at $0, so no recorded fixture is
+     overwritten);
   5. branch on `stop_reason` (`max_tokens` → truncation, report it, don't auto-retry), then
      `parse_decision`.
 """
@@ -38,7 +38,7 @@ from rexhunter.loop import Decision, ToolCallDecision
 from rexhunter.stub import build_registry
 
 SMOKE_MAX_TOKENS = 4096  # generous so adaptive-thinking tokens don't starve the tool_use block
-# A paid smoke writes a NEW file here per run (F8, W2.1b); smoke_sonnet5.json stays the recording.
+# A paid smoke writes a NEW file here per run (F8, W2.1b); no recorded fixture is overwritten.
 FIXTURE_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9._-]")  # any other character in a model id becomes "_"
 
@@ -57,9 +57,8 @@ def fixture_path(fixture_dir: Path, model: str, now: datetime) -> Path:
 def _smoke_messages(territory: str) -> list[dict[str, Any]]:
     """A directive prompt biasing the model toward a real `sniff` tool_use (a ToolCallDecision).
     `tool_choice` is left AUTO (never forced) so adaptive thinking still runs and the response
-    carries `thinking` siblings — forcing tool_choice would suppress thinking on Sonnet 5 and is a
-    400 on Sonnet 5.5, and either way the fixture would not exercise the 2a lenient scan, which is
-    the whole reason for a real fixture."""
+    carries `thinking` siblings: forcing tool_choice is a 400 on Sonnet 5.5, and the fixture would
+    then not exercise the 2a lenient scan, which is the whole reason for a real fixture."""
     return [
         {
             "role": "user",

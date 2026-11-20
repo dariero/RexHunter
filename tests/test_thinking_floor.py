@@ -1,9 +1,9 @@
 """W2.2 (F5) — the lowest thinking setting follows the model (offline, no spend, no network).
 
 A hunt that wants thinking off sends the model's lowest setting, read from one table keyed by API
-model id (`brain.THINKING_FLOOR`, fork F1): `claude-sonnet-5` turns thinking off with
-`{"type": "disabled"}`; `claude-sonnet-5-5` rejects that with a 400, and its lowest setting is
-`{"type": "between_tools"}`, which takes no other field. Both thinking-off paths read the table:
+model id (`brain.THINKING_FLOOR`, fork F1): `claude-sonnet-5-5` rejects `{"type": "disabled"}`
+with a 400, and its lowest setting is `{"type": "between_tools"}`, which takes no other field.
+Both thinking-off paths read the table:
 the adapter's default (`adapter_brain_for` without `thinking`) and the free pre-flight's body
 (`hunt_smoke._hunt_body`). A model with no row fails closed, before any request is built.
 
@@ -56,12 +56,9 @@ async def _adapter_body(mock_anthropic: MockAnthropic, model: str) -> dict[str, 
 
 
 def test_the_table_has_a_row_for_each_model_a_hunt_runs_with_thinking_off() -> None:
-    # Two rows, each the whole thinking value: `between_tools` carries the one key `type`
+    # One row, the whole thinking value: `between_tools` carries the one key `type`
     # (`display`, `budget_tokens` or `block_binding` beside it is a 400).
-    assert brain.THINKING_FLOOR == {
-        "claude-sonnet-5": {"type": "disabled"},
-        "claude-sonnet-5-5": {"type": "between_tools"},
-    }
+    assert brain.THINKING_FLOOR == {"claude-sonnet-5-5": {"type": "between_tools"}}
     assert list(brain.THINKING_FLOOR["claude-sonnet-5-5"]) == ["type"]
 
 
