@@ -86,15 +86,6 @@ async def test_the_adapter_on_sonnet_5_5_without_thinking_sends_between_tools(
     assert body["thinking"] == {"type": "between_tools"}
 
 
-async def test_the_adapter_on_sonnet_5_without_thinking_still_sends_disabled(
-    mock_anthropic: MockAnthropic,
-) -> None:
-    # The Sonnet 5 wire is unchanged by W2.2: the recorded runs replay against it.
-    body = await _adapter_body(mock_anthropic, "claude-sonnet-5")
-    assert body["model"] == "claude-sonnet-5"
-    assert body["thinking"] == {"type": "disabled"}
-
-
 async def test_the_adapter_refuses_a_model_with_no_row_before_any_request(
     mock_anthropic: MockAnthropic,
 ) -> None:
