@@ -64,6 +64,7 @@ from rexhunter.loop import (
     ToolCallDecision,
 )
 from rexhunter.tools import ToolRegistry
+lazy from rexhunter import stub  # lazy: the stub path pulls in no adapter/client machinery
 
 # Reserved tool names that map to terminal decisions rather than a registry dispatch. Unit 2a's
 # adapter presents these to the model as tools (the D1 cross-unit commitment, honoured here).
@@ -1274,8 +1275,6 @@ def select_brain_for(
     if mode == "stub":
         if default is not None:
             return default, None
-        from rexhunter import stub  # lazy: the stub path pulls in no adapter/client machinery
-
         return stub.stub_brain_for, None
     if mode == "live":
         api_key = os.environ.get("ANTHROPIC_API_KEY")
