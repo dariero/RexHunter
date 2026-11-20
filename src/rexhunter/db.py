@@ -90,7 +90,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 """
 
 
-def _utcnow() -> str:
+def utcnow() -> str:
+    # The one clock format every stored timestamp uses (runs, events, prey, pen events and
+    # jobs): ISO 8601 in UTC.
     return datetime.now(UTC).isoformat()
 
 
@@ -140,7 +142,7 @@ async def start_run(
     await conn.execute(
         "INSERT INTO runs (id, territory, started_at, cost_ceiling_usd, max_iterations)"
         " VALUES (?, ?, ?, ?, ?)",
-        (run_id, territory, _utcnow(), cost_ceiling_usd, max_iterations),
+        (run_id, territory, utcnow(), cost_ceiling_usd, max_iterations),
     )
     await conn.commit()
     return run_id
@@ -171,7 +173,7 @@ async def append_event(
     payload = event.model_dump_json()
     cursor = await conn.execute(
         APPEND_EVENT_SQL,
-        (run_id, event.type, payload, _utcnow(), run_id),
+        (run_id, event.type, payload, utcnow(), run_id),
     )
     await conn.commit()
     event_id = cursor.lastrowid
@@ -238,7 +240,7 @@ async def finish_run(
     await conn.execute(
         "UPDATE runs SET ended_at = ?, outcome = ?, abort_reason = ?"
         " WHERE id = ? AND outcome IS NULL",
-        (_utcnow(), outcome, abort_reason, run_id),
+        (utcnow(), outcome, abort_reason, run_id),
     )
     await conn.commit()
 

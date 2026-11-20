@@ -18,7 +18,6 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -49,10 +48,6 @@ _TRANSITIONS: dict[Verdict, tuple[str, str]] = {
 }
 
 
-def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 async def capture_prey(
     conn: aiosqlite.Connection,
     run_id: str,
@@ -68,7 +63,7 @@ async def capture_prey(
     NEITHER durable (atomicity), so the log and the pen never disagree about a capture.
     """
     prey_id = str(uuid.uuid4())
-    now = _utcnow()
+    now = db.utcnow()
     event = events.PreyCapturedEvent(
         prey_id=prey_id, territory=territory, raw_posting=posting.encode()
     )
@@ -124,7 +119,7 @@ async def submit_verdict(
         raise ValueError("RELEASE requires a reason (labelled rejection data)")
 
     source, target = _TRANSITIONS[verdict]
-    now = _utcnow()
+    now = db.utcnow()
     decided_at = None if target == AWAITING else now  # re-entry returns to pending: clear it
     cursor = await conn.execute(
         "UPDATE prey SET status = ?, decided_at = ?,"
