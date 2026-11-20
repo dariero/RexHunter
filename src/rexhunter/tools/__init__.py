@@ -21,17 +21,36 @@ from pydantic import BaseModel, ConfigDict, create_model
 
 ToolFn = Callable[..., Awaitable[Any]]
 
+# What the model is shown for one tool result, from the stored request and response bytes. A
+# pure function of those bytes (invariant 5): each brain call renders every result again from
+# the log, so the log keeps the bytes as they arrived (invariant 6) and no rendered copy is stored.
+type ToolView = Callable[[bytes, bytes], str]
+
+
+def default_view(raw_request: bytes, raw_response: bytes) -> str:
+    """The rendering of a tool that registers no view: the response bytes decoded as UTF-8, with
+    any invalid byte shown escaped (`\\xe9`), so a body that is not UTF-8 still renders."""
+    return raw_response.decode(errors="backslashreplace")
+
 
 class RegisteredTool:
-    """A tool bound to the one args-model derived from its signature."""
+    """A tool bound to the one args-model derived from its signature, and the view that renders
+    its results for the model."""
 
-    def __init__(self, name: str, fn: ToolFn, args_model: type[BaseModel]) -> None:
+    def __init__(
+        self,
+        name: str,
+        fn: ToolFn,
+        args_model: type[BaseModel],
+        view: ToolView = default_view,
+    ) -> None:
         self.name = name
         self.fn = fn
         self.args_model = args_model
+        self.view = view
 
     @classmethod
-    def from_function(cls, fn: ToolFn) -> RegisteredTool:
+    def from_function(cls, fn: ToolFn, *, view: ToolView = default_view) -> RegisteredTool:
         if not inspect.iscoroutinefunction(fn):
             raise TypeError(f"@rex_tool requires an async function: {fn.__name__!r}")
         hints = get_type_hints(fn)
@@ -50,7 +69,7 @@ class RegisteredTool:
             __config__=ConfigDict(extra="forbid"),
             **fields,
         )
-        return cls(name=fn.__name__, fn=fn, args_model=args_model)
+        return cls(name=fn.__name__, fn=fn, args_model=args_model, view=view)
 
     @property
     def json_schema(self) -> dict[str, Any]:
@@ -74,12 +93,13 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, RegisteredTool] = {}
 
-    def tool(self, fn: ToolFn) -> ToolFn:
-        """Decorator: register `fn`, deriving its args-model from the signature.
+    def tool(self, fn: ToolFn, *, view: ToolView = default_view) -> ToolFn:
+        """Decorator: register `fn`, deriving its args-model from the signature. `view` renders
+        its results for the model (`brain.project_messages`); without one, the bytes are decoded.
 
         Returns the function unchanged — the contract lives in the registry, not in a wrapper.
         """
-        registered = RegisteredTool.from_function(fn)
+        registered = RegisteredTool.from_function(fn, view=view)
         if registered.name in self._tools:
             raise ValueError(f"tool already registered: {registered.name!r}")
         self._tools[registered.name] = registered

@@ -945,6 +945,34 @@ test_thinking_floor.py's table (W5-PV14), and the comments name Sonnet 5.5 only;
 a test name among them. Test edits: W5-PV2 to W5-PV16 as pinned. 620 tests pass at `1a64747` (659 at
 5bdc54e: 36 replay tests, 2 recorded tests and 1 floor test removed). No subagent, workflow or
 advisor call. *Next: Darie's.*
+**▶ P2.4a · Tool views, tool error bytes and retry-after – ✅ done on branch `p24-tool-seams`
+(`83c8e74`→`85c4275`, 2026-11-21), PR #20.** The first of four parts of slice `P2.4`, the gym
+board (Darie's design of 21 Nov 2026, D1 to D10): the seams its board tools need. No API call of
+any kind, no model change, no wire change: after every commit the five wire-check bodies and a
+dump of every request's headers are byte-identical to 72025e9's (1 `bb2ef203…c24d` 1487, 2
+`6b9e9a17…98a8` 1519, 3 `3f01481b…c293` 1469, 4 `08e8682c…fd31` 1898, 5 = 2; headers
+`7513b4dd…59a2`). Fork chosen 21 Nov by rex-orchestrator under her delegation: P24-view, view-1.
+**Retry-after reader** (`83c8e74`): `brain._retry_after` becomes `loop.parse_retry_after`, its
+body unchanged; brain imports it. **Views** (`a82d5d1`): `ToolRegistry.tool(fn, *,
+view=default_view)`; a view (`tools.ToolView`) is a pure function of a result's stored request
+and response bytes. `brain.project_messages(territory, context, registry=None)` renders each
+`ToolResultEvent` through its tool's view, again from the log on every call, and the adapter
+passes its registry. `default_view` decodes UTF-8 with any invalid byte escaped (`\xe9`), so a
+UTF-8 result renders exactly as `.decode()` did, and one that is not UTF-8 no longer ends the
+run: on 72025e9 the planner's probe (every call answers the same `tool_use`, the tool returns a
+lone 0xE9) ended `aborted`, "unhandled exception in loop", after 1 request; now it runs to "max
+iterations" after 3. **Tool errors** (`85c4275`): `ToolError(Exception)` carries `raw_response`,
+`RetryableToolError(ToolError)` adds `retry_after`, and `FatalToolError(ToolError)` is the
+explicit fatal one; `repr` is unchanged, so every stored `error` string stays the same, and
+`classify` is unchanged. `_run_tool` stores the bytes on the attempt's ErrorEvent (invariant 6)
+and waits at least the `retry_after` before the retry, cut to `RETRY_AFTER_CAP_S`. The new
+tests/test_tool_seams.py (8): on 72025e9, 7 red and the guard
+`test_a_tool_without_a_view_projects_as_today` green. Mutants, each on a `git archive` of its
+commit: P24-MP1 (`parse_retry_after` accepts a negative) 1 red, P24-MP2 (the registry ignored) 1,
+P24-MP3 (a strict decode) 1, P24-MP4 (no tool `retry_after`) 2, P24-MP5 (no bytes on the
+ErrorEvent) 3. Test edits: none. 628 tests pass at `85c4275` (620 at 72025e9). No subagent,
+workflow or advisor call. Open: a view that raises ends its run at the `<loop>` backstop
+(INFERRED, untested). *Next: P2.4b (catch by reference).*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
