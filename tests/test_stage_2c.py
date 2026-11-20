@@ -732,7 +732,7 @@ async def _capture_adapter_body(
 async def test_live_request_shape(mock_anthropic: MockAnthropic) -> None:
     body = await _capture_adapter_body(mock_anthropic, _sniff_registry())
     for param in ("temperature", "top_p", "top_k"):
-        assert param not in body  # any non-default sampling param → 400 on Sonnet 5 and 5.5
+        assert param not in body  # any non-default sampling param → 400 on Sonnet 5.5
     assert body["thinking"] == {"type": "between_tools"}  # Sonnet 5.5's lowest; "disabled" 400s
     assert body["tool_choice"]["disable_parallel_tool_use"] is True  # one tool per iteration
     assert body["max_tokens"] >= 1024

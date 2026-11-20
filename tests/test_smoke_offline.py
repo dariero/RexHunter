@@ -80,7 +80,7 @@ def test_rex_tool_schema_keeps_additionalproperties_false() -> None:
 # ── 2. the live model's request guards ───────────────────────────────────────
 
 
-def test_smoke_request_body_omits_sonnet5_forbidden_params() -> None:
+def test_smoke_request_body_omits_sonnet_5_5_forbidden_params() -> None:
     messages: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
     body = build_request_body(
         model=SMOKE_MODEL, max_tokens=4096, messages=messages, tools=build_tools(build_registry())

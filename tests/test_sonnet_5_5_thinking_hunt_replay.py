@@ -9,7 +9,7 @@ through the loop over a replay transport reproduces the run.
 What the live run settled, and this replay pins:
 
   - adaptive thinking with `display: "summarized"` is accepted on `messages`, streamed;
-  - the streams use the same SSE event and delta types as the Sonnet 5 recordings (`ping` included);
+  - the streams use only the SSE event and delta types the assembler knows (`ping` included);
   - adaptive thinking did not think on call one (`[tool_use]` only, 0 thinking tokens); calls two
     and three each carry one summarized, signed thinking block before the tool_use;
   - call three is the first live request that sent back a stored Sonnet 5.5 signed thinking block
@@ -197,7 +197,7 @@ def test_the_run_directory_holds_the_three_recorded_streams_unchanged() -> None:
 
 
 def test_the_streams_use_only_the_known_sse_event_and_delta_types() -> None:
-    # The same event and delta types as the Sonnet 5 recordings: nothing the assembler skips.
+    # Only the event and delta types the assembler knows: nothing it skips.
     assert len(FIXTURES) == len(DELTAS) == 3  # never vacuous: three streams, three tables
     for f, deltas in zip(FIXTURES, DELTAS, strict=True):
         events = list(brain.iter_sse_events(f.read_bytes()))

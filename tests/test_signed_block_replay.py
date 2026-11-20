@@ -1,6 +1,6 @@
 """P5 Unit 3c (offline half) — signed-block replay + the gate.
 
-Sonnet 5 runs adaptive thinking by default, so every reconstructed assistant turn must lead with
+Sonnet 5.5 runs adaptive thinking by default, so every reconstructed assistant turn must lead with
 the model's VERBATIM signed thinking block — invariant 6 (raw I/O snapshots), reinforced by
 invariant 3 (the signature is opaque, never interpreted). The gate proves `project_messages`
 ECHOES the stored block rather than rebuilding it:
@@ -228,7 +228,7 @@ async def test_streaming_request_keeps_the_2c_guards_with_thinking_on(
     body = (await _run_capturing(tmp_path / "rex.db", mock_anthropic))[0]
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}  # thinking back ON
     assert body["tool_choice"]["disable_parallel_tool_use"] is True  # one tool_use per turn intact
-    assert "temperature" not in body and "top_p" not in body and "top_k" not in body  # Sonnet 5
+    assert "temperature" not in body and "top_p" not in body and "top_k" not in body  # Sonnet 5.5
 
 
 async def test_the_streaming_request_asks_for_a_stream_on_the_wire(
