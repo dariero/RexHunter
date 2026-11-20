@@ -195,10 +195,6 @@ def test_each_stored_turn_is_echoed_in_its_own_position() -> None:
 # envelope, on BOTH paths (the plain one kept no block at all before W2.3), and the loop copies it
 # onto the ToolCallEvent. W1: new events leave the old `thinking` field empty.
 
-FIXTURE_DIR = Path(__file__).parent / "fixtures"
-PLAIN_RUN = "4c47b41b-5268-4da3-b787-9483b21d2c3f"  # W2.1b: thinking off, [text, tool_use]
-STREAM_RUN = "32975e98-4f30-4763-9d6a-a34541d0e1ef"  # Unit 3: thinking on, [thinking, tool_use]
-RECORDED_MODEL = "claude-sonnet-5"  # the model both recorded runs ran on (each fixture's "model")
 NEEDS_HELP_TURN: dict[str, Any] = {
     "type": "tool_use",
     "id": "toolu_2",
@@ -217,7 +213,7 @@ def _plain(content: list[dict[str, Any]]) -> bytes:
     body = {
         "type": "message",
         "role": "assistant",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "stop_reason": "tool_use",
         "content": content,
         "usage": {"input_tokens": 100, "output_tokens": 10},
@@ -239,7 +235,7 @@ def _sse(content: list[dict[str, Any]]) -> bytes:
         {
             "type": "message_start",
             "message": {
-                "model": "claude-sonnet-5",
+                "model": "claude-sonnet-5-5",
                 "content": [],
                 "usage": {"input_tokens": 100, "output_tokens": 1},
             },
@@ -273,13 +269,6 @@ def _sse(content: list[dict[str, Any]]) -> bytes:
     )
     frame({"type": "message_stop"})
     return "".join(frames).encode()
-
-
-def _assemble(raw: bytes) -> dict[str, Any]:
-    assembler = brain.StreamAssembler()
-    for event in brain.iter_sse_events(raw):
-        assembler.feed(event)
-    return assembler.assembled()
 
 
 async def scout(prey: str, depth: int = 1) -> str:
@@ -380,68 +369,6 @@ async def test_the_streaming_path_stores_every_block_with_exact_signatures(
         THINKING_B["signature"],
     ]
     assert call.thinking == b""  # W1
-
-
-def _keys(blocks: list[dict[str, Any]]) -> list[list[str]]:
-    return [list(block) for block in blocks]
-
-
-@pytest.mark.anyio
-async def test_the_recorded_plain_hunt_echoes_call_ones_turn_on_the_wire(
-    tmp_path: Path, mock_anthropic: MockAnthropic
-) -> None:
-    # The W2.1b recording (thinking off). Call two's assistant turn, as the SDK serialised it onto
-    # the transport, is call one's `content` exactly: the text block, then the tool_use with its
-    # `caller` and the model's own `input` (fork E1), keys in the provider's own order.
-    fixtures = sorted((FIXTURE_DIR / f"hunt_{PLAIN_RUN}").glob("call_*.json"))
-    assert len(fixtures) == 2
-    responses = [f.read_bytes() for f in fixtures]
-    events, requests = await _hunt(
-        tmp_path / "rex.db", mock_anthropic, responses, stream=False, model=RECORDED_MODEL
-    )
-    call_one = json.loads(responses[0])["content"]
-    assert len(requests) == 2
-    # R1 (W2.2): each request on the model the run was recorded on, thinking off.
-    assert [json.loads(r)["model"] for r in responses] == [RECORDED_MODEL, RECORDED_MODEL]
-    for request in requests:
-        body = json.loads(request.content)
-        assert body["model"] == RECORDED_MODEL
-        assert body["thinking"] == {"type": "disabled"}
-    sent = _sent_assistant_turn(requests[1])
-    assert sent == call_one
-    assert _keys(sent) == _keys(call_one)  # stored and sent as returned, key order included
-    stored = json.loads(_only_call(events).assistant_content)
-    assert stored == call_one
-    assert _keys(stored) == _keys(call_one)
-
-
-@pytest.mark.anyio
-async def test_the_recorded_thinking_hunt_echoes_call_ones_assembled_turn_on_the_wire(
-    tmp_path: Path, mock_anthropic: MockAnthropic
-) -> None:
-    # The Unit 3 recording (thinking on, streamed). Call two's assistant turn on the wire is call
-    # one's ASSEMBLED content exactly: the signed thinking block, then the tool_use with `caller`.
-    fixtures = sorted((FIXTURE_DIR / f"hunt_{STREAM_RUN}").glob("call_*.json"))
-    assert len(fixtures) == 2
-    responses = [f.read_bytes() for f in fixtures]
-    _events, requests = await _hunt(
-        tmp_path / "rex.db", mock_anthropic, responses, stream=True, model=RECORDED_MODEL
-    )
-    assert len(requests) == 2
-    # R1 (W2.2): each request on the model the run was recorded on.
-    assert [_assemble(r)["model"] for r in responses] == [RECORDED_MODEL, RECORDED_MODEL]
-    assert [json.loads(r.content)["model"] for r in requests] == [RECORDED_MODEL, RECORDED_MODEL]
-    sent = _sent_assistant_turn(requests[1])
-    assembled = _assemble(responses[0])["content"]
-    assert sent == assembled
-    assert _keys(sent) == _keys(assembled)
-    # Facts read from the recording itself, not from the assembler: the tool_use goes back with
-    # the id, `caller` and `input` the model streamed.
-    assert [b["type"] for b in sent] == ["thinking", "tool_use"]
-    assert sent[1]["id"] == "toolu_01YQAE7FHSfnyAqaNaHR2mB2"
-    assert sent[1]["caller"] == {"type": "direct"}
-    assert sent[1]["input"] == {"prey": "mock-gym"}
-    assert b'"caller":{"type":"direct"}' in responses[0]  # the stream itself carried `caller`
 
 
 @pytest.mark.anyio

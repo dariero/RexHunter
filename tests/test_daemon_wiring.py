@@ -157,7 +157,8 @@ async def test_the_live_daemon_brain_asks_for_summarized_thinking(
 
 
 async def _seed_usage(db_path: Path, *, input_tokens: int, output_tokens: int) -> None:
-    """Append one Sonnet-5 UsageEvent (under a throwaway run) so the whole-log fold is non-zero."""
+    """Append one Sonnet 5.5 UsageEvent (under a throwaway run) so the whole-log fold is
+    non-zero."""
     conn = await db.connect(db_path)
     try:
         run_id = await db.start_run(conn, territory="seed")
@@ -165,7 +166,7 @@ async def _seed_usage(db_path: Path, *, input_tokens: int, output_tokens: int) -
             conn,
             run_id,
             UsageEvent(
-                model="claude-sonnet-5", input_tokens=input_tokens, output_tokens=output_tokens
+                model="claude-sonnet-5-5", input_tokens=input_tokens, output_tokens=output_tokens
             ),
         )
     finally:
@@ -180,11 +181,11 @@ async def test_daemon_spend_usd_folds_usage_across_all_runs(tmp_path: Path) -> N
     try:
         r1 = await db.start_run(conn, territory="a")
         await db.append_event(
-            conn, r1, UsageEvent(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=0)
+            conn, r1, UsageEvent(model="claude-sonnet-5-5", input_tokens=1_000_000, output_tokens=0)
         )
         r2 = await db.start_run(conn, territory="b")
         await db.append_event(
-            conn, r2, UsageEvent(model="claude-sonnet-5", input_tokens=0, output_tokens=1_000_000)
+            conn, r2, UsageEvent(model="claude-sonnet-5-5", input_tokens=0, output_tokens=1_000_000)
         )
         spend = await scheduler.daemon_spend_usd(conn)
         assert spend == pytest.approx(12.0)

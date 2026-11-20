@@ -18,8 +18,9 @@ Fork T3 (W3.1): only a whole stream is a turn. A body that ends before `message_
 transport cut, retried within the budget like a reset mid-stream; a body that reached
 `message_stop` with a block left open or no stop reason is malformed, and the run ends.
 
-Every stream here is built in the test, from literals or by cutting the read-only
-`fixtures/stream_thinking.sse` at a frame boundary; no file under tests/fixtures/ is written.
+Every stream here is built in the test, from literals or by cutting a read-only recorded Sonnet 5.5
+stream (`fixtures/hunt_54590aec…/call_02.json`) at a frame boundary; no file under tests/fixtures/
+is written.
 The request model is `brain.SMOKE_MODEL`. Zero network: a `MockTransport` answers every call.
 """
 
@@ -51,9 +52,34 @@ MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 RETRY_BUDGET = 2  # run_hunt's default, passed explicitly: a retried call makes 3 requests
 MALFORMED = ("aborted", "malformed provider response")
 BRAIN_CALL_FAILED = ("aborted", "brain call failed")
-# The hand-authored stream test_stream_transport.py cuts: a thinking block (index 0, two
-# thinking deltas), then a sniff tool_use (index 1), message_delta(tool_use), message_stop.
-STREAM_THINKING = Path(__file__).parent / "fixtures" / "stream_thinking.sse"
+# Call two of the W2.5 thinking-on hunt, the recorded stream test_stream_transport.py reads: a
+# thinking block (index 0, 18 thinking deltas), then a sniff tool_use (index 1),
+# message_delta(tool_use), message_stop. The API pads its JSON before the closing brace, so the
+# markers below stop short of it.
+STREAM_THINKING = (
+    Path(__file__).parent
+    / "fixtures"
+    / "hunt_54590aec-de50-4727-a0a2-9e533fb02efa"
+    / "call_02.json"
+)
+STREAM_INPUT = {"prey": "mock-gym machine learning engineer"}
+
+
+def _thinking_deltas(raw: bytes) -> list[str]:
+    # The stream's thinking deltas, read with a plain split and json.loads, never the code under
+    # test, so the relay is checked against the frames themselves.
+    frames = [
+        json.loads(line[len(b"data: ") :])
+        for frame in raw.split(b"\n\n")
+        for line in frame.split(b"\n")
+        if line.startswith(b"data: ")
+    ]
+    return [
+        frame["delta"]["thinking"]
+        for frame in frames
+        if frame["type"] == "content_block_delta" and frame["delta"]["type"] == "thinking_delta"
+    ]
+
 
 SNIFF: dict[str, Any] = {
     "type": "tool_use",
@@ -348,9 +374,9 @@ def _cut_before(raw: bytes, marker: bytes) -> bytes:
 @pytest.mark.parametrize(
     ("marker", "stop_reason", "open_blocks", "tool_input"),
     [
-        (b'data: {"type":"content_block_stop","index":1}', None, [1], {}),
-        (b'data: {"type":"message_delta"', None, [], {"prey": "mock-gym"}),
-        (b'data: {"type":"message_stop"}', "tool_use", [], {"prey": "mock-gym"}),
+        (b'data: {"type":"content_block_stop","index":1', None, [1], {}),
+        (b'data: {"type":"message_delta"', None, [], STREAM_INPUT),
+        (b'data: {"type":"message_stop"', "tool_use", [], STREAM_INPUT),
     ],
     ids=["before-the-tool-use-stop", "before-message-delta", "before-message-stop"],
 )
@@ -365,7 +391,9 @@ async def test_a_stream_cut_before_message_stop_is_retried_and_never_dispatched(
     # H2: before W3.1 the first cut dispatched `sniff` with its start input `{}` ("invalid tool
     # args", no response bytes) and the other two dispatched it outright. A body that ends before
     # `message_stop` is a transport cut: retried within the budget, like a reset mid-stream.
-    body = _cut_before(STREAM_THINKING.read_bytes(), marker)
+    raw = STREAM_THINKING.read_bytes()
+    assert raw.count(marker) == 1  # the cut is at the one frame the marker names
+    body = _cut_before(raw, marker)
     hunt = await _hunt(tmp_path, mock_anthropic, body, stream=True)
     _assert_nothing_dispatched(hunt)
     assert hunt.requests == RETRY_BUDGET + 1
@@ -387,11 +415,9 @@ async def test_a_stream_cut_before_message_stop_is_retried_and_never_dispatched(
         for e in hunt.events
         if isinstance(e, ThinkingDelta | ErrorEvent)
     ]
-    assert relayed == [
-        "The user wants me to scout ",
-        "the mock-gym territory. I'll call sniff.",
-        "<error>",
-    ] * (RETRY_BUDGET + 1)
+    deltas = _thinking_deltas(raw)
+    assert (len(deltas), deltas[0], deltas[-1]) == (18, "The tool only", "\n\n")
+    assert relayed == [*deltas, "<error>"] * (RETRY_BUDGET + 1)
 
 
 async def test_a_stream_that_ended_with_a_block_left_open_is_malformed_not_retried(

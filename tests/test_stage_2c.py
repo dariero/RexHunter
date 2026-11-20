@@ -16,8 +16,9 @@ The adapter now DRIVES the loop. Five contracts, each provable offline:
      spend), `live` is opt-in. This is the containment for the autonomous-spender surface.
 
 Every test injects an httpx2 `MockTransport` (through the `mock_anthropic` fixture, the production
-SDK client since W2.0) or hand-built events: zero network, zero spend. The 2b fixture
-(`tests/fixtures/smoke_sonnet5.json`, a genuine Sonnet 5 response) anchors the breaker.
+SDK client since W2.0) or hand-built events: zero network, zero spend. A recorded Sonnet 5.5 sniff
+turn (`tests/fixtures/hunt_5b62bc48…/call_01.json`, call one of the W2.5 thinking-off hunt) anchors
+the breaker.
 """
 
 import json
@@ -43,7 +44,12 @@ from rexhunter.tools import ToolRegistry
 
 pytestmark = pytest.mark.anyio
 
-FIXTURE = Path(__file__).parent / "fixtures" / "smoke_sonnet5.json"
+FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "hunt_5b62bc48-7577-4a52-b003-bdabf592061d"
+    / "call_01.json"
+)
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
 Handler = Callable[[httpx2.Request], httpx2.Response]
@@ -583,7 +589,7 @@ async def test_429_and_529_are_retried_on_both_paths(
 
 
 def _fixture_handler() -> Handler:
-    raw = FIXTURE.read_bytes()  # a real Sonnet 5 response: tool=sniff, usage 1004 in / 80 out
+    raw = FIXTURE.read_bytes()  # a real Sonnet 5.5 response: tool=sniff, usage 1743 in / 73 out
 
     def handler(_request: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(200, content=raw)
@@ -611,7 +617,7 @@ async def test_cost_ceiling_aborts_before_the_next_brain_call(
             events = await db.read_events(conn, run_id)
             usage = [e for e in events if isinstance(e, UsageEvent)]
             assert len(usage) == 1  # one paid call, then the pre-call check aborts
-            assert usage[0].input_tokens == 1004 and usage[0].output_tokens == 80
+            assert usage[0].input_tokens == 1743 and usage[0].output_tokens == 73
 
             async with conn.execute(
                 "SELECT outcome, abort_reason FROM runs WHERE id = ?", (run_id,)
@@ -652,11 +658,11 @@ async def test_high_ceiling_falls_back_to_max_iterations(
 
 def test_fold_cost_prices_usage_and_ignores_non_usage() -> None:
     events = [
-        UsageEvent(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=0),
+        UsageEvent(model="claude-sonnet-5-5", input_tokens=1_000_000, output_tokens=0),
         ToolResultEvent(tool="sniff", raw_request=b"{}", raw_response=b"x"),
-        UsageEvent(model="claude-sonnet-5", input_tokens=0, output_tokens=1_000_000),
+        UsageEvent(model="claude-sonnet-5-5", input_tokens=0, output_tokens=1_000_000),
     ]
-    # 1M input @ $2 + 1M output @ $10 = $12.00 (Sonnet 5 at the $2/$10 sticker, D6)
+    # 1M input @ $2 + 1M output @ $10 = $12.00 (Sonnet 5.5 at the $2/$10 sticker)
     assert cost.fold_cost(events) == pytest.approx(12.0)
     # Unknown model must not price to 0 (that would silently disable the guard).
     assert cost.cost_of(UsageEvent(model="???", input_tokens=1_000_000, output_tokens=0)) > 0
@@ -726,7 +732,7 @@ async def _capture_adapter_body(
 async def test_live_request_shape(mock_anthropic: MockAnthropic) -> None:
     body = await _capture_adapter_body(mock_anthropic, _sniff_registry())
     for param in ("temperature", "top_p", "top_k"):
-        assert param not in body  # any non-default sampling param → 400 on Sonnet 5 and 5.5
+        assert param not in body  # any non-default sampling param → 400 on Sonnet 5.5
     assert body["thinking"] == {"type": "between_tools"}  # Sonnet 5.5's lowest; "disabled" 400s
     assert body["tool_choice"]["disable_parallel_tool_use"] is True  # one tool per iteration
     assert body["max_tokens"] >= 1024

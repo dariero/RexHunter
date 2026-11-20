@@ -12,7 +12,7 @@ path, driven offline over an httpx2 `MockTransport` with `fixture_dir=tmp_path` 
 (it has no default, so the real tests/fixtures is never written): one free pre-flight, exactly ONE
 paid call (the SDK's max_retries=0 is the hard one-call guard), the raw bytes persisted before
 parsing. And since W2.1b (F8) a fourth: 4. each paid smoke writes a NEW file, reserved before any
-call, so a recorded fixture such as smoke_sonnet5.json is never overwritten.
+call, so a recorded fixture is never overwritten.
 """
 
 import asyncio
@@ -38,9 +38,15 @@ from rexhunter.loop import Decision, ToolCallDecision
 from rexhunter.stub import build_registry
 
 MockAnthropic = Callable[..., anthropic.AsyncAnthropic]
-SMOKE_FIXTURE = Path(__file__).parent / "fixtures" / "smoke_sonnet5.json"  # read-only here
+# A recorded Sonnet 5.5 sniff turn (call one of the W2.5 thinking-off hunt), read-only here.
+SMOKE_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "hunt_5b62bc48-7577-4a52-b003-bdabf592061d"
+    / "call_01.json"
+)
 FIXTURES = Path(__file__).parent / "fixtures"  # the real fixture tree, read-only here
-GOLDEN_SHA256 = "bcbdbbab3549e7a77c848d9c96e2c5ccf9e1162c4ea463092c025ff6fbea12a5"  # smoke_sonnet5
+GOLDEN_SHA256 = "6f09106f4c09ce2cbc23aff8ad0bcc2a9b811a3ee6a3805b0a0e6d6a5940754c"  # that recording
 NOW = datetime(2026, 11, 14, 0, 0, 0, tzinfo=UTC)  # a pinned clock, so the file name is known
 FIXTURE_NAME = "smoke_claude-sonnet-5-5_20261114T000000000000Z.json"  # what run_smoke writes at NOW
 
@@ -74,7 +80,7 @@ def test_rex_tool_schema_keeps_additionalproperties_false() -> None:
 # ── 2. the live model's request guards ───────────────────────────────────────
 
 
-def test_smoke_request_body_omits_sonnet5_forbidden_params() -> None:
+def test_smoke_request_body_omits_sonnet_5_5_forbidden_params() -> None:
     messages: list[dict[str, Any]] = [{"role": "user", "content": "hi"}]
     body = build_request_body(
         model=SMOKE_MODEL, max_tokens=4096, messages=messages, tools=build_tools(build_registry())
@@ -227,11 +233,11 @@ def _serving(paths: list[str], body: bytes) -> Callable[[httpx2.Request], httpx2
 async def test_run_smoke_writes_a_new_file_and_leaves_the_recorded_fixture_alone(
     tmp_path: Path, mock_anthropic: MockAnthropic
 ) -> None:
-    # tmp_path stands in for tests/fixtures, seeded with the recorded smoke fixture. The mock serves
+    # tmp_path stands in for tests/fixtures, seeded with a recorded fixture. The mock serves
     # DIFFERENT bytes (the same JSON re-serialised), so an overwrite would change the seed's sha256.
     golden = SMOKE_FIXTURE.read_bytes()
     assert hashlib.sha256(golden).hexdigest() == GOLDEN_SHA256  # the seed is the real recording
-    seed = tmp_path / "smoke_sonnet5.json"
+    seed = tmp_path / SMOKE_FIXTURE.name
     seed.write_bytes(golden)
     served = json.dumps(json.loads(golden), indent=1).encode()
     assert served != golden

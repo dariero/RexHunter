@@ -39,7 +39,7 @@ _CLOCK = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
 _CREATED_AT = "2026-07-06T00:00:00+00:00"
 
 _TOOLS = ["sniff", "fetch", "parse"]
-_MODELS = ["claude-sonnet-5", "unknown-model"]  # unknown -> cost.py high fallback (still a fold)
+_MODELS = ["claude-sonnet-5-5", "unknown-model"]  # unknown -> cost.py high fallback (still a fold)
 _TERRITORIES = ["mock-gym", "greenhouse"]
 _RUN_IDS = ["run-a", "run-b", "run-c"]
 

@@ -49,7 +49,7 @@ def _sse(thinking: str, sig: str, tool_id: str, name: str, tool_input: dict[str,
         {
             "type": "message_start",
             "message": {
-                "model": "claude-sonnet-5",
+                "model": "claude-sonnet-5-5",
                 "content": [],
                 "usage": {"input_tokens": 200, "output_tokens": 1},
             },

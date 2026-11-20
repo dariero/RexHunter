@@ -184,7 +184,7 @@ def anthropic_client(
 # budgets, assistant prefill, forced tool choice and `thinking: {type: "disabled"}` are all
 # rejected with a 400. build_request_body sends no sampling params and adds no prefill, no caller
 # passes a thinking budget, HUNT_TOOL_CHOICE is `auto`, and a thinking-off hunt sends
-# `thinking_floor(SMOKE_MODEL)`. The recorded Sonnet 5 runs replay on their own model
+# `thinking_floor(SMOKE_MODEL)`. Each recorded run replays on the model it was recorded on
 # (RECORDED_MODEL in each replay test).
 SMOKE_MODEL = "claude-sonnet-5-5"
 
@@ -217,19 +217,17 @@ HUNT_MAX_TOKENS = 4096
 
 # The lowest thinking setting per model (W2.2, F5, fork F1): what a thinking-off hunt sends, keyed
 # by API model id like `cost.PRICE_PER_MTOK`, one row per model a hunt runs with thinking off.
-# Claude Sonnet 5 turns thinking off with `disabled`. On Claude Sonnet 5.5, "`disabled` returns a
-# 400 `invalid_request_error`"; its lowest setting is `between_tools` (up-front thinking off;
-# progress updates between tool calls still come back as thinking blocks), and "`between_tools`
-# takes no other field: `display`, `budget_tokens`, or `block_binding` sent with it returns a 400
-# error". A model with no row fails closed in `thinking_floor`, before any request is built: it
-# has no off setting (Opus 5.5 and the Fable models reject both values), or its row is not added
-# yet. Read 14 Nov 2026:
+# On Claude Sonnet 5.5, "`disabled` returns a 400 `invalid_request_error`"; its lowest setting is
+# `between_tools` (up-front thinking off; progress updates between tool calls still come back as
+# thinking blocks), and "`between_tools` takes no other field: `display`, `budget_tokens`, or
+# `block_binding` sent with it returns a 400 error". A model with no row fails closed in
+# `thinking_floor`, before any request is built: it has no off setting (Opus 5.5 and the Fable
+# models reject both values), or its row is not added yet. Read 14 Nov 2026:
 #   https://platform.claude.com/docs/en/build-with-claude/thinking ("Configuring thinking" table,
 #   "Turning thinking off", #progress-updates)
 #   https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide#thinking-on-by-default
 #   https://platform.claude.com/docs/en/models/sonnet-5-5/migration-guide#turn-off-up-front-thinking
 THINKING_FLOOR: dict[str, dict[str, str]] = {
-    "claude-sonnet-5": {"type": "disabled"},
     "claude-sonnet-5-5": {"type": "between_tools"},
 }
 
@@ -696,11 +694,11 @@ def build_request_body(
     is ONE request shape (no drift). Core keys are model / max_tokens / messages / tools; `system`,
     `thinking`, and `tool_choice` are OPTIONAL and only added when passed, so the Unit 2b smoke
     (passing none) keeps its captured shape and its guard (tests/test_smoke_offline.py) stays green.
-    The always-omitted guards hold by construction, on Sonnet 5 and Sonnet 5.5 alike: never
+    The always-omitted guards hold by construction on Sonnet 5.5: never
     `temperature`/`top_p`/`top_k` (→ 400 at any value under `anthropic-version: 2026-10-21`), never
     MANUAL thinking `{type:"enabled",budget_tokens}` (→ 400), and `messages` is passed through
     unchanged (no assistant prefill → 400). The thinking-off value is per model (`thinking_floor`):
-    `{type:"disabled"}` on Sonnet 5; Sonnet 5.5 400s it, its lowest is `{type:"between_tools"}`."""
+    Sonnet 5.5 400s `{type:"disabled"}`, its lowest is `{type:"between_tools"}`."""
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
@@ -1122,21 +1120,21 @@ def adapter_brain_for(
 
     Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), thread the
     `HUNT_SYSTEM_PROMPT`. `thinking` defaults to the model's lowest setting, `thinking_floor(model)`
-    (W2.2: `{type:"disabled"}` on Sonnet 5, `{type:"between_tools"}` on Sonnet 5.5; a model with no
-    row raises here, before any request is built), 2c's thinking-off hunt (since W2.3 its echoed
-    turn is the whole stored turn, e.g. text then the tool_use); `P5` Unit 3 passes
-    `{type:"adaptive", display:"summarized"}` + `stream=True`. The SDK runs in
-    RAW mode (W2.0, D9a): on the streaming path `with_streaming_response` hands the SSE body line by
-    line to our assembler, which relays the deltas live via the `sink`; on the plain path
-    `with_raw_response` hands over the response bytes. Either way the provider's own bytes cross the
-    single boundary at `parse_decision` (invariant 3). SDK and transport errors become one
-    BrainCallError the loop's `classify` sorts (429/5xx and transport retryable, other statuses
-    fatal); the parsed `UsageEvent` rides onto the Decision (invariant 5). Since W3.3 every attempt
-    that sent a request also reports its raw I/O (invariant 6, fork E2): a `BrainExchangeEvent` with
-    the body httpx2 sent and the body as received (on the stream path every chunk `iter_bytes`
-    gave, framed into lines by `_received_lines`), on the Decision, the BrainParseError or the
-    BrainCallError, for the loop to append. SDK and transport errors are translated by the clauses
-    below; anything else (a bug in a transport, a failing sink write) propagates without one.
+    (W2.2: `{type:"between_tools"}` on Sonnet 5.5; a model with no row raises here, before any
+    request is built), 2c's thinking-off hunt (since W2.3 its echoed turn is the whole stored turn,
+    e.g. text then the tool_use); `P5` Unit 3 passes `{type:"adaptive", display:"summarized"}` +
+    `stream=True`. The SDK runs in RAW mode (W2.0, D9a): on the streaming path
+    `with_streaming_response` hands the SSE body line by line to our assembler, which relays the
+    deltas live via the `sink`; on the plain path `with_raw_response` hands over the response bytes.
+    Either way the provider's own bytes cross the single boundary at `parse_decision` (invariant 3).
+    SDK and transport errors become one BrainCallError the loop's `classify` sorts (429/5xx and
+    transport retryable, other statuses fatal); the parsed `UsageEvent` rides onto the Decision
+    (invariant 5). Since W3.3 every attempt that sent a request also reports its raw I/O (invariant
+    6, fork E2): a `BrainExchangeEvent` with the body httpx2 sent and the body as received (on the
+    stream path every chunk `iter_bytes` gave, framed into lines by `_received_lines`), on the
+    Decision, the BrainParseError or the BrainCallError, for the loop to append. SDK and transport
+    errors are translated by the clauses below; anything else (a bug in a transport, a failing sink
+    write) propagates without one.
     """
     tools = build_tools(registry)  # derived once — stable across the run
     # Fail closed at factory time (W2.2): a model with no floor row raises here, before any run.
