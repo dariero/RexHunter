@@ -59,7 +59,7 @@ def _sse(
         {
             "type": "message_start",
             "message": {
-                "model": "claude-sonnet-5",
+                "model": "claude-sonnet-5-5",
                 "content": [],
                 "usage": {"input_tokens": 100, "output_tokens": 1},
             },

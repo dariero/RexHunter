@@ -217,7 +217,7 @@ def _plain(content: list[dict[str, Any]]) -> bytes:
     body = {
         "type": "message",
         "role": "assistant",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "stop_reason": "tool_use",
         "content": content,
         "usage": {"input_tokens": 100, "output_tokens": 10},
@@ -239,7 +239,7 @@ def _sse(content: list[dict[str, Any]]) -> bytes:
         {
             "type": "message_start",
             "message": {
-                "model": "claude-sonnet-5",
+                "model": "claude-sonnet-5-5",
                 "content": [],
                 "usage": {"input_tokens": 100, "output_tokens": 1},
             },

@@ -658,11 +658,11 @@ async def test_high_ceiling_falls_back_to_max_iterations(
 
 def test_fold_cost_prices_usage_and_ignores_non_usage() -> None:
     events = [
-        UsageEvent(model="claude-sonnet-5", input_tokens=1_000_000, output_tokens=0),
+        UsageEvent(model="claude-sonnet-5-5", input_tokens=1_000_000, output_tokens=0),
         ToolResultEvent(tool="sniff", raw_request=b"{}", raw_response=b"x"),
-        UsageEvent(model="claude-sonnet-5", input_tokens=0, output_tokens=1_000_000),
+        UsageEvent(model="claude-sonnet-5-5", input_tokens=0, output_tokens=1_000_000),
     ]
-    # 1M input @ $2 + 1M output @ $10 = $12.00 (Sonnet 5 at the $2/$10 sticker, D6)
+    # 1M input @ $2 + 1M output @ $10 = $12.00 (Sonnet 5.5 at the $2/$10 sticker)
     assert cost.fold_cost(events) == pytest.approx(12.0)
     # Unknown model must not price to 0 (that would silently disable the guard).
     assert cost.cost_of(UsageEvent(model="???", input_tokens=1_000_000, output_tokens=0)) > 0
