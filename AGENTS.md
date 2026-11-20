@@ -908,6 +908,43 @@ with W5-PV1 (its tests/test_cost.py case); such a usage now prices at the fallba
 W5-PV1 only (one parametrize case removed); every other test change is a new test. 659 tests pass
 at `6f9ee02` (652 at 6c080ad): 656 after commit 0, 658 after the gap tests, 660 after env, 659
 after W5-PV1. No subagent, workflow or advisor call. *Next: W5c (the Sonnet 5 purge).*
+**▶ W5c · The Claude Sonnet 5 family removed, its mechanisms kept on Sonnet 5.5 – ✅ done on branch
+`w5-purge-sonnet-5` (`9f3bbaf`→`1a64747`, 2026-11-20), PR #19.** No API call of any kind, no model
+change, no wire change: after every commit the five wire-check bodies are b04b942's and the headers
+6c080ad's. Labels are W5's (cp files: this run's checkpoint reports). Darie's answer of 20 Nov 2026:
+remove Sonnet 5.0 entirely (the planner had recommended keeping it as history). Fork chosen 20 Nov
+by rex-orchestrator under her delegation: purge-1, with the stream readers on recorded 5.5 bytes.
+**Coverage first** (W5-MV11 to W5-MV27, each on a fresh copy of 5bdc54e): every removed replay kills
+at least two mutants that tests staying after the purge also kill: test_hunt_replay W5-MV11 and
+W5-MV12, test_thinking_hunt_replay W5-MV13 and W5-MV14, test_wire_bump_hunt_replay W5-MV12 and
+W5-MV21, test_verbatim_turn_hunt_replay W5-MV16 and W5-MV22, test_daemon_stream_replay W5-MV23 and
+W5-MV24 (it checked the recorded `/events` frames statically; SSE framing is test_hub's and
+test_stage3_gate's), test_smoke_replay W5-MV15 and W5-MV26, and test_verbatim_turn.py's two recorded
+tests W5-MV11 with W5-MV12 or W5-MV16. W5-MV27 (only the newest stored turn sent back) is red in
+seven staying tests, the three-call Sonnet 5.5 replays among them. So no new port test; on
+`fdb79eb`'s tree each pair is still red. **Ports** (`9f3bbaf` to `7bff49a`, one commit per reader):
+the four tests that read a removed file now read kept Sonnet 5.5 bytes.
+tests/test_stream_transport.py and the cut test of tests/test_cut_stream_guard.py read call two of
+the W2.5 thinking-on hunt (`hunt_54590aec…/call_02.json`); the API pads its JSON before a closing
+brace, so each marker stops short of it and occurs once, and the signature (1200 characters, its
+sha256 pinned) and the 18 thinking deltas (the first "The tool only", the last two newlines) come
+from a plain frame split, never the code under test; the whole assembled usage (the `message_start`
+usage with the `message_delta` usage over it) is one literal. tests/test_smoke_offline.py and
+tests/test_stage_2c.py's breaker read call one of the W2.5 thinking-off hunt
+(`hunt_5b62bc48…/call_01.json`, 1743 in, 73 out). Each port's mutants stay red: W5-MV13, W5-MV15 and
+W5-MV16 (stream transport); W5-MV13, W5-MV14, W5-MV16 and W5-MV19 (cut guard); W5-MV15 and W5-MV20
+(smoke's `"xb"` reservation; this test is its only killer); W5-MV15, W5-MV18, W5-MV21 and W5-MV22
+(breaker). **The id as data** (`e8e806a`, W5-PV6 to W5-PV13): `claude-sonnet-5-5` in eight test
+files, every number unchanged ($2/$10 either way). **Removals** (`fdb79eb`): the twelve fixture
+files, six replay files (36 tests), test_verbatim_turn.py's two recorded tests with their four
+constants and the two helpers they left unused (W5-PV15), and the Sonnet 5 floor test. **src**
+(`bb88e51`): the `claude-sonnet-5` rows of `cost.PRICE_PER_MTOK` and `brain.THINKING_FLOOR` go, with
+test_thinking_floor.py's table (W5-PV14), and the comments name Sonnet 5.5 only;
+`thinking_floor("claude-sonnet-5")` now raises ValueError, and such a usage prices at the fallback.
+**Test prose** (`ff71acc`, W5-PV16): six lines that still named Sonnet 5 as current name Sonnet 5.5,
+a test name among them. Test edits: W5-PV2 to W5-PV16 as pinned. 620 tests pass at `1a64747` (659 at
+5bdc54e: 36 replay tests, 2 recorded tests and 1 floor test removed). No subagent, workflow or
+advisor call. *Next: Darie's.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
