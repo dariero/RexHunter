@@ -774,6 +774,55 @@ pointer each, with no reflow (`cb04b01`: :145, :148, :159, :188, :784); and
 none. 644 tests pass at `cb04b01` (633 at b7cf381): tests/test_terminal_schemas.py (3) and the
 replay (8). No subagent, workflow or advisor call. Open: the W3.4b entry's list less C10;
 capture-2 was not chosen. *Next: W4b (the behaviour-preserving refactor).*
+**▶ W4b · A behaviour-preserving refactor – ✅ done on branch `w4-refactor` (`fbf4fc3`→`89ed4a0`,
+2026-11-20), PR #16.** No API call of any kind, no model change, no wire change (the five wire-check
+bodies are byte-identical to the W4a baselines after every commit). The network was used once, in
+B1's scratch probe: `uv run` fetched the locked wheels from PyPI into a scratch venv, and `uv lock`
+fetched package metadata; nothing global was installed, no version moved, and the branch's lock was
+resolved offline. Labels are W4's.
+Forks chosen 20 Nov by rex-orchestrator under Darie's delegation: r1-a with characterisation tests
+first, r2-a, r8-b; W4-R6 dropped. Each commit was applied byte for byte from a scratch chain of the
+same steps on `git archive 71d31ad`, and each commit's tree equals its step's. **W4-R5**
+(`fbf4fc3`): one `db.utcnow`; verdicts.py drops its copy. **W4-R4** (`8515467`):
+`db.drive_to_done`, the shielded wait both shutdown cleanups ran. `run_hunt`'s `finish_run` waits
+inside `suppress(Exception)`, the old `break`, then logs and re-raises the cancel; the job worker's
+`conn.close` lets a failed close propagate, as before. **Tests** (`695f380`):
+tests/test_paid_entrypoint_gates.py (6) pins the exact `SystemExit` message of smoke, hunt_smoke
+and hunt_smoke_thinking with no key, and on the paid path without `REXHUNTER_BRAIN=live`, each
+before any client or path is reached. Before, no test pinned the key exits or the hunts' refusals,
+and smoke's refusal only by a substring. **W4-R1** (`0cff322`): `brain.paid_entry(before=, paid=)`
+is the three mains' gate: the key, `--count-only`, then the `live` opt-in, in that order, every
+message unchanged. In the two hunts the opt-in now runs before `asyncio.run`, not inside it.
+**W4-R7** (`acf6df9`): `lazy from rexhunter import stub` (PEP 810) at the top of brain.py, in place
+of the only function-level import in src. **W4-R2** (`a44534e`): `loop._attempts` (22 lines) is
+the one retry loop of `_run_tool` and `_call_brain`. Every event order is unchanged, and every
+pinned sequence passes unedited. One stored text changes: a failing attempt's `ErrorEvent.detail`
+traceback now names `_attempts` (and `attempt` for the brain) where it named `_run_tool` or
+`_call_brain`. The error, the exception line and the raw bytes are the same, and no test or
+invariant covers frame names. **W4-R10** (`89ed4a0`): `httpx` moves to the dev group at 0.28.1 (no
+module in src imports it; two tests do). uv.lock changes only in `rexhunter`'s own entries (2
+insertions, 2 deletions, 39 packages, no version moved), resolved with `uv lock --offline`.
+Dropped: **W4-R6**, as hub.py:31-32 raises on an empty env value at import while server.py's
+`_env_int` and `_env_float` map it to the default, so one shared parser would change one of them;
+**W4-R8**, as pyright 1.1.414's typeshed gives `frozendict` an `__init__(self)` with no other
+parameter, so every non-empty `frozendict(...)` is an error under strict (7 errors on 5 forms). No
+constant can change type without a `# type: ignore` or a pyright bump, which is Darie's. Mutants,
+each on a `git archive` of its commit (the repo untouched):
+- W4-MW6b (`utcnow` returns None): red through NOT NULL;
+- W4-MW7b (the cleanup unshielded): 1 red, tests/test_scheduler.py:272;
+- W4-MW8 (the opt-in dropped): 4 red, tests/test_smoke_offline.py:419 and the three refusal tests;
+- W4-MW10 (the key check dropped): 3 red, tests/test_paid_entrypoint_gates.py:62;
+- W4-MW9 (one retry fewer): 61 red.
+
+Two mutants found gaps. W4-MW6 (`utcnow` returns "") turned nothing red: no test pins a
+timestamp's value or format. W4-MW7 (a re-cancel re-raised) turned nothing red: the shield keeps the
+write running, and the second-cancel test reads the outcome after it has landed. src grows from
+4893 to 4905 lines: loop.py 632 → 647, brain.py 1277 → 1293, db.py 261 → 276, verdicts.py
+252 → 242, smoke.py 229 → 221, hunt_smoke.py 252 → 244, hunt_smoke_thinking.py 201 → 193. Test
+edits: none. 650 tests pass at `89ed4a0` (644 at 71d31ad). Wire: 1 `bb2ef203…c24d` 1487, 2
+`6b9e9a17…98a8` 1519, 3 `3f01481b…c293` 1469, 4 `08e8682c…fd31` 1898, 5 = 2. No subagent, workflow
+or advisor call. Open: the two gaps above, W4-R6 and W4-R8 as dropped, and the W4a entry's list.
+*Next: Darie's.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
