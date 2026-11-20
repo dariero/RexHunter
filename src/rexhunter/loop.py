@@ -228,6 +228,30 @@ type NotifyFn = Callable[[str], None]
 # ── The loop ─────────────────────────────────────────────────────────────────
 
 
+async def _attempts[T, E: Exception](
+    retry_budget: int,
+    errors: type[E],
+    attempt: Callable[[], Awaitable[T]],
+    failed: Callable[[E], Awaitable[tuple[bool, float | None]]],
+) -> T | None:
+    # The one retry loop `_run_tool` and `_call_brain` share. `failed` logs a failure of type
+    # `errors` and says whether it is retryable and any `retry-after`; a retryable one waits a
+    # backoff once its events are committed (inv 1) and tries again within budget. None: a fatal
+    # failure, or the budget spent. Any other exception propagates unchanged.
+    attempts = retry_budget + 1  # retry_budget is the number of RETRIES after the first try
+    for n in range(attempts):
+        try:
+            result = await attempt()
+        except errors as exc:
+            retryable, retry_after = await failed(exc)
+            if retryable and n < attempts - 1:
+                await retry_wait(backoff_delay(n + 1, retry_after=retry_after))
+                continue
+            return None
+        return result
+    return None  # range(attempts >= 1) returns inside the loop
+
+
 async def _run_tool(
     conn: aiosqlite.Connection,
     run_id: str,
@@ -297,43 +321,39 @@ async def _run_tool(
         publish=publish,
     )
 
-    attempts = retry_budget + 1  # retry_budget is the number of RETRIES after the first try
-    for attempt in range(attempts):
-        try:
-            raw_response = await execute_once(tool.fn, kwargs, timeout_s=timeout_s)
-        except Exception as exc:
-            retryable = classify(exc)
-            await db.append_event(
-                conn,
-                run_id,
-                events.ErrorEvent(
-                    tool=tool_name,
-                    retryable=retryable,
-                    error=repr(exc),
-                    raw_request=raw_request,
-                    detail=traceback.format_exc(),
-                ),
-                publish=publish,
-            )
-            if retryable and attempt < attempts - 1:
-                # back off once the ErrorEvent is committed (inv 1), then re-try within budget
-                await retry_wait(backoff_delay(attempt + 1))
-                continue
-            return False  # fatal, or retryable budget exhausted -> abort
-        else:
-            await db.append_event(
-                conn,
-                run_id,
-                events.ToolResultEvent(
-                    tool=tool_name,
-                    raw_request=raw_request,
-                    raw_response=raw_response,
-                    tool_use_id=tool_use_id,
-                ),
-                publish=publish,
-            )
-            return True  # success -> continue the hunt
-    return False  # defensive: range(attempts >= 1) always returns inside the loop
+    async def failed(exc: Exception) -> tuple[bool, float | None]:
+        retryable = classify(exc)
+        await db.append_event(
+            conn,
+            run_id,
+            events.ErrorEvent(
+                tool=tool_name,
+                retryable=retryable,
+                error=repr(exc),
+                raw_request=raw_request,
+                detail=traceback.format_exc(),
+            ),
+            publish=publish,
+        )
+        return retryable, None  # a tool failure carries no retry-after
+
+    raw_response = await _attempts(
+        retry_budget, Exception, lambda: execute_once(tool.fn, kwargs, timeout_s=timeout_s), failed
+    )
+    if raw_response is None:
+        return False  # fatal, or retryable budget exhausted -> abort
+    await db.append_event(
+        conn,
+        run_id,
+        events.ToolResultEvent(
+            tool=tool_name,
+            raw_request=raw_request,
+            raw_response=raw_response,
+            tool_use_id=tool_use_id,
+        ),
+        publish=publish,
+    )
+    return True  # success -> continue the hunt
 
 
 async def _call_brain(
@@ -383,8 +403,8 @@ async def _call_brain(
         # owning task, never a spawned one, so the single-writer invariant (7) holds.
         await db.append_event(conn, run_id, events.ThinkingDelta(text=text), publish=publish)
 
-    attempts = retry_budget + 1
-    for attempt in range(attempts):
+    async def attempt() -> Decision | str:
+        # Both ceilings before every attempt, a retry included, on the log as it stands then.
         context = await db.read_context(conn, run_id)  # what the call uses (W3.3-W), every turn
         if cost.fold_cost(context) >= cost_ceiling_usd:
             return "cost ceiling"
@@ -393,46 +413,43 @@ async def _call_brain(
             and cost.fold_cost(await db.read_usage(conn)) >= daemon_spend_ceiling_usd
         ):
             return "daemon spend ceiling"
-        try:
-            decision = await brain(context, sink)
-        except BrainCallError as exc:
-            retryable = classify(exc)
-            if exc.exchange is not None:
-                # the attempt's raw I/O first (inv 6, W3.3): committed, never published (X2)
-                await db.append_event(conn, run_id, exc.exchange)
-            if exc.usage is not None:
-                # the refused 200's usage, counted write-ahead before its error (inv 1, 5; W3.2-U2a)
-                await db.append_event(conn, run_id, exc.usage, publish=publish)
-            # the provider's error body, or the bytes assembled before a stream ended short (inv 6);
-            # None if none came
-            raw_response = exc.raw_response
-            await db.append_event(
-                conn,
-                run_id,
-                events.ErrorEvent(
-                    tool="<brain>",
-                    retryable=retryable,
-                    error=repr(exc),
-                    raw_request=b"",
-                    raw_response=raw_response,
-                    detail=traceback.format_exc(),
-                ),
-                publish=publish,
-            )
-            if retryable and attempt < attempts - 1:
-                # A transient blip: back off once the UsageEvent and ErrorEvent are committed
-                # (inv 1), at least `retry-after` (up to 60 s) if the response carried one, then
-                # re-try within budget; the ceilings are checked again at the top, after the wait.
-                await retry_wait(backoff_delay(attempt + 1, retry_after=exc.retry_after))
-                continue
-            return "brain call failed"  # fatal 4xx, or retryable budget exhausted -> abort
-        else:
-            if decision.exchange is not None:
-                # the attempt's raw I/O, before its UsageEvent (`_drive`) and what it does (inv 6,
-                # W3.3): committed, never published (X2)
-                await db.append_event(conn, run_id, decision.exchange)
-            return decision
-    return "brain call failed"  # pragma: no cover - range(attempts >= 1) returns inside the loop
+        return await brain(context, sink)
+
+    async def failed(exc: BrainCallError) -> tuple[bool, float | None]:
+        retryable = classify(exc)
+        if exc.exchange is not None:
+            # the attempt's raw I/O first (inv 6, W3.3): committed, never published (X2)
+            await db.append_event(conn, run_id, exc.exchange)
+        if exc.usage is not None:
+            # the refused 200's usage, counted write-ahead before its error (inv 1, 5; W3.2-U2a)
+            await db.append_event(conn, run_id, exc.usage, publish=publish)
+        # the provider's error body, or the bytes assembled before a stream ended short (inv 6);
+        # None if none came
+        raw_response = exc.raw_response
+        await db.append_event(
+            conn,
+            run_id,
+            events.ErrorEvent(
+                tool="<brain>",
+                retryable=retryable,
+                error=repr(exc),
+                raw_request=b"",
+                raw_response=raw_response,
+                detail=traceback.format_exc(),
+            ),
+            publish=publish,
+        )
+        # A transient blip waits at least `retry-after` (up to 60 s) if the response carried one.
+        return retryable, exc.retry_after
+
+    result = await _attempts(retry_budget, BrainCallError, attempt, failed)
+    if result is None:
+        return "brain call failed"  # fatal 4xx, or retryable budget exhausted -> abort
+    if not isinstance(result, str) and result.exchange is not None:
+        # the attempt's raw I/O, before its UsageEvent (`_drive`) and what it does (inv 6, W3.3):
+        # committed, never published (X2)
+        await db.append_event(conn, run_id, result.exchange)
+    return result
 
 
 async def _drive(
