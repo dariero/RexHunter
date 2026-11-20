@@ -6,10 +6,12 @@ events append-only and immutable. `payload` is a typed trajectory event
 (invariant 3) via read_events -> events.decode_event.
 """
 
+import asyncio
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -94,6 +96,17 @@ def utcnow() -> str:
     # The one clock format every stored timestamp uses (runs, events, prey, pen events and
     # jobs): ISO 8601 in UTC.
     return datetime.now(UTC).isoformat()
+
+
+async def drive_to_done(task: asyncio.Future[Any]) -> None:
+    # A cleanup that must finish while its caller is being cancelled (a daemon shutdown, then a
+    # second cancel from the task group): shield it, and wait out each re-cancel that lands on
+    # this frame until it is done. A failure of the cleanup itself propagates.
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            pass
 
 
 async def connect(path: str | Path) -> aiosqlite.Connection:

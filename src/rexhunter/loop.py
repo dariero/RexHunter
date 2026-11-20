@@ -16,6 +16,7 @@ import logging
 import random
 import traceback
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any, assert_never
 
 import aiosqlite
@@ -563,13 +564,10 @@ async def run_hunt(
         cleanup = asyncio.ensure_future(
             db.finish_run(conn, run_id, outcome="aborted", abort_reason="daemon shutdown")
         )
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                pass  # a re-cancel hit our frame; the shielded write runs on - wait it out
-            except Exception:
-                break  # the write itself failed (R2-RV1): logged below, and the cancel goes on
+        # A re-cancel is waited out (`db.drive_to_done`); a failed write ends the wait: it is
+        # logged below, and the cancel goes on.
+        with suppress(Exception):
+            await db.drive_to_done(cleanup)
         if not cleanup.cancelled() and (failure := cleanup.exception()) is not None:
             logger.error(
                 "run %s: the shutdown write failed (%r); the boot sweep will close it",

@@ -239,9 +239,4 @@ async def run_job_worker(
         # shutdown, which would otherwise interrupt a bare `await conn.close()` — so, exactly like
         # run_hunt's shielded finish_run, shield the close and drive it to done through any
         # re-cancel that lands mid-flight.
-        closing = asyncio.ensure_future(conn.close())
-        while not closing.done():
-            try:
-                await asyncio.shield(closing)
-            except asyncio.CancelledError:
-                pass
+        await db.drive_to_done(asyncio.ensure_future(conn.close()))
