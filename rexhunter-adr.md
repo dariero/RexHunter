@@ -131,6 +131,8 @@ The harness owns an explicit error taxonomy: retryable (network blips, 429s, tra
 
 > **Reconciliation note (logged in `W3.4`): a budget abort appends no event.** A per-run "cost ceiling" abort and a "daemon spend ceiling" abort inside a hunt, each checked before every brain attempt, close the run through `runs.outcome` (`aborted`) with that `abort_reason` and append no trajectory event; a launch the daemon ceiling refuses (`scheduler._bounded_hunt`) starts no run, so it writes no row and no event. "Every transition … abort … is appended as a typed event" (the taxonomy paragraph above) is read here as the `P2.2` note reads terminal decisions: the spend that tripped a ceiling is already in the log as UsageEvents (invariant 5), the per-run ceiling the run ran under is on its row (`runs.cost_ceiling_usd`), and the abort is recorded where every run's end is, `runs.outcome` and `abort_reason`. A "max iterations" abort (`loop._drive`, once `max_iterations` turns have run with no terminal decision) closes its run the same way: `runs.outcome` `aborted` with that `abort_reason`, and no trajectory event.
 
+> **Reconciliation note (logged in `P2.4`): a tool result is stored raw and shown derived.** A board tool returns the HTTP body as it arrived, and `ToolResultEvent.raw_response` stores it unchanged (invariant 6). Before it returns, the tool validates the same bytes (invariant 3). It reads only the fields it uses and ignores the ones it does not model, as the brain's envelope does. A missing, renamed or retyped field, or a body that is not valid UTF-8, is a fatal error. The model never reads those bytes. Each brain call renders the result again from the stored bytes, through the tool's own view (invariant 5). A tool that registers no view keeps today's rendering: the bytes decoded as UTF-8, with any invalid byte shown escaped. A failed tool attempt's `ErrorEvent` now carries the response bytes too, and a tool retry waits at least the board's `retry-after`, cut to `RETRY_AFTER_CAP_S`. The board client sends GET only, and no code path builds any other method (invariant 4).
+
 ### The Justification (The Why)
 
 Two reasons, one practical and one strategic.
@@ -302,6 +304,7 @@ The governing principle: **LLM output is untrusted input.** It is probabilistic 
 | Lossy broadcast hub | Log is truth (invariant 1) | Never – this is the design, not a debt |
 | No auth on the local UI | localhost-only daemon | Any network exposure beyond localhost |
 | Live adapters limited to public ATS APIs (Greenhouse/Lever) | ToS-compliant, stable contracts | Never scrape ToS-prohibited boards |
+| The gym and the board parsers follow the Greenhouse and Lever docs as read on 21 Nov 2026 | Nothing hunts a live board yet | A live response fails the board boundary |
 
 ## Build sequence (canonical)
 
@@ -331,6 +334,7 @@ done/planned) — both of which reference these slice-IDs and never restate the 
 | **`P4` · Durable pause & HITL** — `awaiting_verdict`, Feast/Release/Amber machine | 4 | DoD #4 |
 | **`P5` · Brain socket** — provider-agnostic LLM, native tool calling (paid) | 5 | DoD #5 |
 | **`P3` · Streaming hub** — per-viewer broadcast queues, `Last-Event-ID` resume | 3 | DoD #3 |
+| **`P2.4` · Gym board** – a mock board in Greenhouse and Lever shapes with injected hazards, the `list_postings` and `read_posting` tools, and catch by reference | 2 | DoD #2, gym clause |
 
 Order is **dependency order, not pillar order.** `P3` (Streaming) sits last because the
 prototype's naive SSE feed covered it while the rest was built; the real broadcast hub was
@@ -345,10 +349,12 @@ bounded task group, squarely Pillar 2 and the concrete enforcement of invariant 
 Pillar 2. It is a **candidate to decompose into two slices when built**; kept as one until the
 work proves the seam.
 
+**`P2.4` is the first product slice.** It builds the gym that `board/` was planned for: a FastAPI app the board client reaches in-process through httpx2's `ASGITransport`, so tests and the daemon hunt it with no port and no network. Its surface is two tools, so it sits under Pillar 2; it also changes how Pillar 4 captures prey. The gym's catalogue marks each posting as prey or decoy. The gym never serves that mark, so a later eval can score a hunt against it.
+
 ## Definition of done per pillar (test-first)
 
 1. **Log:** `kill -9` mid-hunt → restart → every pre-kill event queryable; dangling `outcome IS NULL` runs detected and marked `'crashed'` at boot.
-2. **Loop:** a tool that raises, a tool that hangs past timeout, and an LLM returning an unknown tool name each produce typed events and a clean run outcome – never an unhandled exception escaping the loop.
+2. **Loop:** a tool that raises, a tool that hangs past timeout, and an LLM returning an unknown tool name each produce typed events and a clean run outcome – never an unhandled exception escaping the loop. **Gym clause (`P2.4`):** on the gym, schema drift, a rate-limit storm, mojibake and a pagination trap each produce typed events that carry the board's raw bytes, and each run ends in a typed outcome. Only a posting the run itself read reaches the pen, and the pen stores the board's bytes for it.
 3. **Streaming:** two tabs render identical feeds; a tab closed for a full hunt reopens with zero gaps and zero duplicates; a viewer with a full queue is dropped without slowing the hunt.
 4. **Pause:** restart the process with prey in the pen → verdicts still work; double-clicking FEAST is a no-op; park-and-persist resumes hot within the window and checkpoints cleanly past it.
 5. **Brain:** replaying a recorded run's raw payloads through the parsers requires no network and reproduces identical events; a malformed provider response becomes an `ErrorEvent` carrying the raw payload, with the run ending in a typed outcome.
