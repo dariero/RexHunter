@@ -11,12 +11,13 @@ import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import pytest
 
 from rexhunter import db, verdicts
-from rexhunter.events import PreyCapturedEvent, Verdict
+from rexhunter.events import PostingRef, PreyCapturedEvent, Verdict
 from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision, run_hunt
 from rexhunter.tools import ToolRegistry
 
@@ -25,6 +26,18 @@ pytestmark = pytest.mark.anyio
 BrainFactory = Callable[[Sequence[Decision]], Brain]
 
 PreyRow = tuple[str, str, str, str, str, str | None]
+MOCK_GYM = PostingRef(board="mock-gym", posting_id="p1")
+
+
+async def read_posting(board: str, posting_id: str) -> bytes:
+    """Read one posting: its bytes are `posting:<posting_id>`, a body with no title."""
+    return f"posting:{posting_id}".encode()
+
+
+def _posting_registry() -> ToolRegistry:
+    reg = ToolRegistry()
+    reg.tool(read_posting, posting_source=True)
+    return reg
 
 
 async def pen_rows(conn: aiosqlite.Connection) -> list[PreyRow]:
@@ -40,18 +53,17 @@ async def pen_rows(conn: aiosqlite.Connection) -> list[PreyRow]:
 async def test_completed_hunt_captures_prey_as_awaiting_verdict(
     tmp_path: Path, scripted_brain: BrainFactory
 ) -> None:
-    reg = ToolRegistry()
-
-    @reg.tool
-    async def sniff(prey: str) -> str:
-        return f"posting:{prey}"
+    reg = _posting_registry()
+    acme = PostingRef(board="gym", posting_id="acme")
+    globex = PostingRef(board="gym", posting_id="globex")
 
     conn = await db.connect(tmp_path / "rex.db")
     try:
         brain = scripted_brain(
             [
-                ToolCallDecision(tool=sniff.__name__, args={"prey": "acme"}),
-                HuntComplete(catch=["posting:acme", "posting:globex"]),
+                ToolCallDecision(tool="read_posting", args=acme.model_dump()),
+                ToolCallDecision(tool="read_posting", args=globex.model_dump()),
+                HuntComplete(catch=[acme, globex]),
             ]
         )
         run_id = await run_hunt(conn, territory="mock-gym", brain=brain, registry=reg)
@@ -106,7 +118,7 @@ async def test_capture_prey_is_atomic(tmp_path: Path) -> None:
 
     conn.execute = fail_on_prey_insert  # type: ignore[method-assign]
     with pytest.raises(RuntimeError):
-        await verdicts.capture_prey(conn, run_id, territory="t", posting="posting:acme")
+        await verdicts.capture_prey(conn, run_id, territory="t", raw_posting=b"posting:acme")
     conn.execute = real_execute  # type: ignore[method-assign]
     await conn.rollback()  # discard the broken transaction
     await conn.close()
@@ -142,7 +154,9 @@ async def _captures(db_path: Path) -> tuple[int, int, list[tuple[object, ...]]]:
     return n_events, n_prey, runs
 
 
-async def test_a_cancel_inside_a_capture_leaves_no_half_capture(tmp_path: Path) -> None:
+async def test_a_cancel_inside_a_capture_leaves_no_half_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # aiosqlite runs a statement even when the task awaiting it is cancelled, and run_hunt's
     # cancel clause commits finish_run on the same connection. A daemon shutdown that landed on
     # the capture's first INSERT therefore committed a PreyCapturedEvent with no prey row.
@@ -151,21 +165,35 @@ async def test_a_cancel_inside_a_capture_leaves_no_half_capture(tmp_path: Path) 
     armed, entered, release = threading.Event(), threading.Event(), threading.Event()
 
     def hold_one_statement() -> int:
-        # Runs in aiosqlite's worker thread: holds the first statement after the brain returns,
-        # the capture's event INSERT, until the test has cancelled the hunt.
+        # Runs in aiosqlite's worker thread: holds the first statement after the capture starts,
+        # its event INSERT, until the test has cancelled the hunt.
         if armed.is_set() and not entered.is_set():
             entered.set()
             release.wait(5)
         return 0
 
     await conn.set_progress_handler(hold_one_statement, 1)
+    real_capture = verdicts.capture_prey
+
+    async def capture_armed(*args: Any, **kwargs: Any) -> str:
+        # armed here, not when the brain returns: the catch's read of the run's results comes
+        # first, and holding it would cancel before the capture began
+        armed.set()
+        return await real_capture(*args, **kwargs)
+
+    monkeypatch.setattr(verdicts, "capture_prey", capture_armed)
+    decisions = iter(
+        [
+            ToolCallDecision(tool="read_posting", args=MOCK_GYM.model_dump()),
+            HuntComplete(catch=[MOCK_GYM]),
+        ]
+    )
 
     async def brain(_context: list[object], _sink: object) -> Decision:
-        armed.set()
-        return HuntComplete(catch=["posting:mock-gym"])
+        return next(decisions)
 
     task = asyncio.create_task(
-        run_hunt(conn, territory="mock-gym", brain=brain, registry=ToolRegistry())  # type: ignore[arg-type]
+        run_hunt(conn, territory="mock-gym", brain=brain, registry=_posting_registry())  # type: ignore[arg-type]
     )
     assert await asyncio.to_thread(entered.wait, 5)  # the worker is inside the event INSERT
     task.cancel()
@@ -188,12 +216,19 @@ async def test_an_error_inside_a_capture_leaves_no_half_capture(tmp_path: Path) 
             raise RuntimeError("disk full mid-capture")
         return real_execute(sql, *args, **kwargs)  # type: ignore[arg-type]
 
+    decisions = iter(
+        [
+            ToolCallDecision(tool="read_posting", args=MOCK_GYM.model_dump()),
+            HuntComplete(catch=[MOCK_GYM]),
+        ]
+    )
+
     async def brain(_context: list[object], _sink: object) -> Decision:
-        return HuntComplete(catch=["posting:mock-gym"])
+        return next(decisions)
 
     conn.execute = fail_on_prey_insert  # type: ignore[method-assign]
     try:
-        await run_hunt(conn, territory="mock-gym", brain=brain, registry=ToolRegistry())  # type: ignore[arg-type]
+        await run_hunt(conn, territory="mock-gym", brain=brain, registry=_posting_registry())  # type: ignore[arg-type]
     finally:
         conn.execute = real_execute  # type: ignore[method-assign]
         await conn.close()
@@ -208,7 +243,9 @@ async def _pen_one(
 ) -> str:
     """Capture one posting and return its prey_id (the verdict tests' fixture)."""
     run_id = await db.start_run(conn, territory=territory)
-    return await verdicts.capture_prey(conn, run_id, territory=territory, posting=posting)
+    return await verdicts.capture_prey(
+        conn, run_id, territory=territory, raw_posting=posting.encode()
+    )
 
 
 async def prey_status(conn: aiosqlite.Connection, prey_id: str) -> tuple[str, str | None]:

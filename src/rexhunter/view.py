@@ -192,13 +192,10 @@ def _apply(acc: Accumulator, row: LogRow) -> None:
                 run.open_tool = None  # a tool's own error closes it; a <brain>/<loop> error doesn't
         case events.PreyCapturedEvent():
             run.prey_count += 1
-            # raw_posting is inv-6 bytes and MAY be non-utf8 — decode defensively to stay total.
+            # The label derived from the stored bytes, the same function `prey.posting` holds
+            # (inv 5); total over bytes that are not UTF-8 or not a posting.
             acc.pen.append(
-                PreyCard(
-                    prey_id=event.prey_id,
-                    territory=event.territory,
-                    posting=event.raw_posting.decode(errors="replace"),
-                )
+                PreyCard(prey_id=event.prey_id, territory=event.territory, posting=event.label)
             )
         case events.ThinkingDelta():
             run.thinking += event.text  # the live consciousness buffer (this event's real consumer)

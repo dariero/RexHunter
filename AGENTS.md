@@ -973,6 +973,39 @@ P24-MP3 (a strict decode) 1, P24-MP4 (no tool `retry_after`) 2, P24-MP5 (no byte
 ErrorEvent) 3. Test edits: none. 628 tests pass at `85c4275` (620 at 72025e9). No subagent,
 workflow or advisor call. Open: a view that raises ends its run at the `<loop>` backstop
 (INFERRED, untested). *Next: P2.4b (catch by reference).*
+**▶ P2.4b · Catch by reference – ✅ done on branch `p24-catch-by-reference`
+(`687a6ec`→`4b784c6`, 2026-11-21), PR #21.** The second part of slice `P2.4` (D3 to D6, and the
+Pillar 4 reconciliation note in the ADR). No API call of any kind, no model change; one planned
+wire change, `hunt_complete`'s `input_schema` only (with that schema cut, every wire-check body
+equals 72025e9's), so the new baselines are 1 `9a55cae7…5a88` 1794 B, 2 `761995a6…b3ef` 1826, 3
+`95bd6597…34d1` 1776, 4 `bb8870fe…f8e4` 2205, 5 = 2, and the headers differ only in
+`content-length`. Forks chosen 21 Nov by rex-orchestrator under her delegation: P24-ref-home
+ref-1, P24-defs-doc defs-1, P24-repoint repoint-1. **Events** (`687a6ec`): `PostingRef(board,
+posting_id)` in events.py, `extra="forbid"` and frozen; `PreyCapturedEvent` gains `board` and
+`posting_id`, "" by default, so every older capture decodes. **db** (`ffb5a32`): `prey` gains
+`board` and `posting_id` (the column-ensure adds them to an older file) and a partial unique index
+on them where `board IS NOT NULL`; `capture_prey(..., raw_posting, board, posting_id)` rolls a
+capture back on that index and returns the id of the row already holding the posting, so a posting
+is penned once, in any status, and the index decides a race between two hunts. **loop**
+(`f0cda32`): `HuntComplete.catch: list[PostingRef]`, with a field description; `_capture_catch`
+pens each distinct reference, in order, that the run's own results of a posting-source tool hold
+(`ToolRegistry.tool(..., posting_source=True)`, its signature checked at registration), the latest
+read giving the bytes; an unresolved reference appends `ErrorEvent(tool="<capture>")` and the run
+completes; `project_messages` skips `<capture>`; `build_tools` drops the class docstring of each
+`$defs` entry; the stub's catch is empty, so the stub daemon pens nothing until P2.4d. **view**
+(`2883c63`): `PreyCapturedEvent.label`, "title – location (board)" from the Greenhouse or Lever
+shape of `raw_posting`, or the bytes decoded when there is no board or no title; `prey.posting`,
+the snapshot and the pen card all hold it. The new tests/test_catch_by_reference.py (20): on
+da5a3a2, 19 red and the guard `test_a_capture_event_from_before_p2_4_still_decodes` green.
+Mutants, each on a `git archive` of its commit: P24-MP6 1 red, P24-MP7 44, P24-MP8 1, P24-MP9 5,
+P24-MP10 1, P24-MP11 1, P24-MP12 1, P24-MP13 2, P24-MP14 1, P24-MP15 1, P24-MP16 1, P24-MP17 3.
+Test edits: P24-PP1 to P24-PP18 as pinned (eight `capture_prey` call sites pass bytes; the tests
+that caught strings read a posting and catch it by reference, or send an empty catch; four
+`assert` lines and one expected sequence follow the new shapes). 648 tests pass at `2883c63` (628
+at da5a3a2). No subagent, workflow or advisor call. Found, pre-existing, Darie's: a cancel during a
+`<loop>` ErrorEvent write leaves its run `outcome IS NULL` until the boot sweep; a red
+`test_capture_prey_is_atomic` leaks its connection and pytest never exits. *Next: P2.4c (the
+gym).*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill

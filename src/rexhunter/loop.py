@@ -21,7 +21,7 @@ from contextlib import suppress
 from typing import Any, assert_never
 
 import aiosqlite
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from pydantic.json_schema import SkipJsonSchema
 
 from rexhunter import cost, db, events, verdicts
@@ -221,12 +221,20 @@ class ToolCallDecision(BaseModel):
 class HuntComplete(BaseModel):
     """Terminal: the hunt is done. The outcome lives in runs (like P1) - no terminal event.
 
-    `catch` is the postings the hunt judged worth a human verdict; on completion each is written
-    to the prey pen (status='awaiting_verdict') BEFORE the run closes (P4). Capturing is an
-    internal state write, not an externally visible side effect - Tiny Arms (invariant 4) is
-    untouched: the human verdict, not Rex, is what later moves a captured row."""
+    `catch` names the postings the hunt judged worth a human verdict, each by reference (board,
+    posting_id); on completion each reference this run's own posting-source results hold is
+    written to the prey pen (status='awaiting_verdict') with the board's bytes, BEFORE the run
+    closes (P4; `_capture_catch`). Capturing is an internal state write, not an externally visible
+    side effect - Tiny Arms (invariant 4) is untouched: the human verdict, not Rex, is what later
+    moves a captured row."""
 
-    catch: list[str] = []
+    catch: list[events.PostingRef] = Field(
+        default=[],
+        description=(
+            "A reference to each posting you read with read_posting in this hunt and judge worth "
+            "a human's verdict."
+        ),
+    )
     # per-call token cost (P5 Unit 2c); None = no spend. Kept out of the JSON schema like
     # `exchange` (W3.4, W3.3-F1): the model is never shown a `usage` input.
     usage: SkipJsonSchema[events.UsageEvent | None] = None
@@ -496,6 +504,59 @@ async def _call_brain(
     return result
 
 
+async def _capture_catch(
+    conn: aiosqlite.Connection,
+    run_id: str,
+    *,
+    territory: str,
+    registry: ToolRegistry,
+    catch: list[events.PostingRef],
+    publish: db.PublishFn | None = None,
+) -> None:
+    """Pen each distinct reference in the catch, in order, with the board's bytes for it.
+
+    A reference resolves only against this run's own results of a posting-source tool whose
+    stored request is that reference (the models compared, not the bytes); the latest such read
+    gives the bytes. A reference the run never read appends a `<capture>` ErrorEvent and is not
+    penned; a posting already in the pen, in any status, is not penned again (`capture_prey`).
+    Either way the run completes. Every write here is the owning task's (invariant 7)."""
+    read: dict[events.PostingRef, bytes] = {}
+    for event in await db.read_context(conn, run_id):
+        if not isinstance(event, events.ToolResultEvent) or event.tool not in registry:
+            continue
+        if not registry.get(event.tool).posting_source:
+            continue
+        try:
+            ref = events.PostingRef.model_validate_json(event.raw_request)
+        except ValidationError:
+            continue  # a stored request that is no reference cannot be the posting one names
+        read[ref] = event.raw_response
+    for ref in dict.fromkeys(catch):
+        raw_posting = read.get(ref)
+        if raw_posting is None:
+            await db.append_event(
+                conn,
+                run_id,
+                events.ErrorEvent(
+                    tool="<capture>",
+                    retryable=False,
+                    error="unresolved catch reference",
+                    raw_request=ref.model_dump_json().encode(),
+                ),
+                publish=publish,
+            )
+            continue
+        await verdicts.capture_prey(
+            conn,
+            run_id,
+            territory=territory,
+            raw_posting=raw_posting,
+            board=ref.board,
+            posting_id=ref.posting_id,
+            publish=publish,
+        )
+
+
 async def _drive(
     conn: aiosqlite.Connection,
     run_id: str,
@@ -518,9 +579,9 @@ async def _drive(
     UsageEvents (invariant 5, no stored counter) - abort BEFORE the next paid attempt once spend
     crosses them (`_call_brain`, W3.2-C1). Each iteration calls the brain on the log projected
     into its context, records the call's UsageEvent (if the brain reported one), then acts.
-    NeedsHelp is terminal and appends no event; HuntComplete captures its catch into the prey pen
-    (each a PreyCapturedEvent + row, P4) THEN closes via runs.outcome. A tool failure or an
-    exhausted brain retry budget aborts.
+    NeedsHelp is terminal and appends no event; HuntComplete captures the references of its catch
+    that the run read into the prey pen (each a PreyCapturedEvent + row, P4; `_capture_catch`)
+    THEN closes via runs.outcome. A tool failure or an exhausted brain retry budget aborts.
     """
     for _ in range(max_iterations):
         decision = await _call_brain(
@@ -551,10 +612,14 @@ async def _drive(
                 if not ok:
                     return "aborted", "tool failure"
             case HuntComplete():
-                for posting in decision.catch:
-                    await verdicts.capture_prey(
-                        conn, run_id, territory=territory, posting=posting, publish=publish
-                    )
+                await _capture_catch(
+                    conn,
+                    run_id,
+                    territory=territory,
+                    registry=registry,
+                    catch=decision.catch,
+                    publish=publish,
+                )
                 return "completed", None
             case NeedsHelp():
                 return "needs_help", None

@@ -724,7 +724,7 @@ def build_tools(registry: ToolRegistry) -> list[dict[str, Any]]:
         {
             "name": tool.name,
             "description": tool.description,
-            "input_schema": _strip_titles(tool.json_schema),
+            "input_schema": _without_defs_descriptions(_strip_titles(tool.json_schema)),
         }
         for tool in registry.registered()
     ]
@@ -737,13 +737,31 @@ def build_tools(registry: ToolRegistry) -> list[dict[str, Any]]:
             "description": description,
             "input_schema": {
                 key: value
-                for key, value in _strip_titles(model.model_json_schema()).items()
+                for key, value in _without_defs_descriptions(
+                    _strip_titles(model.model_json_schema())
+                ).items()
                 if key != "description"
             },
         }
         for name, model, description in _TERMINAL_TOOLS
     )
     return tools
+
+
+def _without_defs_descriptions(schema: dict[str, Any]) -> dict[str, Any]:
+    # A nested model's class docstring lands in `$defs` as that entry's `description`, read by the
+    # model on every request like the terminal classes' own; it is written for readers of the
+    # code, so it is dropped the same way. Field descriptions inside an entry stay.
+    if "$defs" not in schema:
+        return schema
+    definitions = cast("dict[str, dict[str, Any]]", schema["$defs"])
+    return {
+        **schema,
+        "$defs": {
+            name: {key: value for key, value in definition.items() if key != "description"}
+            for name, definition in definitions.items()
+        },
+    }
 
 
 def _seed_directive(territory: str) -> str:
@@ -787,7 +805,8 @@ def project_messages(
         carries no id, so we pair it with the last-opened call).
 
     Skipped (not conversation): retryable ErrorEvents (a retry follows, superseded by its
-    ToolResultEvent), `<brain>`/`<loop>` failures (transport/loop errors, not turns), and
+    ToolResultEvent), `<brain>`/`<loop>`/`<capture>` failures (transport, loop and catch errors,
+    not turns), and
     SniffEvent / PreyCapturedEvent / UsageEvent / ThinkingDelta (the stored turn, not its partial
     deltas, is what goes back).
     """
@@ -835,7 +854,7 @@ def project_messages(
             )
             open_tool_use_id = ""
         elif isinstance(event, ErrorEvent):
-            if event.retryable or event.tool in ("<brain>", "<loop>"):
+            if event.retryable or event.tool in ("<brain>", "<loop>", "<capture>"):
                 continue  # a retry follows / not a conversational turn
             # A fatal TOOL error — only reachable for a tool that already emitted a ToolCallEvent,
             # so open_tool_use_id is its id. (unknown-tool / bad-args errors abort the run before

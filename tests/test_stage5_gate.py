@@ -25,7 +25,13 @@ import pytest
 
 from rexhunter import db
 from rexhunter.brain import parse_decision
-from rexhunter.events import BrainParseError, ErrorEvent, ToolCallEvent, ToolResultEvent
+from rexhunter.events import (
+    BrainParseError,
+    ErrorEvent,
+    PostingRef,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from rexhunter.loop import HuntComplete, NeedsHelp, ToolCallDecision, run_hunt
 from rexhunter.tools import ToolRegistry
 
@@ -71,7 +77,12 @@ HUNT_COMPLETE_SHAPED = _provider_response(
             "type": "tool_use",
             "id": "toolu_01DONE",
             "name": "hunt_complete",
-            "input": {"catch": ["posting:acme", "posting:globex"]},
+            "input": {
+                "catch": [
+                    {"board": "gym", "posting_id": "acme"},
+                    {"board": "gym", "posting_id": "globex"},
+                ]
+            },
         }
     ],
 )
@@ -116,7 +127,10 @@ def test_clean_tool_use_parses_to_a_toolcall_decision() -> None:
 def test_hunt_complete_shaped_parses_to_hunt_complete() -> None:
     decision = parse_decision(HUNT_COMPLETE_SHAPED)
     assert isinstance(decision, HuntComplete)
-    assert decision.catch == ["posting:acme", "posting:globex"]  # structured catch, validated
+    assert decision.catch == [  # structured catch, validated
+        PostingRef(board="gym", posting_id="acme"),
+        PostingRef(board="gym", posting_id="globex"),
+    ]
 
 
 def test_needs_help_shaped_parses_to_needs_help() -> None:

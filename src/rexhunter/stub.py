@@ -45,10 +45,12 @@ def stub_brain_for(territory: str) -> Brain:
 
     A FRESH brain per hunt (each owns its decision stream); exhaustion ends the hunt cleanly
     rather than starving the loop — production must not crash on an over-eager loop.
+    The catch is empty: `sniff` is no posting source, so a reference to what it found would
+    never resolve.
     """
     decisions: list[Decision] = [
         ToolCallDecision(tool=sniff.__name__, args={"prey": territory}),
-        HuntComplete(catch=[f"posting:{territory}"]),  # one penned posting per hunt (P4)
+        HuntComplete(),
     ]
     queue = iter(decisions)
 

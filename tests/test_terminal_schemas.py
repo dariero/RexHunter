@@ -42,7 +42,25 @@ def test_the_terminal_tools_keep_their_description_and_properties() -> None:
     }
     assert schemas == {
         "hunt_complete": {
-            "properties": {"catch": {"default": [], "items": {"type": "string"}, "type": "array"}},
+            "$defs": {
+                "PostingRef": {
+                    "additionalProperties": False,
+                    "properties": {"board": {"type": "string"}, "posting_id": {"type": "string"}},
+                    "required": ["board", "posting_id"],
+                    "type": "object",
+                }
+            },
+            "properties": {
+                "catch": {
+                    "default": [],
+                    "description": (
+                        "A reference to each posting you read with read_posting in this hunt and "
+                        "judge worth a human's verdict."
+                    ),
+                    "items": {"$ref": "#/$defs/PostingRef"},
+                    "type": "array",
+                }
+            },
             "type": "object",
         },
         "needs_help": {"properties": {}, "type": "object"},
@@ -56,8 +74,8 @@ class _Documented(BaseModel):
 
 
 def test_a_terminal_field_description_stays(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Neither terminal model has a field description today, so a stand-in shows that only the
-    # class docstring leaves the schema.
+    # A stand-in with both a class docstring and a field description shows that only the class
+    # docstring leaves the schema.
     monkeypatch.setattr(
         brain, "_TERMINAL_TOOLS", (("hunt_complete", _Documented, "End the hunt."),)
     )

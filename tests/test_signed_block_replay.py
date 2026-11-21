@@ -162,7 +162,7 @@ def _sse(
 
 
 CALL1 = _sse("Scouting mock-gym.", SIG1, "toolu_1", "sniff", {"prey": "mock-gym"})
-CALL2 = _sse("Enough — capturing.", "SIG2==", "toolu_2", "hunt_complete", {"catch": ["posting:mg"]})
+CALL2 = _sse("Enough — capturing.", "SIG2==", "toolu_2", "hunt_complete", {"catch": []})
 CALL1_BLOCK = {"type": "thinking", "thinking": "Scouting mock-gym.", "signature": SIG1}
 
 

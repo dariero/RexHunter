@@ -25,7 +25,9 @@ async def _seed_prey(db_path: Path) -> str:
     conn = await db.connect(db_path)
     try:
         run_id = await db.start_run(conn, territory="mock-gym")
-        return await verdicts.capture_prey(conn, run_id, territory="mock-gym", posting="posting:x")
+        return await verdicts.capture_prey(
+            conn, run_id, territory="mock-gym", raw_posting=b"posting:x"
+        )
     finally:
         await conn.close()
 

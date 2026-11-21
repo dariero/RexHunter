@@ -17,8 +17,8 @@ import aiosqlite
 import pytest
 
 from rexhunter import db, server, stub, verdicts
-from rexhunter.events import Verdict
-from rexhunter.loop import Brain, Decision, HuntComplete
+from rexhunter.events import PostingRef, Verdict
+from rexhunter.loop import Brain, Decision, HuntComplete, ToolCallDecision
 from rexhunter.tools import ToolRegistry
 from rexhunter.verdicts import Drafter
 
@@ -59,15 +59,27 @@ async def test_prey_survives_a_real_restart_and_verdicts_stay_idempotent(
     db_path = tmp_path / "rex.db"
 
     def brain_for(territory: str) -> Brain:
-        # the hunt completes immediately, capturing one posting — no tool, no spend
-        return scripted_brain([HuntComplete(catch=[f"posting:{territory}"])])
+        # the hunt reads one posting, then completes capturing it; no spend
+        ref = PostingRef(board=territory, posting_id="p1")
+        return scripted_brain(
+            [
+                ToolCallDecision(tool="read_posting", args=ref.model_dump()),
+                HuntComplete(catch=[ref]),
+            ]
+        )
 
     async def drafter(_conn: aiosqlite.Connection, prey_id: str) -> str:
         return f"draft for {prey_id}"  # stub; no LLM
 
+    async def read_posting(board: str, posting_id: str) -> bytes:
+        return f"posting:{board}:{posting_id}".encode()
+
+    registry = ToolRegistry()
+    registry.tool(read_posting, posting_source=True)
+
     def cfg() -> Config:
         # one territory, a long interval so it hunts exactly ONCE per boot (deterministic pen)
-        return {"gate": 3600.0}, brain_for, ToolRegistry(), 4, drafter
+        return {"gate": 3600.0}, brain_for, registry, 4, drafter
 
     monkeypatch.setattr(server, "DB_PATH", str(db_path))
     monkeypatch.setattr(stub, "daemon_config", cfg)
@@ -131,7 +143,9 @@ async def test_boot_crash_sweep_marks_the_run_but_leaves_prey_untouched(
 
     seed = await db.connect(db_path)
     run_id = await db.start_run(seed, territory="gate")
-    prey_id = await verdicts.capture_prey(seed, run_id, territory="gate", posting="posting:gate")
+    prey_id = await verdicts.capture_prey(
+        seed, run_id, territory="gate", raw_posting=b"posting:gate"
+    )
     await seed.close()  # the process "dies" — the run never reached finish_run
 
     def brain_for(_territory: str) -> Brain:

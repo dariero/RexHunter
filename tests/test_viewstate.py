@@ -36,7 +36,7 @@ async def _seed_stub_hunt(conn: aiosqlite.Connection) -> tuple[str, str]:
         events.ToolResultEvent(tool="sniff", raw_request=b"{}", raw_response=b"posting:mock-gym"),
     )
     prey_id = await verdicts.capture_prey(
-        conn, run_id, territory="mock-gym", posting="posting:mock-gym"
+        conn, run_id, territory="mock-gym", raw_posting=b"posting:mock-gym"
     )
     return run_id, prey_id
 

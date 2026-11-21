@@ -349,7 +349,9 @@ async def test_viewstate_endpoint_renders_the_board(
     try:
         run_id = await db.start_run(conn, territory="mock-gym")
         await db.append_event(conn, run_id, events.ToolCallEvent(tool="sniff", raw_request=b"{}"))
-        await verdicts.capture_prey(conn, run_id, territory="mock-gym", posting="posting:mock-gym")
+        await verdicts.capture_prey(
+            conn, run_id, territory="mock-gym", raw_posting=b"posting:mock-gym"
+        )
     finally:
         await conn.close()
     resp = await server.get_viewstate()

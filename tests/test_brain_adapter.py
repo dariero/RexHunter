@@ -38,7 +38,7 @@ from rexhunter.brain import (
     build_tools,
     parse_decision,
 )
-from rexhunter.events import BrainParseError
+from rexhunter.events import BrainParseError, PostingRef
 from rexhunter.loop import HuntComplete, NeedsHelp, ToolCallDecision
 from rexhunter.tools import ToolRegistry
 
@@ -112,12 +112,13 @@ async def test_brain_wraps_parse_decision_into_a_toolcall_decision(
 async def test_brain_returns_hunt_complete_for_the_terminal_tool(
     mock_anthropic: MockAnthropic,
 ) -> None:
+    catch = [{"board": "gym", "posting_id": "acme"}]
     raw = _provider_response(
-        [{"type": "tool_use", "id": "t", "name": "hunt_complete", "input": {"catch": ["p:acme"]}}]
+        [{"type": "tool_use", "id": "t", "name": "hunt_complete", "input": {"catch": catch}}]
     )
     decision = await _drive(mock_anthropic, _canned(raw), _sniff_registry())
     assert isinstance(decision, HuntComplete)
-    assert decision.catch == ["p:acme"]
+    assert decision.catch == [PostingRef(board="gym", posting_id="acme")]
 
 
 async def test_brain_returns_needs_help_for_the_terminal_tool(
