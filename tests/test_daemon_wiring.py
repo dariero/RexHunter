@@ -308,10 +308,10 @@ async def test_thinking_sink_is_write_ahead_under_the_lifespan(
         return "stub draft"  # the job worker idles alongside; no FEAST here
 
     def fake_config() -> tuple[
-        dict[str, float], Callable[[str], Brain], ToolRegistry, int, Drafter
+        dict[str, float], Callable[[str], Brain], stub.RegistryFor, int, Drafter
     ]:
         # a large interval → exactly one hunt fires within the test window.
-        return {"mock-gym": 3600.0}, brain_for, reg, 4, drafter
+        return {"mock-gym": 3600.0}, brain_for, lambda _client: reg, 4, drafter
 
     monkeypatch.delenv("REXHUNTER_BRAIN", raising=False)  # stub mode → the injected brain is used
     monkeypatch.setattr(server, "DB_PATH", str(db_path))

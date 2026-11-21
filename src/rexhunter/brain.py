@@ -1292,6 +1292,8 @@ def select_brain_for(
     registry: ToolRegistry,
     *,
     default: Callable[[str], Brain] | None = None,
+    system: str = HUNT_SYSTEM_PROMPT,
+    seed: Callable[[str], str] = _seed_directive,
 ) -> tuple[Callable[[str], Brain], anthropic.AsyncAnthropic | None]:
     """The autonomous-spender containment (P5 Unit 2c): the daemon's `brain_for`, selected by the
     `REXHUNTER_BRAIN` env var. Default `"stub"` returns a no-spend brain and no client — a default
@@ -1300,7 +1302,8 @@ def select_brain_for(
     `"live"` is the single opt-in that arms spending: it builds the STREAMING/THINKING adapter (`P5`
     Unit 3 — `stream=True` + adaptive thinking, so Rex's reasoning relays through the hub) over a
     real SDK client (`anthropic_client`, max_retries=0 + the pinned wire) and RETURNS that client so
-    the caller (lifespan / entrypoints) owns its close.
+    the caller (lifespan / entrypoints) owns its close. `system` and `seed` reach that adapter
+    (`adapter_brain_for`'s, the sniff hunt's by default); the daemon passes the gym's (D9).
     Any other value is a hard error, never a silent fall-through to spending.
     """
     mode = os.environ.get("REXHUNTER_BRAIN", "stub")
@@ -1320,6 +1323,8 @@ def select_brain_for(
             max_tokens=HUNT_MAX_TOKENS,
             thinking=HUNT_THINKING,
             stream=True,  # the daemon streams reasoning to /events — the Unit-3 brain, not 2c's
+            system=system,
+            seed=seed,
         )
         return brain_for, client
     raise ValueError(f"unknown REXHUNTER_BRAIN={mode!r} (expected 'stub' or 'live')")

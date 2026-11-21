@@ -6,7 +6,9 @@ daemon lifespan. The provider-backed `brain()` is `P5` (paid); until then this s
 for `brain()` is the whole of `P5`; nothing here imports an LLM.
 
 The one seam the lifespan reads is `daemon_config()`; the lifespan gate monkeypatches it to
-inject a deterministic blocking tool. Everything else here is the real (if trivial) daemon.
+inject a deterministic blocking tool. Since `P2.4` (D9) the daemon's default schedule is the six gym
+territories, hunted by the scripted keyword baseline (`board.baseline`); `sniff`, `mock-gym` and
+`build_registry` stay for the recorded replays and the wire check.
 """
 
 import asyncio
@@ -14,13 +16,22 @@ from collections.abc import Callable, Mapping
 
 import aiosqlite
 
+from rexhunter.board import tools as board_tools
+from rexhunter.board.baseline import baseline_brain_for
+from rexhunter.board.catalogue import GYM_BOARDS
+from rexhunter.board.client import BoardClient
 from rexhunter.loop import Brain, Context, Decision, HuntComplete, ThinkingSink, ToolCallDecision
 from rexhunter.tools import ToolRegistry
 from rexhunter.verdicts import Drafter
 
 SNIFF_INTERVAL = 5.0  # the per-sniff beat, mirroring the prototype's cadence
-DEFAULT_SCHEDULE: dict[str, float] = {"mock-gym": SNIFF_INTERVAL}
+GYM_INTERVAL = 30.0  # each gym territory's interval (D10)
+DEFAULT_SCHEDULE: dict[str, float] = dict.fromkeys(GYM_BOARDS, GYM_INTERVAL)
 MAX_CONCURRENT = 4
+
+# The board tools over the lifespan's board client: the daemon's registry is built from the client
+# the lifespan owns, so this seam builds no client itself (`/viewstate` calls it per request).
+type RegistryFor = Callable[[BoardClient], ToolRegistry]
 
 
 async def sniff(prey: str) -> str:
@@ -73,12 +84,22 @@ async def draft_pitch(conn: aiosqlite.Connection, prey_id: str) -> str:
     return f"Draft pitch for {posting} — [stub, edit me]"
 
 
+def gym_registry(client: BoardClient) -> ToolRegistry:
+    return board_tools.build_registry(client, GYM_BOARDS)
+
+
 def daemon_config() -> tuple[
-    Mapping[str, float], Callable[[str], Brain], ToolRegistry, int, Drafter
+    Mapping[str, float], Callable[[str], Brain], RegistryFor, int, Drafter
 ]:
     """The single seam the lifespan reads (and the lifespan gate monkeypatches).
 
-    Returns (schedule, brain_for, registry, max_concurrent, drafter) — the scheduler's knobs plus
-    the follow-up worker's drafter.
+    Returns (schedule, brain_for, registry_for, max_concurrent, drafter): the scheduler's knobs,
+    the registry built over the lifespan's board client, and the follow-up worker's drafter.
     """
-    return DEFAULT_SCHEDULE, stub_brain_for, build_registry(), MAX_CONCURRENT, draft_pitch
+    return (
+        DEFAULT_SCHEDULE,
+        baseline_brain_for(GYM_BOARDS),
+        gym_registry,
+        MAX_CONCURRENT,
+        draft_pitch,
+    )
