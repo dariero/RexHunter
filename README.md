@@ -11,17 +11,19 @@ the agent's actual trajectory replayed as a creature moving through its world.
 > **Status: build-in-public.** Persistence (`P1`), the typed event model + validation
 > boundary (`P2.1`), the hand-rolled agent loop + `@rex_tool` harness (`P2.2`), the concurrent
 > hunt scheduler (`P2.3`), durable pause & HITL – the prey pen + Feast/Release/Amber verdict
-> machine (`P4`) – and the streaming hub (`P3`) are done and gate-tested. The brain socket
-> (`P5`) is done through its streaming `ThinkingDelta` relay and live daemon wiring (W.1–W.3):
-> the real streaming/thinking `brain()` now runs in the daemon (opt-in via `REXHUNTER_BRAIN=live`;
-> the no-spend stub still drives by default), with extraction/strict mode and the live ATS
+> machine (`P4`) – and the streaming hub (`P3`) are done and gate-tested. The gym board (`P2.4`)
+> is done too: a mock job board in Greenhouse and Lever shapes with injected hazards, which the
+> daemon hunts in-process, by default with a no-spend keyword baseline. The brain socket (`P5`) is
+> done through its streaming `ThinkingDelta` relay and live daemon wiring (W.1–W.3): the real
+> streaming/thinking `brain()` now runs in the daemon (opt-in via `REXHUNTER_BRAIN=live`; the
+> no-spend stub still drives by default), with extraction/strict mode and the live ATS
 > (Greenhouse/Lever) adapter the remaining P5 runway. The projection spine – reducer, assembler,
 > and retro-game renderer (`view`/`viewstate`/`render`, property-tested) – has shipped, and the
-> game-state layer on top of it is done and browser-verified: run/territory overlays with
-> recorded budget ceilings, live run-finished pulses, per-territory scene tiles
-> (fresh-kill/cracked-earth/hunting/dormant), and depleting HP/stamina bars. The aesthetic
-> skin (pixel/CRT, sprite keyframes, day/night scene) has shipped too. Slice IDs,
-> order, and gates live in the [ADR](rexhunter-adr.md#build-sequence-canonical).
+> game-state layer on top of it is done and browser-verified: run/territory overlays with recorded
+> budget ceilings, live run-finished pulses, per-territory scene tiles
+> (fresh-kill/cracked-earth/hunting/dormant), and depleting HP/stamina bars. The aesthetic skin
+> (pixel/CRT, sprite keyframes, day/night scene) has shipped too. Slice IDs, order, and gates live
+> in the [ADR](rexhunter-adr.md#build-sequence-canonical).
 
 ## Core constraints
 
@@ -87,6 +89,7 @@ ADR owns the order and gates; this table tracks only status. Slices are named by
 | `P2.1` | **Typed events** – discriminated-union model + validation boundary (`events.py`) | 2 | **Done** |
 | `P2.2` | **Loop & tool harness** – `@rex_tool` registry, validate → execute → append, error taxonomy | 2 | **Done** |
 | `P2.3` | Hunt scheduler – bounded concurrent-hunt task group + per-territory deadlines, wired into the daemon lifespan | 2 | **Done** |
+| `P2.4` | Gym board – a mock board in Greenhouse and Lever shapes with injected hazards, the `list_postings` and `read_posting` tools, and catch by reference; the daemon hunts its six boards | 2 | **Done** |
 | `P4` | Durable pause & HITL – prey pen + Feast / Release / Amber verdict machine (`verdicts.py`) | 4 | **Done** |
 | `P5` | Brain socket – provider-agnostic LLM, native tool calling, thinking-token relay | 5 | **In progress** – Units 1–2c (brain-in-loop, first paid calls), Unit 3 (streaming `ThinkingDelta` relay + signed-block replay, one gated thinking-on live hunt), and daemon live-wiring (W.1–W.3, streaming/thinking brain in the real lifespan) done; extraction/strict mode + the live ATS (Greenhouse/Lever) adapter remain |
 | `P5·W.1–W.3` | Daemon live-wiring – brain selection + id-scoped daemon spend ceiling; streaming/thinking brain wired into the lifespan | 5 | **Done** – streaming/thinking brain runs in the real lifespan |
