@@ -71,7 +71,9 @@ class RegisteredTool:
     ) -> RegisteredTool:
         if not inspect.iscoroutinefunction(fn):
             raise TypeError(f"@rex_tool requires an async function: {fn.__name__!r}")
-        hints = get_type_hints(fn)
+        # include_extras: an `Annotated[int, Field(ge=1)]` keeps its Field, so the limit reaches
+        # both the schema and the validator; without it the annotation is stripped to `int`.
+        hints = get_type_hints(fn, include_extras=True)
         fields: dict[str, Any] = {}
         for pname, param in inspect.signature(fn).parameters.items():
             if pname not in hints:
