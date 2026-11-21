@@ -1,4 +1,4 @@
-"""Rex's board tools (`P2.4`): `list_postings` and `read_posting`.
+"""Rex's board tools (`P2.4`): `list_postings` and `read_posting`, and the gym prompt.
 
 Each tool makes one GET and returns the board's body as it arrived, which the loop stores as the
 result's `raw_response` (invariant 6). Before it returns, the tool validates the same bytes
@@ -24,6 +24,24 @@ from rexhunter.tools import ToolRegistry
 # whose bytes passed the same parse before they were stored; it keeps a view total, so an older or
 # edited log never ends a run at the `<loop>` backstop, and the model is never shown the bytes.
 UNREADABLE = '{"error": "the stored board response does not parse"}'
+
+GYM_SYSTEM_PROMPT = (
+    "You are Rex, an autonomous agent scouting AI-engineering job postings on a job board. Call "
+    "list_postings to see a page of the board's postings, and read_posting to read one in full. "
+    "When you have read the postings worth a human's verdict, call hunt_complete with a reference "
+    "to each as your catch: only a posting you read with read_posting can be caught. If the board "
+    "is unworkable or you are stuck, call needs_help. You cannot apply, submit, message, or "
+    "contact anyone: you only scout and capture, and a human alone decides what happens to each "
+    "catch."
+)
+
+
+def gym_seed(territory: str) -> str:
+    return (
+        f'Hunt the job board "{territory}" for AI-engineering job postings. Call list_postings '
+        f'with board "{territory}" to see its postings and read_posting to read one; call '
+        "hunt_complete with your catch when done, or needs_help if you are stuck."
+    )
 
 
 class _ListArgs(BaseModel):

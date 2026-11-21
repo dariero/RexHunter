@@ -787,10 +787,13 @@ def project_messages(
     territory: str,
     context: Sequence[TrajectoryEvent],
     registry: ToolRegistry | None = None,
+    *,
+    seed: Callable[[str], str] = _seed_directive,
 ) -> list[dict[str, Any]]:
     """Fold the trajectory log into a valid Anthropic `messages` array (P5 Unit 2c). This is a
     PROJECTION of the log (invariant 2), derived per brain call — not a second stored chat history.
-    The seed directive opens it; then each event maps to its conversational turn:
+    The seed directive opens it (`seed(territory)`: the sniff hunt's by default, the gym's for a
+    board hunt); then each event maps to its conversational turn:
 
       - ToolCallEvent    -> the assistant turn. Since W2.3 (D7) the event stores the whole turn
         (`assistant_content`, the response's `content` array) and it is echoed EXACTLY as stored,
@@ -810,7 +813,7 @@ def project_messages(
     SniffEvent / PreyCapturedEvent / UsageEvent / ThinkingDelta (the stored turn, not its partial
     deltas, is what goes back).
     """
-    messages: list[dict[str, Any]] = [{"role": "user", "content": _seed_directive(territory)}]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": seed(territory)}]
     open_tool_use_id = ""  # the id of the tool_use awaiting its result (for id-less ErrorEvents)
     for event in context:
         if isinstance(event, ToolCallEvent) and event.assistant_content:
@@ -1138,14 +1141,19 @@ def adapter_brain_for(
     max_tokens: int = _DEFAULT_MAX_TOKENS,
     thinking: dict[str, Any] | None = None,
     stream: bool = False,
+    system: str = HUNT_SYSTEM_PROMPT,
+    seed: Callable[[str], str] = _seed_directive,
 ) -> Callable[[str], Brain]:
     """A `brain_for` factory (the scheduler's seam, `scheduler.py`) backed by the Anthropic Messages
     API over the INJECTED SDK client (built by `anthropic_client`). `brain()` never opens or closes
     the client: its lifecycle belongs to whoever constructed it (the daemon/lifespan for a live
     call, a `MockTransport` in tests), the same single-owner discipline the run connections follow.
 
-    Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), thread the
-    `HUNT_SYSTEM_PROMPT`. `thinking` defaults to the model's lowest setting, `thinking_floor(model)`
+    Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), opened by
+    `seed(territory)`, and thread `system`. Both default to the sniff hunt's (`_seed_directive`,
+    `HUNT_SYSTEM_PROMPT`), so a caller that passes neither sends today's bytes; a board hunt passes
+    the gym's (`board.tools`).
+    `thinking` defaults to the model's lowest setting, `thinking_floor(model)`
     (W2.2: `{type:"between_tools"}` on Sonnet 5.5; a model with no row raises here, before any
     request is built), 2c's thinking-off hunt (since W2.3 its echoed turn is the whole stored turn,
     e.g. text then the tool_use); `P5` Unit 3 passes `{type:"adaptive", display:"summarized"}` +
@@ -1171,9 +1179,9 @@ def adapter_brain_for(
             body = build_request_body(
                 model=model,
                 max_tokens=max_tokens,
-                messages=project_messages(territory, context, registry),
+                messages=project_messages(territory, context, registry, seed=seed),
                 tools=tools,
-                system=HUNT_SYSTEM_PROMPT,
+                system=system,
                 thinking=thinking,
                 tool_choice=HUNT_TOOL_CHOICE,
             )
