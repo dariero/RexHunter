@@ -1006,6 +1006,53 @@ at da5a3a2). No subagent, workflow or advisor call. Found, pre-existing, Darie's
 `<loop>` ErrorEvent write leaves its run `outcome IS NULL` until the boot sweep; a red
 `test_capture_prey_is_atomic` leaks its connection and pytest never exits. *Next: P2.4c (the
 gym).*
+**▶ P2.4c · The gym board – ✅ done on branch `p24-gym` (`c997d7d`→`88644c3`, 2026-11-22), PR #22.**
+The third part of slice `P2.4` (D1, D2, D7, D8, D10, and the rest of the approved ADR text: the
+Pillar 2 reconciliation note, the accepted-limits row, the build-sequence row and paragraph, DoD
+#2's gym clause). No API call of any kind, no model change; one new request, the gym's. After every
+commit the five wire-check bodies and their headers are byte-identical to b6f244f's (1
+`9a55cae7…5a88` 1794 B, 2 `761995a6…b3ef` 1826, 3 `95bd6597…34d1` 1776, 4 `bb8870fe…f8e4` 2205, 5 =
+2); body 6, the first request of a gym hunt (`gym-greenhouse`, the plain path, the gym registry,
+prompt and seed, `HUNT_MAX_TOKENS`), is `5f414941…e7a8` 2409 B, with body 1's headers but
+`content-length`. Forks chosen 22 Nov by rex-orchestrator under her delegation: P24-profile
+profile-1, and a yes on X1. **httpx2** (`c997d7d`, D8): `httpx2>=2.16.2` in
+`[project] dependencies`; uv.lock gains two lines in `rexhunter`'s own entry, 39 packages, no
+version moved. **Gym** (`bf9284c`): `board.gym.build_gym` serves Greenhouse's job list and job and
+Lever's posting list and posting in-process as a FastAPI app, GET routes only (any other method 405,
+an unknown path or posting 404), in the shapes of the docs read 21 Nov 2026. A board's `HazardPlan`
+injects drift (an added, renamed or retyped field, a renamed envelope), a storm counted per gym
+instance (`storm_status`, the `retry-after` value as given), mojibake (invalid UTF-8, double-encoded
+text, a BOM) and paging traps (`ignore_skip`, `exact_multiple`, a lying `meta.total`); a plan its
+board's shape cannot carry is refused at build. `board.catalogue`: six boards, one territory each
+(D2), companies invented, half prey and half decoys; no route serves the `planted` mark. Not served,
+as the docs read give no value type: Greenhouse `departments` and `offices`, Lever
+`categories.allLocations`, `lists` and `additional`. **Client and adapters** (`caf8709`):
+`BoardClient` exposes `get` alone (invariant 4) over an injected transport with no default, follows
+no redirect and reads nothing from the environment; a 429, a 5xx or a transport failure is retryable
+with the body and the board's `retry-after`, any other status but 200 fatal with its body.
+`board.adapters`: the documented paths (each segment quoted), strict `utf-8-sig`, the design's
+`Strict*` wire models (the fields `events._posting_title` reads), and the typed `PostingPage` and
+`Posting` (a Greenhouse description has its entities decoded and its tags stripped; either shape's
+has its whitespace collapsed and is cut at `DESCRIPTION_CAP`). **Tools** (`be1ea73`):
+`board.tools.build_registry(client, boards)` registers `list_postings(board, page)` (page 1 to
+`MAX_PAGES`; a Greenhouse page is sliced from its one list and has a `next_page` while the list
+holds more, a Lever page asks `skip` and `limit` and has one when it is full, and neither offers a
+page past `MAX_PAGES`) and `read_posting(board, posting_id)`, the first real posting source. One GET
+per call; an unknown board is fatal before any request, and a read that answers another posting is
+fatal. Each view renders the stored bytes as typed JSON, and `UNREADABLE`, a fixed text, for bytes
+it cannot parse. X1: the registry reads `Annotated` metadata
+(`get_type_hints(fn, include_extras=True)`, tools/__init__.py:76), so the page bound reaches the
+schema and the validator; at b6f244f page 0 and 11 validated. **Prompt** (`88644c3`, profile-1):
+`adapter_brain_for(..., system=, seed=)` and `project_messages(..., *, seed=)`, defaulting to
+`HUNT_SYSTEM_PROMPT` and `_seed_directive`, both unchanged; `board.tools.GYM_SYSTEM_PROMPT` and
+`gym_seed` name the board tools. The new tests, each red on its parent (`ModuleNotFoundError`, or
+`ImportError` on `GYM_SYSTEM_PROMPT` with the guard green): tests/test_gym.py (14),
+tests/test_board_client.py (22), tests/test_board_tools.py (28: the hazard table, DoD #2's gym
+clause) and tests/test_gym_prompt.py (2). Mutants, each on a `git archive` of its commit: P24-MP18 2
+red, P24-MP19 2, P24-MP20 9, P24-MP21 1, P24-MP22 2, P24-MP23 1, P24-MP24 2, P24-MP25 6, P24-MP26 9,
+P24-MP27 1, P24-MP28 1, P24-MP31 1, P24-MP29 1, P24-MP30 1. Test edits: none. 714 tests pass at
+`88644c3` (648 at b6f244f). No subagent, workflow or advisor call. *Next: P2.4d (the daemon hunts
+the gym).*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill
