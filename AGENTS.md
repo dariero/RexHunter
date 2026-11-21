@@ -1053,6 +1053,38 @@ red, P24-MP19 2, P24-MP20 9, P24-MP21 1, P24-MP22 2, P24-MP23 1, P24-MP24 2, P24
 P24-MP27 1, P24-MP28 1, P24-MP31 1, P24-MP29 1, P24-MP30 1. Test edits: none. 714 tests pass at
 `88644c3` (648 at b6f244f). No subagent, workflow or advisor call. *Next: P2.4d (the daemon hunts
 the gym).*
+**▶ P2.4d · The daemon hunts the gym – ✅ done on branch `p24-daemon` (`4fe37f5`→`02e5eed`,
+2026-11-22), PR #23.** The fourth and last part of slice `P2.4` (D9 and D10; no ADR edit). No API
+call of any kind, no model change. After every commit the six wire-check bodies and their headers
+are byte-identical to 29ff561's (1 `9a55cae7…5a88` 1794 B, 2 `761995a6…b3ef` 1826, 3 `95bd6597…34d1`
+1776, 4 `bb8870fe…f8e4` 2205, 5 = 2, 6 `5f414941…e7a8` 2409). The daemon's live first request is now
+the gym's (D9): captured offline at a MockTransport with a dummy key and sent nowhere, it is
+`6410c3d0…cca0` 2441 B, body 6 with `"stream": true` and `HUNT_THINKING`, with body 2's headers but
+`content-length`. Forks chosen 22 Nov by rex-orchestrator under her delegation: P24-client-home
+client-1, P24-storm-period storm-period-1, P24-baseline baseline-1. **Baseline** (`4fe37f5`):
+`board.baseline.baseline_brain_for(boards)` is the stub daemon's brain on the gym: it lists page 1,
+reads each posting whose title names `AI` as a word (in capitals) or "machine learning" (in any
+case), and catches what it read; each decision is derived from the run's own log, so it holds no
+state. On the default catalogue it pens no planted decoy, and misses three prey titles: "ML Platform
+Engineer", "LLM Evaluation Engineer" and "Robot Learning Engineer". **Daemon** (`02e5eed`):
+`stub.DEFAULT_SCHEDULE` is the six gym territories, each every 30 s. `daemon_config()` returns the
+baseline and `gym_registry`, a factory (`stub.RegistryFor`), and builds no client; the lifespan
+builds one `BoardClient` over `ASGITransport(build_gym(GYM_CATALOGUE))`, builds the registry from
+it, closes it after the hunts drain or when the brain selection raises, and passes the gym prompt
+and seed to `select_brain_for` (new `system=` and `seed=`, defaulting to the sniff hunt's).
+`/viewstate` still reads the schedule only, and builds no client. The first `gym-storm` hunt after
+each boot meets its storm. The new tests, each red on its parent: tests/test_baseline.py (15) and
+tests/test_gym_daemon.py (4, through the real lifespan: the default schedule, the stub daemon
+penning gym prey with no spend and closing its one board client, the live daemon sending the gym
+prompt and tools, and `/viewstate` building no client). Test edits: P24-PP19 to P24-PP25 as pinned
+(tests/test_daemon_wiring.py:311, :314, tests/test_server_lifespan.py:68, :70,
+tests/test_stage4_gate.py:28, :82, :158): each fake `daemon_config` passes its registry through a
+factory that ignores the client; without them 4 tests raised
+`TypeError: 'ToolRegistry' object is not callable`; no `assert` changed. Mutants, each on a
+`git archive` of its commit: P24-MP32 to P24-MP39, 1 red each. 733 tests pass at `02e5eed` (714 at
+29ff561). No subagent, workflow or advisor call. Slice `P2.4` is done. *Next: Darie's choice; open
+are the live adapters, park-and-persist on drift, extraction and strict mode, and eval tiers 2 and
+3.*
 
 - **`P1` · Persistence — ✅ done.** In-memory list → SQLite WAL log.
   *Gate (green, `tests/test_stage1_gate.py`):* `kill -9` mid-hunt → restart → all pre-kill

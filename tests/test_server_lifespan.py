@@ -65,9 +65,9 @@ async def test_scheduler_runs_through_real_lifespan_and_drains_on_shutdown(
         return "stub draft"  # the job worker runs alongside; no FEAST here, so it just idles
 
     def fake_config() -> tuple[
-        Mapping[str, float], Callable[[str], Brain], ToolRegistry, int, Drafter
+        Mapping[str, float], Callable[[str], Brain], stub.RegistryFor, int, Drafter
     ]:
-        return {"t0": 0.01, "t1": 0.01}, brain_for, reg, 4, drafter
+        return {"t0": 0.01, "t1": 0.01}, brain_for, lambda _client: reg, 4, drafter
 
     monkeypatch.setattr(server, "DB_PATH", str(db_path))
     monkeypatch.setattr(stub, "daemon_config", fake_config)

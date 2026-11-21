@@ -9,12 +9,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
+import httpx2
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from rexhunter import brain, db, render, scheduler, stub, verdicts, viewstate
+from rexhunter.board.catalogue import GYM_CATALOGUE
+from rexhunter.board.client import BoardClient
+from rexhunter.board.gym import build_gym
+from rexhunter.board.tools import GYM_SYSTEM_PROMPT, gym_seed
 from rexhunter.config import env_float, env_int
 from rexhunter.events import Verdict, VerdictEvent
 from rexhunter.hub import Envelope, Hub
@@ -62,12 +67,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     hub = Hub()
     app.state.hub = hub
 
-    schedule, stub_brain_for, registry, cap, drafter = stub.daemon_config()
-    # Select the daemon's brain by REXHUNTER_BRAIN (the autonomous-spender containment): the stub
-    # default routes daemon_config's brain through (the injectable seam the lifespan gate patches),
-    # while `live` swaps in the STREAMING/THINKING adapter (Unit 3) — Rex's reasoning relays to
-    # /events. `client` is the paid client's handle (None on stub); we own its close on shutdown.
-    brain_for, client = brain.select_brain_for(registry, default=stub_brain_for)
+    schedule, stub_brain_for, registry_for, cap, drafter = stub.daemon_config()
+    # The board client (P2.4, fork client-1): built once here over the in-process gym, so the
+    # board tools reach no host but the gym, and closed at shutdown after the hunts drain; the
+    # registry is built over it. `/viewstate` reads daemon_config's schedule only and builds none.
+    board_client = BoardClient(httpx2.ASGITransport(app=build_gym(GYM_CATALOGUE)))
+    try:
+        registry = registry_for(board_client)
+        # Select the daemon's brain by REXHUNTER_BRAIN (the autonomous-spender containment): the
+        # stub default routes daemon_config's brain through (the injectable seam the lifespan gate
+        # patches), while `live` swaps in the STREAMING/THINKING adapter (Unit 3) with the gym
+        # prompt and seed (D9), so Rex's reasoning relays to /events. `client` is the paid client's
+        # handle (None on stub); we own its close on shutdown.
+        brain_for, client = brain.select_brain_for(
+            registry, default=stub_brain_for, system=GYM_SYSTEM_PROMPT, seed=gym_seed
+        )
+    except BaseException:
+        await board_client.aclose()
+        raise
     tasks = [
         asyncio.create_task(
             run_scheduler(
@@ -106,6 +123,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # client, so an earlier close could abort an in-flight request. None on the stub path.
         if client is not None:
             await client.close()
+        await board_client.aclose()  # after the drain too: the hunts sent their GETs on it
 
 
 # fastapi turns its OpenTelemetry tracing, metrics, logs and operation spans on by default, and

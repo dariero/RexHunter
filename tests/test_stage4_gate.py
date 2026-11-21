@@ -25,7 +25,7 @@ from rexhunter.verdicts import Drafter
 pytestmark = pytest.mark.anyio
 
 BrainFactory = Callable[[Sequence[Decision]], Brain]
-Config = tuple[Mapping[str, float], Callable[[str], Brain], ToolRegistry, int, Drafter]
+Config = tuple[Mapping[str, float], Callable[[str], Brain], stub.RegistryFor, int, Drafter]
 
 
 async def _status(conn: aiosqlite.Connection, prey_id: str) -> str:
@@ -79,7 +79,7 @@ async def test_prey_survives_a_real_restart_and_verdicts_stay_idempotent(
 
     def cfg() -> Config:
         # one territory, a long interval so it hunts exactly ONCE per boot (deterministic pen)
-        return {"gate": 3600.0}, brain_for, registry, 4, drafter
+        return {"gate": 3600.0}, brain_for, lambda _client: registry, 4, drafter
 
     monkeypatch.setattr(server, "DB_PATH", str(db_path))
     monkeypatch.setattr(stub, "daemon_config", cfg)
@@ -155,7 +155,8 @@ async def test_boot_crash_sweep_marks_the_run_but_leaves_prey_untouched(
         return "draft"
 
     def cfg() -> Config:
-        return {}, brain_for, ToolRegistry(), 4, drafter  # no territories: no new hunts, clean pen
+        # no territories: no new hunts, clean pen
+        return {}, brain_for, lambda _client: ToolRegistry(), 4, drafter
 
     monkeypatch.setattr(server, "DB_PATH", str(db_path))
     monkeypatch.setattr(stub, "daemon_config", cfg)
