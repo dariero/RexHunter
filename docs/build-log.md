@@ -1049,3 +1049,36 @@ the stored requests. Red on its parent: 13 failed, `FileNotFoundError`. Mutants,
 (one word of a tool description) stays green, req-1's known blind spot, which the wire check catches
 (bodies 6 and 7 move). Test edits: none. 748 tests pass at `16e7b33` (735 at 4e1f717). No subagent,
 workflow or advisor call. *Next: P2.5b (gym-mimic and the tier 2 score).*
+
+**▶ P2.5b · gym-mimic and the tier 2 score – ✅ done on branch `p25-score` (`fc51319`→`e8ac439`,
+2026-11-26), PR #26.** The second part of slice `P2.5` (P25-D3 to P25-D6). No API call of any kind,
+no model change. After every commit the seven wire-check bodies and their headers are byte-identical
+to 4e1f717's (1 `9a55cae7…5a88` 1794 B, 2 `761995a6…b3ef` 1826, 3 `95bd6597…34d1` 1776, 4
+`bb8870fe…f8e4` 2205, 5 = 2, 6 `5f414941…e7a8` 2409, 7 `6410c3d0…cca0` 2441). Fork chosen 26 Nov by
+rex-orchestrator under her delegation: P25-layout layout-1. **gym-mimic** (`fc51319`, P25-D3,
+P25-D4): `board.catalogue.EVAL_BOARDS` and `EVAL_CATALOGUE` hold the eval's own board, a clean
+Greenhouse board (Numbat Labs, `numbatlabs`, ids from 4004001), kept out of `DEFAULT_SCHEDULE` and
+out of the daemon's gym, which still serves the six only; `GYM_BOARDS` and `GYM_CATALOGUE` are
+unchanged. Two postings per cell: prey whose titles name AI or machine learning, prey whose titles
+name neither, decoys whose titles name AI, decoys whose titles name machine learning. Each
+description comes from `_postings`, so only its middle paragraph tells prey from decoy, and the
+keyword baseline matches six of the eight titles, every decoy among them. **Score** (`e8ac439`,
+P25-D5, P25-D6): `board.score` folds one run's typed events against `planted_marks`, the
+`(board, posting_id)` table of prey and decoy marks built from the boards and catalogues, and stores
+nothing (invariant 5). A posting is read when the run holds a successful `read_posting` result for
+it and caught when it holds a `PreyCapturedEvent`; a listed-only posting is neither, and a posting
+of another board is counted apart (`off_board`). A `RunScore` carries the outcome against the
+expected one (gym-drift "aborted", "tool failure"; every other board "completed"), the prey on the
+board, the prey and decoys read and caught, `<capture>` errors, calls, the cost (`cost.fold_cost`),
+precision (None on an empty catch) and recall; `wave_total` gives the micro totals over the runs
+expected to complete, and `score_log` scores a log through any connection, a read-only one included.
+No pass threshold. The six recorded runs of 26 Nov score as pinned: gym-greenhouse, gym-lever,
+gym-storm and gym-mojibake read and caught their four prey and no decoy (precision and recall 1.0);
+gym-drift read nothing and met its expected outcome; gym-pages read 15 prey and no decoy and caught
+nothing (precision undefined, recall 0, "cost ceiling", not the outcome expected). The baseline's
+floor on gym-mimic: 2 prey and 4 decoys read and caught, 2 prey missed. The new tests, each red on
+its parent (`ImportError` on `EVAL_BOARDS`, or `ModuleNotFoundError` on `rexhunter.board.score`):
+tests/test_gym_mimic.py (2) and tests/test_board_score.py (11). Mutants, each on its own copy of a
+`git archive` export: P25-MP8 7 red, P25-MP9 3, P25-MP10 1, P25-MP11 1, P25-MP12 6, P25-MP13 1,
+P25-MP14 1, P25-MP15 3, P25-MP16 1, P25-MP17 8. Test edits: none. 761 tests pass at `e8ac439` (748
+at 37344b4). No subagent, workflow or advisor call. *Next: P2.5c (the one-wave harness).*
