@@ -1022,3 +1022,30 @@ are the live adapters, park-and-persist on drift, extraction and strict mode, an
   live-splice, monotonic-id dedup); a full-queue viewer is dropped without slowing the hunt (ADR
   **DoD #3**). Offline hub unit (`tests/test_hub.py`) proves the write-ahead order structurally: an
   envelope reaches a viewer only after a separate reader sees the committed row (inv 1).
+
+**▶ P2.5a · The 26 Nov gym hunts as fixtures – ✅ done on branch `p25-fixtures` (`16e7b33`,
+2026-11-26), PR #25.** The first part of slice `P2.5`, eval tier 2 (Darie's choice of 26 Nov;
+P25-D9). No API call of any kind, no model change, nothing under src/. After the commit the seven
+wire-check bodies and their headers are byte-identical to 4e1f717's (1 `9a55cae7…5a88` 1794 B, 2
+`761995a6…b3ef` 1826, 3 `95bd6597…34d1` 1776, 4 `bb8870fe…f8e4` 2205, 5 = 2, 6 `5f414941…e7a8` 2409,
+7 `6410c3d0…cca0` 2441). Fork chosen 26 Nov by rex-orchestrator under her delegation:
+P25-fixture-req req-1. **The wave:** on 26 Nov 2026, 16:38:57 to 16:40:16 AEDT, the daemon hunted
+the gym live on 4e1f717 (`REXHUNTER_BRAIN=live`, `claude-sonnet-5-5`, `COST_CEILING_USD=0.20`,
+`DAEMON_SPEND_CEILING_USD=0.50`): 15 runs, 80 brain calls, all 200, $0.5164 at cost.py's rates.
+**Fixtures** (`16e7b33`): `tests/fixtures/gym_sonnet_5_5_2026-11-26/` keeps the first run of each
+territory, each brain call's response stream as the log stored it, read from a copy of the log
+opened read-only and decoded through `events.decode_event`: 43 files, 153 249 B. gym-greenhouse,
+gym-lever, gym-storm (two retryable 429s, then its list) and gym-mojibake read and caught four prey
+each; gym-drift ended at its first list ("tool failure"); gym-pages listed pages 1 to 3, read 15
+prey and no decoy, and reached its cost ceiling ($0.2081) before a catch. **Replay**
+(tests/test_gym_sonnet_5_5_hunt_replay.py, 13 cases): re-driven through the adapter on its recorded
+model, over a fresh in-process gym, each run reproduces its log: the outcome and the caps, every
+event but the exchanges against a digest of the live payloads, each exchange's response bytes, the
+storm's two 2 s waits and the pen. The digest leaves out `ErrorEvent.detail` (a traceback that names
+its machine's paths) and `PreyCapturedEvent.prey_id` (a fresh uuid4); the test checks both by
+behaviour. Each request is checked by its shape (req-1); on 4e1f717 all 43 were byte-identical to
+the stored requests. Red on its parent: 13 failed, `FileNotFoundError`. Mutants, each on a
+`git archive` export: P25-MP1 1 red, P25-MP2 1, P25-MP3 1, P25-MP4 4, P25-MP5 1, P25-MP6 5; P25-MP7
+(one word of a tool description) stays green, req-1's known blind spot, which the wire check catches
+(bodies 6 and 7 move). Test edits: none. 748 tests pass at `16e7b33` (735 at 4e1f717). No subagent,
+workflow or advisor call. *Next: P2.5b (gym-mimic and the tier 2 score).*
