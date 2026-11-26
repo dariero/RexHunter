@@ -1082,3 +1082,41 @@ tests/test_gym_mimic.py (2) and tests/test_board_score.py (11). Mutants, each on
 `git archive` export: P25-MP8 7 red, P25-MP9 3, P25-MP10 1, P25-MP11 1, P25-MP12 6, P25-MP13 1,
 P25-MP14 1, P25-MP15 3, P25-MP16 1, P25-MP17 8. Test edits: none. 761 tests pass at `e8ac439` (748
 at 37344b4). No subagent, workflow or advisor call. *Next: P2.5c (the one-wave harness).*
+
+**▶ P2.5c · The one-wave harness – ✅ done on branch `p25-wave` (`dfa25d1`→`309862d`, 2026-11-26),
+PR #27.** The third and last part of slice `P2.5` (P25-D2, P25-D7, P25-D8, and the approved ADR
+text: the accepted-limits row, the build-sequence row and paragraph, DoD #2's eval clause). No API
+call of any kind, no model change. After every commit the seven wire-check bodies and their headers
+are byte-identical to 4e1f717's (1 `9a55cae7…5a88` 1794 B, 2 `761995a6…b3ef` 1826, 3 `95bd6597…34d1`
+1776, 4 `bb8870fe…f8e4` 2205, 5 = 2, 6 `5f414941…e7a8` 2409, 7 `6410c3d0…cca0` 2441). Two bodies are
+new: 8, gym-greenhouse's count body under the wave's pre-flight, `16d7595d…c5bf` 2409 B (body 7
+without `max_tokens` and `stream`), with body 3's headers but `content-length`; 9, gym-mimic's first
+live request, `d17fc81e…bc98` 2431 B (body 7 but its seed), with body 2's headers but
+`content-length`. Forks chosen 26 Nov by rex-orchestrator under her delegation: P25-preflight pre-1,
+P25-table as drafted with its legend changed, P25-ro ro-3, P25-route route-1. **Pre-flight**
+(`dfa25d1`, pre-1): `hunt_smoke._hunt_body` and `count_tokens_preflight` take `system` and `seed`,
+defaulting to the sniff hunt's, so body 3 is unchanged by construction. **Harness and CLI**
+(`309862d`, P25-D2, P25-D7, P25-D8):
+`python -m rexhunter.eval_wave --db PATH [--count-only | --baseline]` refuses a PATH that exists, or
+whose `-wal` or `-shm` exists, then hunts the six gym territories and gym-mimic once each through
+`scheduler.run_hunts` (`stub.MAX_CONCURRENT`, 50 iterations, `RUN_CEILING_USD` 0.40 a run,
+`WAVE_CEILING_USD` 0.75 the wave) on the in-process gym over `GYM_CATALOGUE | EVAL_CATALOGUE`, and
+prints the score table and the spend. `--baseline` needs no key and builds no Anthropic client;
+`--count-only` counts each territory's first body and sends no messages request; the paid wave is
+`select_brain_for` with the gym prompt and seed, under `paid_entry`. Its parser takes no
+abbreviation: the mode is read by its exact name, and a `--count` would have run the paid wave.
+`python -m rexhunter.eval_score PATH` prints the table for an existing log through a read-only
+connection, immutable when no `-wal` or `-shm` exists, so it leaves nothing beside the file, and
+through the WAL when either does; a missing log is refused. The baseline wave's floor:
+gym-greenhouse, gym-lever and gym-storm 3 prey caught, gym-mojibake 4, gym-pages 9 of 20, gym-drift
+0, gym-mimic 2 prey and 4 decoys. Test edits: P25-PP1 to P25-PP3 as pinned
+(tests/test_paid_entrypoint_gates.py:3-6, :16 and a row after :29: the docstring, the import and the
+`ENTRYPOINTS` row for `eval_wave`); no `assert` changed. The new tests, each red on its parent but
+the one that pins body 3: tests/test_gym_preflight.py (2, `TypeError`), tests/test_eval_wave.py (16,
+`ImportError`), tests/test_eval_score.py (3, `ImportError`) and two gate cases. Mutants, each on its
+own copy of a `git archive` export: P25-MP18 9 red, P25-MP19 6, P25-MP20 4, P25-MP21 5, P25-MP22 1,
+P25-MP23 1, P25-MP24 1, P25-MP25 1, P25-MP26 2, P25-MP27 2, P25-MP28 1, P25-MP29 1, P25-MP30 1,
+P25-MP31 2. **ADR** (`90fcf32`): the four approved insertions, verbatim. 784 tests pass at `309862d`
+(761 at 3a69d3f). No subagent, workflow or advisor call. Slice `P2.5` is done. *Next: Darie's
+choice; open are the live wave (paid, her terminal), the live adapters, park-and-persist on drift,
+extraction and strict mode, and eval tier 3.*
