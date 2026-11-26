@@ -305,6 +305,7 @@ The governing principle: **LLM output is untrusted input.** It is probabilistic 
 | No auth on the local UI | localhost-only daemon | Any network exposure beyond localhost |
 | Live adapters limited to public ATS APIs (Greenhouse/Lever) | ToS-compliant, stable contracts | Never scrape ToS-prohibited boards |
 | The gym and the board parsers follow the Greenhouse and Lever docs as read on 21 Nov 2026 | Nothing hunts a live board yet | A live response fails the board boundary |
+| Tier 2 scores gym boards only, against marks the gym's author planted | No live board is hunted yet, and a live posting carries no mark | The live Greenhouse and Lever adapters land |
 
 ## Build sequence (canonical)
 
@@ -335,6 +336,7 @@ done/planned) — both of which reference these slice-IDs and never restate the 
 | **`P5` · Brain socket** — provider-agnostic LLM, native tool calling (paid) | 5 | DoD #5 |
 | **`P3` · Streaming hub** — per-viewer broadcast queues, `Last-Event-ID` resume | 3 | DoD #3 |
 | **`P2.4` · Gym board** – a mock board in Greenhouse and Lever shapes with injected hazards, the `list_postings` and `read_posting` tools, and catch by reference | 2 | DoD #2, gym clause |
+| **`P2.5` · Gym eval, tier 2** – a mimic board, a score folded from a run's log against the gym's planted marks, and a one-wave harness | 2 | DoD #2, eval clause |
 
 Order is **dependency order, not pillar order.** `P3` (Streaming) sits last because the
 prototype's naive SSE feed covered it while the rest was built; the real broadcast hub was
@@ -351,10 +353,12 @@ work proves the seam.
 
 **`P2.4` is the first product slice.** It builds the gym that `board/` was planned for: a FastAPI app the board client reaches in-process through httpx2's `ASGITransport`, so tests and the daemon hunt it with no port and no network. Its surface is two tools, so it sits under Pillar 2; it also changes how Pillar 4 captures prey. The gym's catalogue marks each posting as prey or decoy. The gym never serves that mark, so a later eval can score a hunt against it.
 
+**`P2.5` is eval tier 2.** It scores a hunt's catch against the gym's planted marks, one territory at a time, offline from the run's own log. The score is derived and never stored (invariant 5). A mimic board puts AI words in its decoys' titles and keeps the truth in the description, so it separates judgement from a title filter. The scripted keyword baseline is the floor. A wave hunts each territory once into a fresh log, because a posting already in the pen is not penned again. The slice sets no pass threshold.
+
 ## Definition of done per pillar (test-first)
 
 1. **Log:** `kill -9` mid-hunt → restart → every pre-kill event queryable; dangling `outcome IS NULL` runs detected and marked `'crashed'` at boot.
-2. **Loop:** a tool that raises, a tool that hangs past timeout, and an LLM returning an unknown tool name each produce typed events and a clean run outcome – never an unhandled exception escaping the loop. **Gym clause (`P2.4`):** on the gym, schema drift, a rate-limit storm, mojibake and a pagination trap each produce typed events that carry the board's raw bytes, and each run ends in a typed outcome. Only a posting the run itself read reaches the pen, and the pen stores the board's bytes for it.
+2. **Loop:** a tool that raises, a tool that hangs past timeout, and an LLM returning an unknown tool name each produce typed events and a clean run outcome – never an unhandled exception escaping the loop. **Gym clause (`P2.4`):** on the gym, schema drift, a rate-limit storm, mojibake and a pagination trap each produce typed events that carry the board's raw bytes, and each run ends in a typed outcome. Only a posting the run itself read reaches the pen, and the pen stores the board's bytes for it. **Eval clause (`P2.5`):** the recorded runs of 26 Nov 2026 replay with no network and score exactly as pinned. On the mimic board the baseline catches 2 prey and 4 decoys. A wave hunts each territory once into a fresh log and stops.
 3. **Streaming:** two tabs render identical feeds; a tab closed for a full hunt reopens with zero gaps and zero duplicates; a viewer with a full queue is dropped without slowing the hunt.
 4. **Pause:** restart the process with prey in the pen → verdicts still work; double-clicking FEAST is a no-op; park-and-persist resumes hot within the window and checkpoints cleanly past it.
 5. **Brain:** replaying a recorded run's raw payloads through the parsers requires no network and reproduces identical events; a malformed provider response becomes an `ErrorEvent` carrying the raw payload, with the run ending in a typed outcome.

@@ -138,15 +138,13 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position (26 Nov 2026, after PR #26):** every slice in the ADR's table has landed, and
-`P2.4`, the gym board, was the last (PRs #20 to #23). The daemon hunts the six gym territories, with
-the scripted keyword baseline as its no-spend brain. `P2.5`, eval tier 2, is under way (Darie's
-choice, 26 Nov): its first part keeps the first run of each territory from the live gym hunt of 26
-Nov as offline replay fixtures (PR #25), and its second adds gym-mimic, a board whose decoys look
-like prey by title, and the tier 2 score, folded from a run's log (PR #26); the one-wave harness
-comes next. Open beyond it: the live Greenhouse and Lever adapters (`P5`'s live ATS unit),
-park-and-persist on drift (the unmet clause of ADR DoD #4), extraction with strict mode (`P5`), and
-eval tier 3.
+**Current position (26 Nov 2026, after PR #27):** every slice in the ADR's table has landed, and
+`P2.5`, eval tier 2, was the last (PRs #25 to #27). The daemon hunts the six gym territories, with
+the scripted keyword baseline as its no-spend brain; `rexhunter.eval_wave` hunts them and gym-mimic
+once into a fresh log and scores the wave, and `rexhunter.eval_score` scores an existing log. The
+next slice is Darie's choice. Open: the live wave of eval tier 2 (paid, Darie's terminal), the live
+Greenhouse and Lever adapters (`P5`'s live ATS unit), park-and-persist on drift (the unmet clause of
+ADR DoD #4), extraction with strict mode (`P5`), and eval tier 3.
 
 **Build log:** `docs/build-log.md` has one entry per slice and upgrade wave, with the commits, the
 forks and who chose them, the tests, the mutants and the wire baselines. Read it when a task needs
