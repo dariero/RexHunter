@@ -1,0 +1,75 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5-5","id":"msg_011ChR13dCorNLTh28D4QLU2","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":4154,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard","inference_geo":"global","speed":"standard"},"diagnostics":null}            }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I still need to go"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" through the rem"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"aining AI-related"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" p"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ages, so I'll ke"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ep listing pages before"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" op"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ening any"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" of them."}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQSkAYKEAgUGAI4AUIIdGhpbmtpbmcSDBYdHKB3PEj5lz5ALhoMxzstyWq4kumWRuqAIjCr+anOmu1lEMAYtNTJderIKS1RN2sjObkNhXA4PZJej7Y8FK/nmDHYvKQKbd3Q0HkqrQVxElzO0eLdU0e9oJotTDgq6YTTLFsxpcx+LQtVqDuEIAH6yXX3DWcHVZHYDRvd02tJK58xe7Q72NkdzT5GGkKDQgR8f7/kps2CBQ0TcO783L6SnHkyTr82rAsBD2qYQ5Omwb1yWL0iBsEZH05ZtGkUrIIEfVfcKM5FXg3/W06RSYsGUZvrqayxfR55KxLXrTtlQKsVy+ZOI69Nhp/mZtQpSScazbRzhW1lbMxPZwJ+YPGSB8RnHkf+NVvcqY1DMF46WEy6FnKBGbfjvXqHgQYEwlvQbbrQmBeOroTuOyTG4mv5xRguDHHOMFH7ySC7nHAJfPax7SI0U3C5qZcn1VN7oR7pPI+jYCSVUD5uIrdvoFh5hbEAHokt1O2aCY94Mw8XHXWw6/UAHwu9VaTSUO6Jzm7E6VLjqwgtFgG/u55jwVpzMUsIzF6G+xbx4gba4kWDjN1YQQGI5SXC4X1PyxvIz3nzzJ4W//+y/5qDuBoSH7n285ZLAI+Mlu8NfRboOqoq0zzBrTSOzTR32kLy6FU4f3jIs64MvymiO5lsw+FSqkm9zAJYEv7t+omDJDiiXmMTeU+R31M4PgRhQ3IRXzQjjiJb+GEGLnvxEcDXdCem8IpGSa24KAKLt33bKNZ/RgTxV/yV1VWFaAEQ5qlbWbrow9r6d5UiPk+vSPvatT4SyZ56tgoxHeveM/VS0DUSwzL+srxNu16V8BFn8cwJWM5K8xe0crmxz2+GUk2w0qWhM+m8SxxBemMRAoYWj4r9fWulP6LC8m1RqZV5C9XvtfOnR7aaCOwzENxmAB7Hk2xY/o5L9Mvb58QlwMcgSirD0KW2c0Oq6q7dVwPU5y1AfvXtYFv7IG81ZSbd9cQohdoI9V/0ZHR6uePT7fqU7lBaCazoLisszEQoYy8IPZzsGAE="}  }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0   }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01Lju8ncY7oxMBWgRZkSCqGC","name":"list_postings","input":{},"caller":{"type":"direct"}}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"board"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\": \"gym"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"-pages\""}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":", \"page"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\": 3}"}              }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1            }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":4154,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":101,"output_tokens_details":{"thinking_tokens":29}}            }
+
+event: message_stop
+data: {"type":"message_stop"               }
+

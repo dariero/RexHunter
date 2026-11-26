@@ -1,0 +1,93 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5-5","id":"msg_011ChR13Cn8yfxt17aeMGJui","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2282,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"global","speed":"standard"},"diagnostics":null}     }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}     }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"I'm gu"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"essing there are"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" qu"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ite a few pages, so I"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"'ll list"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" more of them and read a"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" few. I'm"}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" going to fetch pages "} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"2 through 10 at"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" once"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":", and read"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" AI postings on page 1"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" at"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the same time."}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"} }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQS5wUKEAgUGAI4AUIIdGhpbmtpbmcSDNKJ2mf8AR1axMRzMBoMP6XuO0DIyJlev3khIjDqA/7cuHqPzdh5MhV20OBOee+RZNmy429UQp/bTwiGWu8bmV/iQaFR3NwS4sIUqK4qhAW+KT/WM7vQv20KOB8XM+Pos7bNK8KdBhg/2Ys33h4GgLFOGnff/jxSNLNAzQo02BU3um2hjoiWoRdpuHmIZZRk/X8B+rls24X61pFpglTWJRf51h8KiRTIHEZvpMjNiq/qEoTXfAJkH7cU/pOvEi7kfe4DrKNGnUIXFRwMXZHgiBrVORJ/J6kdUBmc7Gp9KuCQBAutAWDvWdKtgjG04oZgxEGIshfu4PgtynHO/SUyajZuKcsBLc3W1FSOD0Kq0nxmB8ntObyok04FMr35Or/0LfR+xbXIkQbb6NWDDsdC33bObqEN547KvBCyYdb7vAP6v/pOxyylhZCy9TTK38MrxXsgZnEPjhECOoEBTamqHbetZ6lLwId9Qei0PcXPYFufPsOBO0HLUFSynE97CTiDw71THfWee0QbWXG4tzttb+6zyxziAcrpkMtxUVjrY6vXgswqg5dwBvEsVBPhvJlNpfz2kRd4VsThLRWlt/vgg15HFbTcQq1kv6cLZkTYNXKkx58jurKiRsbSY34UC2Flcg4cCijY2ZjqABbG6BEJlpiyqbFedTb/PkfLYpzAWhNAIqUUeLV6u7X+LwFrdZ2kjUK6yK1eDQ4tdyXMJe5R6tJ0O09KUT4nGcASrIdTpt6H86AUQvL/gePZ8dfifHu+KeCa5zIfwf3Ot4yZboJt238ZWGPc/UW6OK44LG4e1Fu3wQbJLtMFrcsb/Tml5Yhp5XPO0jJRxUJr1oJ8Dj58bGQ7E3mstN4NStKECxDXuPbBg+E+FQGn6mz2SDHhoPUFOPk9rDmHcJQTpPaiHh1+ZPoE+hbAM4BDgmGsOAUpJxGk3QLWh3/wPweHls7SJrVT3rdAuxgB"}     }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0  }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01Ke25gy6JrSoqj6NU8Vdgdz","name":"list_postings","input":{},"caller":{"type":"direct"}}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"board"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\": \"gym"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"-pages\""}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":", \"page"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\": 2}"}             }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1            }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":2282,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":125,"output_tokens_details":{"thinking_tokens":53}} }
+
+event: message_stop
+data: {"type":"message_stop"  }
+
