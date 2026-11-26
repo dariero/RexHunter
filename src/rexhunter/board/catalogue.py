@@ -5,6 +5,11 @@ AI-engineering role) and half as decoys; the gym never serves the mark.
 
 `GYM_BOARDS` is what the board tools are given (`board.tools.build_registry`), keyed by board
 name; `GYM_CATALOGUE` is what the gym serves (`board.gym.build_gym`), keyed by token.
+
+`EVAL_BOARDS` and `EVAL_CATALOGUE` (`P2.5`) are the same pair for the eval's own board, gym-mimic,
+served beside the six and kept out of the default schedule. It carries no hazard. Its decoys put AI
+words in their titles and keep the truth in the description, so a title filter catches them and
+only a reader of the posting tells them apart.
 """
 
 from typing import Literal
@@ -152,4 +157,30 @@ GYM_BOARDS: dict[str, Board] = {
 GYM_CATALOGUE: dict[str, GymBoard] = {
     token: GymBoard(ats=ats, postings=_postings(company, first, ats, rows), plan=plan)
     for _, ats, token, company, first, rows, plan in _ENTRIES
+}
+
+# Two per cell, so the board separates judgement from a title filter: prey that name AI or machine
+# learning in the title and prey that name neither, decoys that name AI and decoys that name machine
+# learning. Only the description says which are prey.
+_MIMIC_ROWS: tuple[_Row, ...] = (
+    ("AI Engineer, Retrieval", "Sydney", "Applied AI", "prey"),
+    ("Machine Learning Engineer, Ranking", "Melbourne", "Models", "prey"),
+    ("Software Engineer, Search Quality", "Brisbane", "Search", "prey"),
+    ("Backend Engineer, Assistant Platform", "Remote", "Platform", "prey"),
+    ("AI Sales Executive", "Sydney", "Sales", "decoy"),
+    ("Technical Recruiter, Machine Learning", "Melbourne", "People", "decoy"),
+    ("Applied AI Lead", "Perth", "Marketing", "decoy"),
+    ("Machine Learning Specialist", "Remote", "Training", "decoy"),
+)
+_EVAL_ENTRIES: tuple[tuple[str, Ats, str, str, int, tuple[_Row, ...], HazardPlan], ...] = (
+    ("gym-mimic", "greenhouse", "numbatlabs", "Numbat Labs", 4_004_000, _MIMIC_ROWS, HazardPlan()),
+)
+
+EVAL_BOARDS: dict[str, Board] = {
+    name: Board(name=name, ats=ats, token=token, base_url=f"http://gym/{ats}")
+    for name, ats, token, *_ in _EVAL_ENTRIES
+}
+EVAL_CATALOGUE: dict[str, GymBoard] = {
+    token: GymBoard(ats=ats, postings=_postings(company, first, ats, rows), plan=plan)
+    for _, ats, token, company, first, rows, plan in _EVAL_ENTRIES
 }
