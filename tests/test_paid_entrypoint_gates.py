@@ -1,9 +1,9 @@
 """The paid entrypoints' gate exits, pinned byte for byte.
 
-smoke, hunt_smoke and hunt_smoke_thinking each refuse to run without ANTHROPIC_API_KEY, and refuse
-the paid path unless REXHUNTER_BRAIN=live. Each refusal is a SystemExit whose message is what the
-person at the terminal reads, raised before any client is built or any request is made. The exact
-messages are pinned so the three gates can share code without a word of them changing.
+smoke, hunt_smoke, hunt_smoke_thinking and eval_wave each refuse to run without ANTHROPIC_API_KEY,
+and refuse the paid path unless REXHUNTER_BRAIN=live. Each refusal is a SystemExit whose message is
+what the person at the terminal reads, raised before any client is built or any request is made.
+The exact messages are pinned so the four gates can share code without a word of them changing.
 """
 
 import sys
@@ -13,7 +13,7 @@ from typing import Any, NoReturn
 
 import pytest
 
-from rexhunter import brain, hunt_smoke, hunt_smoke_thinking, smoke
+from rexhunter import brain, eval_wave, hunt_smoke, hunt_smoke_thinking, smoke
 
 KEY_UNSET = "ANTHROPIC_API_KEY is not set — export it before {}."
 NOT_LIVE = "refusing to spend: set REXHUNTER_BRAIN=live to run the paid {} (opt-in only)."
@@ -27,6 +27,7 @@ ENTRYPOINTS: list[tuple[ModuleType, str, str, tuple[str, ...]]] = [
         "hunt",
         ("run_live_hunt", "count_tokens_preflight"),
     ),
+    (eval_wave, "the pre-flight or wave", "wave", ("run_live_wave", "count_first_bodies")),
 ]
 IDS = [module.__name__.removeprefix("rexhunter.") for module, *_ in ENTRYPOINTS]
 
