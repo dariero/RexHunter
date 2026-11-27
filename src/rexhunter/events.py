@@ -206,6 +206,19 @@ class BrainExchangeEvent(_Event):
     status: int | None = None
 
 
+class WrapUpNoticeEvent(_Event):
+    """The wrap-up notice (`P5.1`): appended by the run's own task (invariant 7) before the brain
+    call that should be the run's last, at most once a run, when the run's spend plus twice its
+    last call's cost reaches its ceiling or the call is its last iteration (`loop._drive`). The
+    projection sends `text` as a text block after the tool result it follows, in that call's request
+    and every later one, so the conversation stays append-only; the stored text keeps that true if
+    the wording changes later. `reason` records which rule gave it."""
+
+    type: Literal["wrap_up_notice"] = "wrap_up_notice"
+    text: str
+    reason: Literal["cost", "iterations"]
+
+
 # The trajectory-event union, now multi-member and discriminated by `type`: Pydantic routes a
 # payload straight to the model whose Literal tag matches, and an unknown/absent tag raises at
 # the boundary. Adding a member is one line here; the read crossing below never changes.
@@ -217,7 +230,8 @@ type TrajectoryEvent = Annotated[
     | PreyCapturedEvent
     | UsageEvent
     | ThinkingDelta
-    | BrainExchangeEvent,
+    | BrainExchangeEvent
+    | WrapUpNoticeEvent,
     Field(discriminator="type"),
 ]
 

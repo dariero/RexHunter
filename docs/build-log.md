@@ -1182,3 +1182,34 @@ arguments). Mutants, each on its own `git archive` copy of `5d9c6c5`: P51-MP15 2
 P51-MP17 2, P51-MP18 1, P51-MP19 2, P51-MP20 1, P51-MP21 3, P51-MP22 1, P51-MP23 2, P51-MP24 1,
 P51-MP25 2, P51-MP26 1, P51-MP27 1. 824 tests pass at `5d9c6c5` (816 at `b599f7f`). No subagent,
 workflow or advisor call. *Next: P5.1a3 (the wrap-up notice).*
+
+**▶ P5.1a3 · The wrap-up notice – ✅ done on branch `p51-wrapup` (`c222f45`, 2026-11-27), PR #30.**
+The third part of slice `P5.1`'s Part A, which it completes: P51-D5. No API call of any kind, no ADR
+edit, no header changed; the one request change is D5's text block, in a request after a notice.
+Forks chosen 27 Nov by rex-orchestrator under Darie's delegation: P51-event-shape es-1, P51-column
+col-1. **The notice** (`c222f45`): with `run_hunt`'s `wrap_up` setting, `loop._drive` appends one
+`WrapUpNoticeEvent` (`text`, and `reason` "cost" or "iterations") before the brain call that should
+be the run's last: when the run's spend plus `WRAP_UP_FACTOR` (2) times its last call's cost reaches
+its `cost_ceiling_usd`, or when the call is its last iteration. A notice already in the log stops a
+second, so it comes at most once a run; the text is Darie's, verbatim (`loop.WRAP_UP_TEXT`), and the
+event stores it. A run whose model goes on still aborts at its ceiling, as before. **The
+projection:** `db.CONTEXT_TYPES` gains `wrap_up_notice`, and `brain.project_messages` joins the
+notice's stored text to the user turn it follows as a text block after the `tool_result`, so every
+later request repeats the same bytes up to it; when a run's first call is its last, the seed turn
+becomes the seed's text block and the notice's. The view folds the notice to nothing. **The
+setting:** off by default and recorded write-once on the new `runs.wrap_up` (1 or 0; NULL on older
+rows, by the column-ensure); the daemon and the live wave turn it on exactly when `select_brain_for`
+gives them the live brain (`client is not None`), so the stub daemon runs as before; with the
+setting off, every recorded run replays unchanged. **Wire:** bodies 1 to 12 and their headers
+byte-identical to `88e5d95`'s. **Tests:** tests/test_wrap_up.py (13, new). On `bf16fea` the module
+fails at collection (`ImportError` on `WrapUpNoticeEvent`), so each case's red was shown on
+`bf16fea` plus the bare event class and `WRAP_UP_TEXT`: 13 failed (`TypeError` on `wrap_up`, `no
+such column: wrap_up`, the view's `assert_never`, `CONTEXT_TYPES`, `KeyError: 'wrap_up'`). The four
+replay files pass with no edit. Test edits: P51-PP8 (tests/test_context_read.py:110, :113-114 and
+:171: the context types gain the notice's, the test renamed from its four events, two comments) and
+P51-PP9 (tests/test_scheduler.py:413-425: the `runs` columns gain `wrap_up`). Mutants, each on its
+own `git archive` copy of `c222f45`: P51-MP28 2 red, P51-MP29 2, P51-MP30 6 (five of them existing
+tests, three replays among them), P51-MP31 4, P51-MP32 4, P51-MP33 2, P51-MP34 3, P51-MP35 4,
+P51-MP36 7, P51-MP37 1, P51-MP38 1, P51-MP39 1, P51-MP40 2, P51-MP41 1, P51-MP42 1. 837 tests pass
+at `c222f45` (824 at `bf16fea`). No subagent, workflow or advisor call. *Part A is done. Next: Part
+B, the live Greenhouse and Lever adapters.*

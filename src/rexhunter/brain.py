@@ -51,6 +51,7 @@ from rexhunter.events import (
     ToolResultEvent,
     TrajectoryEvent,
     UsageEvent,
+    WrapUpNoticeEvent,
 )
 from rexhunter.loop import (
     Brain,
@@ -825,7 +826,10 @@ def project_messages(
         view, or a call with no registry, gets the bytes decoded as UTF-8, any invalid byte
         shown escaped;
       - a FATAL tool ErrorEvent -> an `is_error` tool_result paired to the open tool_use (ErrorEvent
-        carries no id, so we pair it with the last-opened call).
+        carries no id, so we pair it with the last-opened call);
+      - WrapUpNoticeEvent (`P5.1`) -> a text block after the tool_result in the user turn it
+        follows (after the seed, when the run's first call is its last), placed where it was
+        appended, so every later request carries the same bytes up to it.
 
     Skipped (not conversation): retryable ErrorEvents (a retry follows, superseded by its
     ToolResultEvent), `<brain>`/`<loop>`/`<capture>` failures (transport, loop and catch errors,
@@ -896,6 +900,15 @@ def project_messages(
                 }
             )
             open_tool_use_id = ""
+        elif isinstance(event, WrapUpNoticeEvent):
+            block: dict[str, Any] = {"type": "text", "text": event.text}
+            previous = messages[-1]
+            if previous["role"] != "user":  # never reached: the loop appends it after a result
+                messages.append({"role": "user", "content": [block]})
+            elif isinstance(previous["content"], str):  # the seed alone: the first call is the last
+                previous["content"] = [{"type": "text", "text": previous["content"]}, block]
+            else:
+                previous["content"].append(block)
     return messages
 
 

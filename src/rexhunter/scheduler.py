@@ -77,6 +77,7 @@ async def _bounded_hunt(
     cost_ceiling_usd: float = COST_CEILING_USD,
     daemon_spend_ceiling_usd: float | None = None,
     daemon_spend_since: Callable[[], datetime] | None = None,
+    wrap_up: bool = False,
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
 ) -> str | None:
@@ -119,6 +120,7 @@ async def _bounded_hunt(
                 cost_ceiling_usd=cost_ceiling_usd,
                 daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
                 daemon_spend_since=daemon_spend_since,
+                wrap_up=wrap_up,
                 publish=publish,
                 notify=notify,
             )
@@ -147,6 +149,7 @@ async def run_hunts(
     max_iterations: int = 50,
     cost_ceiling_usd: float = COST_CEILING_USD,
     daemon_spend_ceiling_usd: float | None = None,
+    wrap_up: bool = False,
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
 ) -> list[str | None]:
@@ -157,6 +160,7 @@ async def run_hunts(
     per-run `cost_ceiling_usd` guards each hunt; `daemon_spend_ceiling_usd` (default `None` =
     ungated, the daemon bound being `run_scheduler`'s concern) applies the id-scoped gate when set,
     over the whole log: the wave harness hunts into a fresh log, so its ceiling bounds the wave.
+    `wrap_up` reaches every hunt's `run_hunt` (`P5.1`).
     """
     boot = await db.connect(db_path)  # bootstrap schema + WAL once, before the per-hunt opens
     await boot.close()
@@ -176,6 +180,7 @@ async def run_hunts(
             max_iterations=max_iterations,
             cost_ceiling_usd=cost_ceiling_usd,
             daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+            wrap_up=wrap_up,
             publish=publish,
             notify=notify,
         )
@@ -202,6 +207,7 @@ async def run_scheduler(
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
     now: Callable[[], datetime] = _wall_clock,
+    wrap_up: bool = False,
 ) -> None:
     """Run forever: each territory in `schedule` (territory -> interval seconds) hunts on its own
     deadline, all bounded by `max_concurrent`. Cancellation (daemon shutdown) tears down every
@@ -218,7 +224,8 @@ async def run_scheduler(
     `P5.1`). Over the daemon ceiling, `_bounded_hunt` refuses to launch (the territory loop keeps
     ticking, a clean pause, and never crashes), and an in-flight hunt stops at its next
     brain attempt, "daemon spend ceiling" ("cost ceiling" when its own ceiling is crossed too,
-    checked first; W3.2-C1). Set the daemon ceiling `None` to disarm."""
+    checked first; W3.2-C1). Set the daemon ceiling `None` to disarm. `wrap_up` reaches every
+    hunt's `run_hunt` (`P5.1`)."""
     boot = await db.connect(db_path)
     await boot.close()
 
@@ -241,6 +248,7 @@ async def run_scheduler(
                 cost_ceiling_usd=cost_ceiling_usd,
                 daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
                 daemon_spend_since=daemon_spend_since,
+                wrap_up=wrap_up,
                 publish=publish,
                 notify=notify,
             )

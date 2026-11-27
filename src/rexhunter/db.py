@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS runs (
     -- them) — input facts like territory/started_at, and the per-run HP/stamina denominators the
     -- frontend overlays onto RunView. Nullable: pre-4a rows read None.
     cost_ceiling_usd REAL,
-    max_iterations   INTEGER
+    max_iterations   INTEGER,
+    -- Whether the run's loop gives the wrap-up notice (`P5.1`), recorded once at start like the
+    -- caps: 1 or 0, NULL on rows from before it.
+    wrap_up          INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS trajectory_events (
@@ -137,7 +140,10 @@ async def _bootstrap(conn: aiosqlite.Connection) -> None:
     # upgrade never strands an existing log (DoD #1's spirit). The same holds for `prey` and its
     # reference columns, which capture_prey's INSERT names.
     for table, wanted in (
-        ("runs", (("cost_ceiling_usd", "REAL"), ("max_iterations", "INTEGER"))),
+        (
+            "runs",
+            (("cost_ceiling_usd", "REAL"), ("max_iterations", "INTEGER"), ("wrap_up", "INTEGER")),
+        ),
         ("prey", (("board", "TEXT"), ("posting_id", "TEXT"))),
     ):
         async with conn.execute(f"PRAGMA table_info({table})") as cursor:
@@ -161,15 +167,24 @@ async def start_run(
     territory: str,
     cost_ceiling_usd: float | None = None,
     max_iterations: int | None = None,
+    wrap_up: bool | None = None,
 ) -> str:
     """Open a run, recording the caps it runs under — write-once at start (finish_run never
     touches them; single writer, invariant 7). Recorded facts, not injected config: a ghost
-    replays under the ceilings it actually ran under, whatever today's env says."""
+    replays under the ceilings it actually ran under, whatever today's env says. `wrap_up`, the
+    loop's wrap-up notice setting (`P5.1`), is recorded the same way."""
     run_id = str(uuid.uuid4())
     await conn.execute(
-        "INSERT INTO runs (id, territory, started_at, cost_ceiling_usd, max_iterations)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (run_id, territory, utcnow(), cost_ceiling_usd, max_iterations),
+        "INSERT INTO runs (id, territory, started_at, cost_ceiling_usd, max_iterations, wrap_up)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            run_id,
+            territory,
+            utcnow(),
+            cost_ceiling_usd,
+            max_iterations,
+            None if wrap_up is None else int(wrap_up),
+        ),
     )
     await conn.commit()
     return run_id
@@ -229,9 +244,10 @@ async def read_events(conn: aiosqlite.Connection, run_id: str) -> list[events.Tr
 
 # The event types a brain call uses (W3.3-W, fragility #1): `brain.project_messages` turns
 # `tool_call`, `tool_result` and fatal `error` events into the `messages` array, and the per-run
-# spend fold (`cost.fold_cost` in `loop._call_brain`) reads `usage`. Every other type (thinking
-# deltas, captures) is not conversation, so the brain's read never decodes it.
-CONTEXT_TYPES: tuple[str, ...] = ("tool_call", "tool_result", "error", "usage")
+# spend fold (`cost.fold_cost` in `loop._call_brain`) reads `usage`; a `wrap_up_notice` (`P5.1`)
+# joins the user turn it follows. Every other type (thinking deltas, captures) is not
+# conversation, so the brain's read never decodes it.
+CONTEXT_TYPES: tuple[str, ...] = ("tool_call", "tool_result", "error", "usage", "wrap_up_notice")
 _CONTEXT_SQL = (
     "SELECT payload FROM trajectory_events WHERE run_id = ?"
     f" AND type IN ({', '.join('?' for _ in CONTEXT_TYPES)}) ORDER BY seq"

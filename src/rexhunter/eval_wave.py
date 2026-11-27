@@ -62,9 +62,10 @@ def _gym() -> BoardClient:
 
 
 async def hunt_wave(
-    path: Path, brain_for: Callable[[str], Brain], registry: ToolRegistry
+    path: Path, brain_for: Callable[[str], Brain], registry: ToolRegistry, *, wrap_up: bool = False
 ) -> Sequence[str | None]:
-    """One hunt per territory, then done: the one-wave stop."""
+    """One hunt per territory, then done: the one-wave stop. `wrap_up` is the loop's wrap-up
+    notice (`P5.1`), which the live wave turns on."""
     return await scheduler.run_hunts(
         path,
         TERRITORIES,
@@ -74,6 +75,7 @@ async def hunt_wave(
         max_iterations=MAX_ITERATIONS,
         cost_ceiling_usd=RUN_CEILING_USD,
         daemon_spend_ceiling_usd=WAVE_CEILING_USD,
+        wrap_up=wrap_up,
     )
 
 
@@ -91,7 +93,7 @@ async def run_live_wave(path: Path) -> None:
             registry, system=GYM_SYSTEM_PROMPT, seed=gym_seed
         )
         try:
-            await hunt_wave(path, brain_for, registry)
+            await hunt_wave(path, brain_for, registry, wrap_up=client is not None)
         finally:
             # After the hunts drain: they drove their brain calls on this client.
             if client is not None:
