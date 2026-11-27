@@ -190,6 +190,17 @@ async def start_run(
     return run_id
 
 
+async def latest_run_start(conn: aiosqlite.Connection, territory: str) -> datetime | None:
+    """When the territory's newest run started, in any outcome, or None when it has no run: the
+    scheduler's first deadline after a start is derived from it (`P5.1`), never stored."""
+    # Every `started_at` is `utcnow()`'s ISO 8601 in UTC, so the newest is the greatest string.
+    rows = await conn.execute_fetchall(
+        "SELECT MAX(started_at) FROM runs WHERE territory = ?", (territory,)
+    )
+    ((started_at,),) = rows
+    return None if started_at is None else datetime.fromisoformat(str(started_at))
+
+
 # seq is assigned INSIDE the INSERT (no read-then-write gap): COALESCE(MAX(seq) + 1, 0) scoped
 # to this run by `WHERE run_id = ?`. That scope is load-bearing under concurrency (invariant 7) —
 # SQLite serialises the statement under the WAL write lock, so a concurrent writer on a DIFFERENT

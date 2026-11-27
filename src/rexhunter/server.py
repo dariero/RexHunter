@@ -19,6 +19,7 @@ from rexhunter import brain, db, render, scheduler, stub, verdicts, viewstate
 from rexhunter.board.catalogue import GYM_CATALOGUE
 from rexhunter.board.client import BoardClient
 from rexhunter.board.gym import build_gym
+from rexhunter.board.live import live_client
 from rexhunter.board.tools import GYM_SYSTEM_PROMPT, gym_seed
 from rexhunter.config import env_float, env_int
 from rexhunter.events import Verdict, VerdictEvent
@@ -46,6 +47,9 @@ def surface_crash(task: asyncio.Task[None]) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    # The board set first (`P5.1`): an unknown REXHUNTER_BOARDS, or `live` with no live board,
+    # refuses the start before the log is opened.
+    boards = stub.boards_mode()
     # Boot crash-sweep on its OWN short-lived connection; the scheduler opens one connection
     # per hunt (invariant 7), so the lifespan shares no connection with it and spawns it once.
     sweep = await db.connect(DB_PATH)
@@ -68,10 +72,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     app.state.hub = hub
 
     schedule, stub_brain_for, registry_for, cap, drafter = stub.daemon_config()
-    # The board client (P2.4, fork client-1): built once here over the in-process gym, so the
-    # board tools reach no host but the gym, and closed at shutdown after the hunts drain; the
-    # registry is built over it. `/viewstate` reads daemon_config's schedule only and builds none.
-    board_client = BoardClient(httpx2.ASGITransport(app=build_gym(GYM_CATALOGUE)))
+    # The board client (P2.4, fork client-1): built once here, and closed at shutdown after the
+    # hunts drain; the registry is built over it. `/viewstate` reads daemon_config's schedule only
+    # and builds none. One board set (`P5.1`): over the in-process gym, the board tools reach no
+    # host but the gym; over the network (`brain.live_transport`), the live client reaches only
+    # the allowlisted public ATS hosts, by GET.
+    board_client = (
+        live_client(brain.live_transport())
+        if boards == "live"
+        else BoardClient(httpx2.ASGITransport(app=build_gym(GYM_CATALOGUE)))
+    )
     try:
         registry = registry_for(board_client)
         # Select the daemon's brain by REXHUNTER_BRAIN (the autonomous-spender containment): the

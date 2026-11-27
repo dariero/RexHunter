@@ -20,12 +20,15 @@ shared: with a daemon ceiling set, one hunt's spend can stop a sibling at its ne
 
 Timing reads the monotonic event-loop clock (`asyncio.sleep`), never wall-clock, and persists
 NO "next fire" anywhere (invariant 5, derive don't store): a missed tick is simply the next
-loop iteration, never a stored schedule that could drift from reality.
+loop iteration, never a stored schedule that could drift from reality. One exception since
+`P5.1`: a start derives each territory's first deadline from the log and the wall clock, as what
+`first_wait` leaves of the interval since its newest run's `started_at`, by `now`, so a restart
+does not hunt every territory again at once; every later deadline is the monotonic clock's.
 """
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -54,6 +57,16 @@ DAEMON_SPEND_WINDOW = timedelta(hours=24)
 
 def _wall_clock() -> datetime:
     return datetime.now(UTC)
+
+
+def first_wait(interval: float, last_start: datetime | None, now: datetime) -> float:
+    """Seconds before a territory's first hunt after a start: what is left of its interval since
+    its newest run began, or none when it has no run or that run began an interval or more ago.
+    Never more than the interval, so a start stamped after `now` cannot hold a territory longer."""
+    if last_start is None:
+        return 0.0
+    elapsed = (now - last_start).total_seconds()
+    return min(interval, max(0.0, interval - elapsed))
 
 
 async def daemon_spend_usd(conn: aiosqlite.Connection, *, since: datetime | None = None) -> float:
@@ -208,12 +221,15 @@ async def run_scheduler(
     notify: NotifyFn | None = None,
     now: Callable[[], datetime] = _wall_clock,
     wrap_up: bool = False,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> None:
     """Run forever: each territory in `schedule` (territory -> interval seconds) hunts on its own
     deadline, all bounded by `max_concurrent`. Cancellation (daemon shutdown) tears down every
     per-territory loop and any in-flight hunt; each in-flight run closes itself (run_hunt's
-    shielded cancel path). The deadline is DERIVED from the monotonic clock via `asyncio.sleep`
-    and never stored (invariant 5). `publish` (P3) feeds each committed event to the broadcast hub
+    shielded cancel path). The deadline is DERIVED from the monotonic clock via `sleep`
+    (`asyncio.sleep`) and never stored (invariant 5); the first one after a start is what
+    `first_wait` leaves of the interval since the territory's newest run began, by `now` (`P5.1`).
+    `publish` (P3) feeds each committed event to the broadcast hub
     post-commit; `None` keeps the loop a pure log-writer (the prototype endpoint still polls).
     `notify` (frontend Step 2a) mirrors it for the id-less run-finished pulse — the board's live
     tick when a run closes; `None` skips the pulse.
@@ -227,7 +243,14 @@ async def run_scheduler(
     checked first; W3.2-C1). Set the daemon ceiling `None` to disarm. `wrap_up` reaches every
     hunt's `run_hunt` (`P5.1`)."""
     boot = await db.connect(db_path)
-    await boot.close()
+    try:
+        # Each territory's newest run start, read once (`P5.1`), so a restart waits out the rest
+        # of an interval a run has already begun instead of hunting every territory at once.
+        last_starts = {
+            territory: await db.latest_run_start(boot, territory) for territory in schedule
+        }
+    finally:
+        await boot.close()
 
     sem = asyncio.Semaphore(max_concurrent)
 
@@ -235,6 +258,9 @@ async def run_scheduler(
         return now() - DAEMON_SPEND_WINDOW
 
     async def territory_loop(territory: str, interval: float) -> None:
+        wait = first_wait(interval, last_starts[territory], now())
+        if wait > 0:
+            await sleep(wait)
         while True:
             await _bounded_hunt(
                 db_path,
@@ -252,7 +278,7 @@ async def run_scheduler(
                 publish=publish,
                 notify=notify,
             )
-            await asyncio.sleep(interval)  # monotonic deadline; derived, never persisted
+            await sleep(interval)  # monotonic deadline; derived, never persisted
 
     async with asyncio.TaskGroup() as tg:
         for territory, interval in schedule.items():
