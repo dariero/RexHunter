@@ -4,7 +4,8 @@ A board is one territory (D2): its `name` is the territory the scheduler hunts a
 argument Rex's tools take. Its `ats` picks the adapter that knows the board's documented shape
 (Greenhouse or Lever), `token` is the board's own id in that shape's paths, and `base_url` is
 where the board answers. A gym board answers at `http://gym/greenhouse` or `http://gym/lever`,
-reached in-process through httpx2's `ASGITransport` (`board.gym`): no port, no network.
+reached in-process through httpx2's `ASGITransport` (`board.gym`): no port, no network. A live
+board (`board.live`) answers at its ATS's public host, over https.
 """
 
 from dataclasses import dataclass

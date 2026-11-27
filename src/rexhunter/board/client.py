@@ -3,8 +3,14 @@
 Tiny Arms (invariant 4) holds structurally: `BoardClient` keeps its httpx2 client private and
 exposes `get` alone, so no code path builds a POST, the method a board's application endpoint
 takes. Its transport is injected and has no default, so the client reaches only what its owner
-hands it: in this slice, always the in-process gym (`httpx2.ASGITransport`). It follows no
-redirect and reads no proxy or certificate setting from the environment.
+hands it: the in-process gym (`httpx2.ASGITransport`), or the network for the live boards
+(`board.live`). It follows no redirect and reads no proxy or certificate setting from the
+environment; the live boards' network transport, and its trust store, are `brain.live_transport`'s.
+
+With `allowed_hosts` set, as the live client sets it, `get` refuses a URL whose scheme is not https,
+whose host is not in the set, or that carries userinfo or a port other than 443, with a fatal tool
+error raised before any request: a refusal inside the transport would surface as a transport
+failure, which is retried. The gym client sets none.
 
 `get` turns a board's answer into the loop's tool-error taxonomy, with the body kept (invariant 6):
 a 429 or a 5xx, and a transport failure, are retryable, with the board's `retry-after`; any other
@@ -21,7 +27,13 @@ from rexhunter.loop import FatalToolError, RetryableToolError, parse_retry_after
 
 
 class BoardClient:
-    def __init__(self, transport: httpx2.AsyncBaseTransport) -> None:
+    def __init__(
+        self,
+        transport: httpx2.AsyncBaseTransport,
+        *,
+        allowed_hosts: frozenset[str] | None = None,
+    ) -> None:
+        self._allowed_hosts = allowed_hosts
         self._http = httpx2.AsyncClient(
             transport=transport,
             follow_redirects=False,
@@ -31,6 +43,21 @@ class BoardClient:
 
     async def get(self, url: str, params: Mapping[str, str] | None = None) -> bytes:
         """The body of a 200, as received (content-decoded), or the tool error its status is."""
+        if self._allowed_hosts is not None:
+            # The URL the client sends: `params` adds a query, never a scheme, host, port or
+            # userinfo. httpx2 reads https's default port, written or not, as None.
+            target = httpx2.URL(url)
+            port = None if target.port in (None, 443) else target.port
+            if (
+                target.scheme != "https"
+                or target.host not in self._allowed_hosts
+                or port is not None
+                or target.userinfo
+            ):
+                # The userinfo is named, never written: the error is stored in the log.
+                where = f"{target.scheme}://{target.host}" + ("" if port is None else f":{port}")
+                userinfo = " with userinfo" if target.userinfo else ""
+                raise FatalToolError(f"board host refused: {where}{userinfo}")
         try:
             response = await self._http.get(url, params=params)
         except httpx2.TransportError as exc:
