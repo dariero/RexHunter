@@ -128,8 +128,9 @@ def render(state: ViewState) -> str:
     )
     tiles = "".join(_territory_tile(tile) for tile in state.territories)
     pen = "".join(_prey_row(card) for card in state.pen) or '<p class="empty">pen empty</p>'
-    # The daemon-level HP bar (4b's injected ceiling vs the global spend fold) — the terrarium's
-    # whole-wallet health; no ceiling injected → the dollar figure alone, as ever.
+    # The daemon-level HP bar (4b's injected ceiling vs the daemon's spend over the window its gates
+    # fold, `P5.1`): the terrarium's health for the day; no ceiling injected → the dollar figure
+    # alone, as ever.
     daemon_hp = _remaining(state.spent_usd, state.daemon_spend_ceiling_usd)
     hud_bar = _bar("hp", daemon_hp) if daemon_hp is not None else ""
     return (

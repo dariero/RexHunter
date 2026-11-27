@@ -138,15 +138,15 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position (27 Nov 2026, after PR #28):** every slice in the ADR's table has landed, and
+**Current position (27 Nov 2026, after PR #29):** every slice in the ADR's table has landed, and
 `P2.5`, eval tier 2, was the last (PRs #25 to #27); its first live wave ran on 27 Nov on `c030eec`.
 The daemon hunts the six gym territories, with the scripted keyword baseline as its no-spend brain;
 `rexhunter.eval_wave` hunts them and gym-mimic once into a fresh log and scores the wave, and
 `rexhunter.eval_score` scores an existing log. Slice `P5.1`, live boards (Darie's choice of 27 Nov),
 is in progress. Its Part A readies the spend guards before any adapter exists: P5.1a1 (PR #28) has
-the live brain ask for prompt caching and prices the cache tokens in every spend fold; next are
-P5.1a2 (the daemon's spend ceiling over a rolling 24 h) and P5.1a3 (the wrap-up notice before a
-run's last call), then Part B, the live Greenhouse and Lever adapters. Open besides:
+the live brain ask for prompt caching and prices the cache tokens in every spend fold, and P5.1a2
+(PR #29) has the daemon's spend ceiling fold a rolling 24 h; next is P5.1a3 (the wrap-up notice
+before a run's last call), then Part B, the live Greenhouse and Lever adapters. Open besides:
 park-and-persist on drift (the unmet clause of ADR DoD #4), extraction with strict mode (`P5`), and
 eval tier 3.
 

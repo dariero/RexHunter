@@ -26,6 +26,7 @@ loop iteration, never a stored schedule that could drift from reality.
 import asyncio
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -43,17 +44,24 @@ logger = logging.getLogger("rexhunter")
 # carry no usage (fold → $0), so — like COST_CEILING_USD — this never bites them; the gated live
 # daemon overrides it low. Tiny Arms for money (inv 4's spirit): the daemon goes past its budget by
 # at most the one brain call each hunt has in flight, of the calls the log counts (W3.2-C1; with
-# the launch gate alone, one hunt could spend to its own ceiling). Fail-closed by design: the
-# id-window is the whole log, so cumulative spend only latches the daemon OFF (never under-counts);
-# a rolling day-window is a later refinement.
+# the launch gate alone, one hunt could spend to its own ceiling). The two gates fold only the
+# UsageEvents stored in the last `DAEMON_SPEND_WINDOW` (`P5.1`), so the ceiling bounds a rolling day
+# and older spend does not hold the daemon; `run_hunts` (the wave harness, which hunts into a fresh
+# log) folds the whole log.
 DAEMON_SPEND_CEILING_USD = 1.0
+DAEMON_SPEND_WINDOW = timedelta(hours=24)
 
 
-async def daemon_spend_usd(conn: aiosqlite.Connection) -> float:
+def _wall_clock() -> datetime:
+    return datetime.now(UTC)
+
+
+async def daemon_spend_usd(conn: aiosqlite.Connection, *, since: datetime | None = None) -> float:
     """Total USD spent across ALL runs (id-scoped), folded from the whole log's `UsageEvent`s
     (invariant 5 — a projection of the log, never a second counter). The SAME `cost.fold_cost` the
-    per-run breaker uses, over the id-window (`db.read_usage`) instead of one run's seq-window."""
-    return cost.fold_cost(await db.read_usage(conn))
+    per-run breaker uses, over the id-window (`db.read_usage`) instead of one run's seq-window;
+    `since` narrows it to the UsageEvents stored at or after that instant (`P5.1`)."""
+    return cost.fold_cost(await db.read_usage(conn, since=since))
 
 
 async def _bounded_hunt(
@@ -68,6 +76,7 @@ async def _bounded_hunt(
     max_iterations: int,
     cost_ceiling_usd: float = COST_CEILING_USD,
     daemon_spend_ceiling_usd: float | None = None,
+    daemon_spend_since: Callable[[], datetime] | None = None,
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
 ) -> str | None:
@@ -76,6 +85,8 @@ async def _bounded_hunt(
     Returns the run_id, `None` if the daemon spend ceiling refused this launch (over budget — a
     clean pause, not a crash), or `None` if the hunt escaped `run_hunt`'s backstop (a bug — logged
     loudly, contained so it cannot cancel siblings; under DoD #2 it never happens).
+    `daemon_spend_since` gives the window's first instant at each check (`run_scheduler`'s rolling
+    day, `P5.1`); `None` folds the whole log.
     """
     async with sem:  # surplus hunts wait here for a slot (bound + connection cap)
         conn = await db.connect(db_path)  # one writer connection per run (invariant 7)
@@ -85,9 +96,11 @@ async def _bounded_hunt(
             # run_hunt, no start_run, no spend). Inside run_hunt the same fold runs again before
             # every brain attempt (W3.2-C1), so an in-flight hunt stops at the ceiling too, after
             # at most the one call it has in flight; the per-run ceiling is checked there as well.
+            # Both gates get the same `daemon_spend_since`, so they fold the same window.
+            since = None if daemon_spend_since is None else daemon_spend_since()
             if (
                 daemon_spend_ceiling_usd is not None
-                and await daemon_spend_usd(conn) >= daemon_spend_ceiling_usd
+                and await daemon_spend_usd(conn, since=since) >= daemon_spend_ceiling_usd
             ):
                 logger.info(
                     "daemon spend ceiling $%.4f reached; refusing to launch a hunt for %r",
@@ -105,6 +118,7 @@ async def _bounded_hunt(
                 max_iterations=max_iterations,
                 cost_ceiling_usd=cost_ceiling_usd,
                 daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+                daemon_spend_since=daemon_spend_since,
                 publish=publish,
                 notify=notify,
             )
@@ -141,7 +155,8 @@ async def run_hunts(
 
     `brain_for(territory)` yields a FRESH brain per hunt (each hunt owns its decision stream). The
     per-run `cost_ceiling_usd` guards each hunt; `daemon_spend_ceiling_usd` (default `None` =
-    ungated, the daemon bound being `run_scheduler`'s concern) applies the id-scoped gate when set.
+    ungated, the daemon bound being `run_scheduler`'s concern) applies the id-scoped gate when set,
+    over the whole log: the wave harness hunts into a fresh log, so its ceiling bounds the wave.
     """
     boot = await db.connect(db_path)  # bootstrap schema + WAL once, before the per-hunt opens
     await boot.close()
@@ -186,6 +201,7 @@ async def run_scheduler(
     daemon_spend_ceiling_usd: float | None = DAEMON_SPEND_CEILING_USD,
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
+    now: Callable[[], datetime] = _wall_clock,
 ) -> None:
     """Run forever: each territory in `schedule` (territory -> interval seconds) hunts on its own
     deadline, all bounded by `max_concurrent`. Cancellation (daemon shutdown) tears down every
@@ -197,15 +213,19 @@ async def run_scheduler(
     tick when a run closes; `None` skips the pulse.
 
     Budget guards: `cost_ceiling_usd` bounds ONE hunt (per-run, seq-scoped);
-    `daemon_spend_ceiling_usd` bounds the daemon's cumulative spend across ALL hunts (id-scoped,
-    folded from the log). Over the daemon ceiling, `_bounded_hunt` refuses to launch — the territory
-    loop keeps ticking (a clean pause), never crashes — and an in-flight hunt stops at its next
+    `daemon_spend_ceiling_usd` bounds the daemon's spend across ALL hunts in the last
+    `DAEMON_SPEND_WINDOW`, as `now` reads it at each check (id-scoped, folded from the log;
+    `P5.1`). Over the daemon ceiling, `_bounded_hunt` refuses to launch (the territory loop keeps
+    ticking, a clean pause, and never crashes), and an in-flight hunt stops at its next
     brain attempt, "daemon spend ceiling" ("cost ceiling" when its own ceiling is crossed too,
     checked first; W3.2-C1). Set the daemon ceiling `None` to disarm."""
     boot = await db.connect(db_path)
     await boot.close()
 
     sem = asyncio.Semaphore(max_concurrent)
+
+    def daemon_spend_since() -> datetime:
+        return now() - DAEMON_SPEND_WINDOW
 
     async def territory_loop(territory: str, interval: float) -> None:
         while True:
@@ -220,6 +240,7 @@ async def run_scheduler(
                 max_iterations=max_iterations,
                 cost_ceiling_usd=cost_ceiling_usd,
                 daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+                daemon_spend_since=daemon_spend_since,
                 publish=publish,
                 notify=notify,
             )

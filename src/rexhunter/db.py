@@ -249,15 +249,33 @@ async def read_context(conn: aiosqlite.Connection, run_id: str) -> list[events.T
     return [events.decode_event(str(row[0])) for row in rows]
 
 
-async def read_usage(conn: aiosqlite.Connection) -> list[events.TrajectoryEvent]:
+async def read_usage(
+    conn: aiosqlite.Connection, *, since: datetime | None = None
+) -> list[events.TrajectoryEvent]:
     """The id-scoped usage sub-log: EVERY run's `UsageEvent`s, ordered by the global `id` cursor
     (the SSE-stream cursor), each routed through the validation boundary (invariant 3). This is the
     read half of the daemon spend ceiling — the seq-scoped per-run read (`read_events`) folds one
     run; this folds them into a cumulative spend (inv 5, a projection of the log, not a counter).
+
+    `since`, an aware instant, keeps the UsageEvents stored at or after it: the daemon's rolling
+    window (`P5.1`). A naive one raises `ValueError`, since `astimezone` would read it as local
+    time.
     """
-    rows = await conn.execute_fetchall(
-        "SELECT payload FROM trajectory_events WHERE type = 'usage' ORDER BY id"
-    )
+    if since is None:
+        rows = await conn.execute_fetchall(
+            "SELECT payload FROM trajectory_events WHERE type = 'usage' ORDER BY id"
+        )
+    else:
+        if since.utcoffset() is None:
+            raise ValueError(f"read_usage: since must be an aware datetime, got {since!r}")
+        # Compared as the stored strings: every `created_at` is `utcnow()`'s ISO 8601 in UTC, one
+        # offset, its microseconds absent or six digits, so the strings order as the instants do
+        # (to the microsecond, where SQLite's date functions keep three digits).
+        rows = await conn.execute_fetchall(
+            "SELECT payload FROM trajectory_events WHERE type = 'usage' AND created_at >= ?"
+            " ORDER BY id",
+            (since.astimezone(UTC).isoformat(),),
+        )
     return [events.decode_event(str(row[0])) for row in rows]
 
 

@@ -18,6 +18,7 @@ import random
 import traceback
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import datetime
 from typing import Any, assert_never
 
 import aiosqlite
@@ -416,6 +417,7 @@ async def _call_brain(
     retry_budget: int,
     cost_ceiling_usd: float,
     daemon_spend_ceiling_usd: float | None,
+    daemon_spend_since: Callable[[], datetime] | None = None,
     publish: db.PublishFn | None = None,
 ) -> Decision | str:
     """One brain call, retrying the brain's HTTP transport failures; returns the Decision, or the
@@ -430,7 +432,8 @@ async def _call_brain(
     the event types the call uses (`db.read_context`, W3.3-W: the conversation's turns and the
     usage the per-run fold reads; the whole conversation is still sent): what a failed attempt left
     in the log (its ThinkingDeltas, UsageEvent and `<brain>` ErrorEvent) is not conversation, so a
-    retry sends the same request.
+    retry sends the same request. The daemon's fold starts at the instant `daemon_spend_since`
+    gives at that attempt (the scheduler's rolling day, `P5.1`; None = the whole log).
 
     Owns exactly one error shape: the provider-neutral BrainCallError (W2.0 D1a), which the adapter
     raises for every transport + status failure, so the loop knows no vendor or transport types. A
@@ -460,9 +463,10 @@ async def _call_brain(
         context = await db.read_context(conn, run_id)  # what the call uses (W3.3-W), every turn
         if cost.fold_cost(context) >= cost_ceiling_usd:
             return "cost ceiling"
+        since = None if daemon_spend_since is None else daemon_spend_since()
         if (
             daemon_spend_ceiling_usd is not None
-            and cost.fold_cost(await db.read_usage(conn)) >= daemon_spend_ceiling_usd
+            and cost.fold_cost(await db.read_usage(conn, since=since)) >= daemon_spend_ceiling_usd
         ):
             return "daemon spend ceiling"
         return await brain(context, sink)
@@ -569,6 +573,7 @@ async def _drive(
     max_iterations: int,
     cost_ceiling_usd: float,
     daemon_spend_ceiling_usd: float | None = None,
+    daemon_spend_since: Callable[[], datetime] | None = None,
     publish: db.PublishFn | None = None,
 ) -> tuple[str, str | None]:
     """plan -> act -> observe until a terminal decision, a breaker, or a brain failure.
@@ -591,6 +596,7 @@ async def _drive(
             retry_budget=retry_budget,
             cost_ceiling_usd=cost_ceiling_usd,
             daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+            daemon_spend_since=daemon_spend_since,
             publish=publish,
         )
         if isinstance(decision, str):
@@ -639,6 +645,7 @@ async def run_hunt(
     max_iterations: int = 50,
     cost_ceiling_usd: float = COST_CEILING_USD,
     daemon_spend_ceiling_usd: float | None = None,
+    daemon_spend_since: Callable[[], datetime] | None = None,
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
 ) -> str:
@@ -653,6 +660,8 @@ async def run_hunt(
     closures only (the cancel path re-raises before the pulse; boot's sweep never sees it).
     `daemon_spend_ceiling_usd` (W3.2-C1) is the scheduler's id-scoped ceiling, checked before
     every brain attempt alongside the per-run one; None (the default) leaves the run ungated by it.
+    `daemon_spend_since` is the scheduler's window, the one its launch gate folds (`P5.1`); None
+    (the default) folds the whole log.
     """
     # Record the run's own caps (4a): the per-run ceiling and max_iterations _drive enforces,
     # snapshotted write-once onto the runs row — the frontend's per-run HP/stamina denominators.
@@ -675,6 +684,7 @@ async def run_hunt(
             max_iterations=max_iterations,
             cost_ceiling_usd=cost_ceiling_usd,
             daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+            daemon_spend_since=daemon_spend_since,
             publish=publish,
         )
     except asyncio.CancelledError as cancel:

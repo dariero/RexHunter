@@ -1157,3 +1157,28 @@ the commit that brings its code: P51-MP1 4 red, P51-MP2 3, P51-MP3 1, P51-MP4 2,
 2, P51-MP7 9, P51-MP8 2, P51-MP9 3, P51-MP10 8, P51-MP11 1, P51-MP12 1, P51-MP13 3, P51-MP14 1. 816
 tests pass at `cf1a236` (784 at `c030eec`). No subagent, workflow or advisor call. *Next: P5.1a2
 (the daemon's rolling day).*
+
+**▶ P5.1a2 · The daemon's rolling day – ✅ done on branch `p51-window` (`5d9c6c5`, 2026-11-27), PR
+#29.** The second part of slice `P5.1`'s Part A: P51-D4. No API call of any kind, no ADR edit, no
+request body or header changed. Fork chosen 27 Nov by rex-orchestrator under Darie's delegation:
+P51-clock ck-1. **The window** (`5d9c6c5`): `run_scheduler`, the daemon, folds only the UsageEvents
+stored in the last `scheduler.DAEMON_SPEND_WINDOW` (24 h) at both of its spend gates, before each
+launch and before every brain attempt, so spend a day old no longer holds it;
+`DAEMON_SPEND_CEILING_USD` and its env knob are unchanged and now bound a rolling day.
+`db.read_usage` takes an aware `since` and compares the stored `created_at` strings, which order as
+the instants do (each is `utcnow()`'s ISO 8601 in UTC); a naive `since` raises. `run_scheduler`
+takes an injectable `now` and builds the window's start once, as one callable (`daemon_spend_since`)
+that `_bounded_hunt` and `run_hunt` both read, so the two gates cannot fold different windows.
+`run_hunts`, the wave harness, passes none and folds the whole log, as `eval_score` does. **The
+board:** `server.get_viewstate` injects the window, and `view.finalize` folds the daemon's spend
+(`ViewState.spent_usd`, the HP bar and the HUD figure) over the UsageEvents stored at or after its
+clock less the window, so the HUD figure is now the day's spend (`eval_score` gives the whole
+log's); each run's own spend stays whole, and without the window the view folds as before. **Wire:**
+bodies 1 to 12 and their headers byte-identical to `88e5d95`'s. **Tests:**
+tests/test_spend_window.py (8, new), seven of them red on `b599f7f` (`TypeError` on the new
+parameters; the board's HUD at `$2.0200`), the wave pin green there by design. Test edit: P51-PP7
+(tests/test_retries_and_ceilings.py:1227 and :1233, a non-assert edit: `_HeldRead` forwards keyword
+arguments). Mutants, each on its own `git archive` copy of `5d9c6c5`: P51-MP15 2 red, P51-MP16 2,
+P51-MP17 2, P51-MP18 1, P51-MP19 2, P51-MP20 1, P51-MP21 3, P51-MP22 1, P51-MP23 2, P51-MP24 1,
+P51-MP25 2, P51-MP26 1, P51-MP27 1. 824 tests pass at `5d9c6c5` (816 at `b599f7f`). No subagent,
+workflow or advisor call. *Next: P5.1a3 (the wrap-up notice).*
