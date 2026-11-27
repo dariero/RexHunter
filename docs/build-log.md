@@ -1213,3 +1213,47 @@ tests, three replays among them), P51-MP31 4, P51-MP32 4, P51-MP33 2, P51-MP34 3
 P51-MP36 7, P51-MP37 1, P51-MP38 1, P51-MP39 1, P51-MP40 2, P51-MP41 1, P51-MP42 1. 837 tests pass
 at `c222f45` (824 at `bf16fea`). No subagent, workflow or advisor call. *Part A is done. Next: Part
 B, the live Greenhouse and Lever adapters.*
+
+**▶ P5.1b1 · Live boards, the board side – ✅ done on branch `p51-boards` (`b79be42`→`fdb8a02`,
+2026-11-28), PR #31.** The first part of slice `P5.1`'s Part B: P51B-E1, E2, E7 and E8. No API call
+or network request of any kind, no ADR edit, no request body or header changed, no daemon wired to
+the live boards yet. Forks chosen 28 Nov by rex-orchestrator under Darie's delegation:
+P51B-live-shape ls-1d, P51B-allow-site as-1 (its check also refusing userinfo and a port other than
+443), P51B-lever-view lv-1. **The allowlist** (`b79be42`, P51B-E1 and E2): `board.live` holds
+`LIVE_HOSTS` (boards-api.greenhouse.io, api.lever.co and api.eu.lever.co), `LIVE_BOARDS` (empty:
+Darie has named no board) and `live_client`, a `BoardClient` over the transport its caller passes,
+with `allowed_hosts=LIVE_HOSTS`. The transport has no default, as no board client's has; P5.1b2's
+daemon passes `brain.live_transport()`, so every network transport in src/ is still built in
+brain.py (tests/test_brain_adapter.py:311-320) and the live boards verify against the brain's trust
+store, where the planner's `httpx2.AsyncHTTPTransport()` would have trusted the macOS system store.
+With `allowed_hosts` set, `BoardClient.get` refuses a URL whose scheme is not https, whose host is
+not in the set, or that carries userinfo or a port other than 443 (httpx2 reads https's 443 as no
+port), with a `FatalToolError` raised before any request, so a refusal is never retried. The error
+names the scheme, the host and a non-default port, and says "with userinfo" without writing it,
+since it is stored in the log. The gym client sets none and sends what it sent before. A test pins
+every `LIVE_BOARDS` entry: keyed by its name, over https, on an allowlisted host of its own shape,
+with a bare `base_url`. **The views** (`fdb8a02`, P51B-E7 and E8): a Lever posting's view adds,
+after `descriptionPlain`, each `lists` entry (its `text`, a newline, its `content` as plain text)
+and then `additionalPlain`, joined by blank lines and cut at `DESCRIPTION_CAP`; `_description` folds
+the breaks into single spaces, so the view stays one line, as Greenhouse's is. Both fields are
+optional at the strict boundary: absent, null or empty they add nothing, and a retyped one fails it.
+Greenhouse `content` is unescaped twice before its tags are stripped, which is "until stable, at
+most twice", since a pass over stable text changes nothing: content escaped twice, as the docs'
+example reads, now reads as text, and a third level stays as text. Single-escaped content whose text
+shows markup now loses it: a posting whose text reads `List<String>` is shown as `List`. The gym has
+none. A variant that keeps today's text there, a second unescape only when the first leaves no tag,
+is open with Darie (P51B-O2). The gym is unchanged. **Wire:** bodies 1 to 12 and their headers
+byte-identical to `251c4a5`'s; every gym posting view byte-identical, pinned by digest (the 26 Nov
+replay pins each request's shape and assistant turns, not its tool results). **Tests:**
+tests/test_live_boards.py (25, new): on `251c4a5` a collection error (`ModuleNotFoundError`), and on
+a tree with the bare names 17 red (`DID NOT RAISE FatalToolError`), 8 green by design (the
+allowlist's value, the GETs that reach it, no redirect, the empty board list).
+tests/test_board_views.py (17, new): 10 red on `b79be42` (`DID NOT RAISE ValidationError`, the
+lists, the cap and the escaped views), 7 green by design (absent or empty fields, the two gym
+digests). Test edit: P51B-PP1 (tests/test_board_client.py:128, a non-assert input line:
+`workplaceType`, not `lists`, is the field the boundary does not model). Mutants, each on its own
+`git archive` copy of the commit that brings its code: P51B-MP1 17 red, P51B-MP2 3, P51B-MP3 17,
+P51B-MP4 2, P51B-MP5 3, P51B-MP6 2, P51B-MP7 1, P51B-MP8 17, P51B-MP9 4, P51B-MP10 1, P51B-MP11 1,
+P51B-MP12 1, P51B-MP13 2, P51B-MP14 2, P51B-MP15 4, P51B-MP16 9, P51B-MP17 1, P51B-MP18 1, P51B-MP19
+2, P51B-MP20 17, P51B-MP21 2, P51B-MP22 1. 879 tests pass at `fdb8a02` (837 at `251c4a5`). No
+subagent, workflow or advisor call. *Next: P5.1b2 (the daemon side and the ADR text).*

@@ -10,7 +10,7 @@ label and the posting Rex was shown agree.
 
 The typed postings are what a tool's view renders (invariant 5): re-parsed from the stored bytes
 on every brain call, never stored. Paths and fields follow the Greenhouse Job Board API and the
-Lever Postings API as read on 21 Nov 2026.
+Lever Postings API as re-read on 27 Nov 2026.
 """
 
 import html
@@ -66,7 +66,8 @@ class _GhJobs(_Wire):
 
 
 class _GhJobDetail(_GhJob):
-    content: StrictStr  # the job's HTML converted to entities ("&lt;p&gt;")
+    # The job's HTML converted to entities ("&lt;p&gt;"); the docs' example reads as escaped twice.
+    content: StrictStr
 
 
 class _LvCategories(_Wire):
@@ -80,8 +81,16 @@ class _LvPosting(_Wire):
     hostedUrl: StrictStr
 
 
+class _LvList(_Wire):
+    text: StrictStr
+    content: StrictStr  # unstyled HTML
+
+
 class _LvPostingDetail(_LvPosting):
     descriptionPlain: StrictStr
+    # Optional, and absent from the gym's postings: absent, null or empty, each adds nothing.
+    lists: list[_LvList] | None = None
+    additionalPlain: StrictStr | None = None
 
 
 _LV_POSTINGS = TypeAdapter(list[_LvPosting])
@@ -160,13 +169,17 @@ def _gh_page(text: str, board: str, page: int) -> PostingPage:
 
 def _gh_posting(text: str, board: str) -> Posting:
     job = _GhJobDetail.model_validate_json(text)
+    # Unescaped until stable, at most twice, then the tags stripped: content escaped once or twice
+    # reads as text. A pass over stable text changes nothing, so two passes are that rule; a third
+    # level of escaping stays as text.
+    markup = html.unescape(html.unescape(job.content))
     return Posting(
         board=board,
         posting_id=str(job.id),
         title=job.title,
         location=job.location.name,
         url=job.absolute_url,
-        description=_description(_plain(html.unescape(job.content))),
+        description=_description(_plain(markup)),
     )
 
 
@@ -191,6 +204,16 @@ def _lv_page(text: str, board: str, page: int) -> PostingPage:
     return _page(board, page, items, len(postings) >= PAGE_SIZE)
 
 
+def _lv_text(posting: _LvPostingDetail) -> str:
+    # The opening and body, then each list (its text, a newline, its content as plain text), then
+    # the closing, joined by blank lines; `_description` folds every break into one space.
+    parts = [posting.descriptionPlain]
+    parts += [f"{entry.text}\n{_plain(entry.content)}" for entry in posting.lists or ()]
+    if posting.additionalPlain:
+        parts.append(posting.additionalPlain)
+    return "\n\n".join(parts)
+
+
 def _lv_posting(text: str, board: str) -> Posting:
     posting = _LvPostingDetail.model_validate_json(text)
     return Posting(
@@ -199,7 +222,7 @@ def _lv_posting(text: str, board: str) -> Posting:
         title=posting.text,
         location=posting.categories.location or "",
         url=posting.hostedUrl,
-        description=_description(posting.descriptionPlain),
+        description=_description(_lv_text(posting)),
     )
 
 
