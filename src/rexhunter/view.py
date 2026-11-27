@@ -36,7 +36,7 @@ a verdict is not a trajectory event of the closed run); the pen here is the capt
 import copy
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import NamedTuple, assert_never
 
@@ -136,7 +136,9 @@ class ViewState:
     and deterministic — the basis of the determinism law. ``territories`` is the per-territory
     scene tier: the pure fold emits the injected schedule's dormant base (or () uninjected); the
     assembler overlays runs-derived tiles. ``daemon_spend_ceiling_usd`` is an injected input
-    (inv 5, the clock's category) — the daemon HP denominator, never folded, never stored."""
+    (inv 5, the clock's category): the daemon HP denominator, never folded, never stored.
+    ``spent_usd`` is the daemon's spend: every run's UsageEvents or, with ``daemon_spend_window``
+    injected, those stored in the window the daemon's gates fold."""
 
     high_water: int
     runs: tuple[RunView, ...]
@@ -150,14 +152,17 @@ class ViewState:
 @dataclass
 class _RunAcc:
     """Mutable per-run fold state. Holds only primitives + the run's UsageEvents, so an Accumulator
-    deep-copies cheaply (fold_from) and compares by value (the incremental==batch law)."""
+    deep-copies cheaply (fold_from) and compares by value (the incremental==batch law). Each
+    UsageEvent keeps its row's ``created_at``, which the daemon's spend window reads (`P5.1`)."""
 
     open_tool: str | None = None
     thinking: str = ""
     prey_count: int = 0
     error_count: int = 0
     turns: int = 0
-    usage: list[events.UsageEvent] = field(default_factory=list[events.UsageEvent])
+    usage: list[tuple[str, events.UsageEvent]] = field(
+        default_factory=list[tuple[str, events.UsageEvent]]
+    )
 
 
 @dataclass
@@ -200,7 +205,8 @@ def _apply(acc: Accumulator, row: LogRow) -> None:
         case events.ThinkingDelta():
             run.thinking += event.text  # the live consciousness buffer (this event's real consumer)
         case events.UsageEvent():
-            run.usage.append(event)  # spend is folded at finalize via cost.fold_cost (invariant 5)
+            # spend is folded at finalize via cost.fold_cost (invariant 5)
+            run.usage.append((row.created_at, event))
         case events.SniffEvent():
             pass  # no producer in src/ (P2.1 vestige); folds to nothing, but stays total over it
         case _:
@@ -244,6 +250,7 @@ def finalize(
     clock: datetime,
     *,
     daemon_spend_ceiling_usd: float | None = None,
+    daemon_spend_window: timedelta | None = None,
     schedule: tuple[str, ...] = (),
 ) -> ViewState:
     """Render the accumulator into the immutable ViewState, applying day/night ONCE from the
@@ -253,20 +260,35 @@ def finalize(
     ``daemon_spend_ceiling_usd``/``schedule`` are INJECTED inputs (4b) — invariant 5's never-stored
     category, exactly like the clock: the ceiling passes through uninterpreted (the daemon HP
     denominator), and the schedule emits the dormant territory BASE (one never-hunted TerritoryView
-    per scheduled territory, name-sorted) that the assembler overlays with runs-derived tiles."""
+    per scheduled territory, name-sorted) that the assembler overlays with runs-derived tiles.
+    ``daemon_spend_window`` is injected the same way (`P5.1`): with it, the daemon's spend (the HP
+    numerator) folds only the UsageEvents stored at or after ``clock`` minus the window, the window
+    the daemon's gates fold; without it, every UsageEvent. A run's own spend is always all of it."""
     runs = tuple(
         RunView(
             run_id=run_id,
             current_tool=run.open_tool,
             thinking=run.thinking,
-            spent_usd=cost.fold_cost(run.usage),
+            spent_usd=cost.fold_cost([usage for _, usage in run.usage]),
             prey_count=run.prey_count,
             error_count=run.error_count,
             turns=run.turns,
         )
         for run_id, run in acc.runs.items()
     )
-    all_usage = [usage for run in acc.runs.values() for usage in run.usage]
+    # The window's first instant in the stored form, compared as `db.read_usage` compares it: on
+    # the `created_at` strings, which order as the instants do.
+    since = (
+        None
+        if daemon_spend_window is None
+        else (clock - daemon_spend_window).astimezone(UTC).isoformat()
+    )
+    all_usage = [
+        usage
+        for run in acc.runs.values()
+        for created_at, usage in run.usage
+        if since is None or created_at >= since
+    ]
     return ViewState(
         high_water=acc.high_water,
         runs=runs,
@@ -286,6 +308,7 @@ def project(
     clock: datetime,
     *,
     daemon_spend_ceiling_usd: float | None = None,
+    daemon_spend_window: timedelta | None = None,
     schedule: tuple[str, ...] = (),
 ) -> ViewState:
     """The whole projection: ``finalize(fold(rows), clock, ...)``. Pure and total — same
@@ -293,5 +316,9 @@ def project(
     the global-id cursor for the live feed or a run's seq cursor for the ghost replay; within a
     run they are one sequence."""
     return finalize(
-        fold(rows), clock, daemon_spend_ceiling_usd=daemon_spend_ceiling_usd, schedule=schedule
+        fold(rows),
+        clock,
+        daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+        daemon_spend_window=daemon_spend_window,
+        schedule=schedule,
     )

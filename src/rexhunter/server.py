@@ -334,7 +334,8 @@ async def get_viewstate() -> HTMLResponse:
     re-running the reducer. The injected inputs (inv 5) enter HERE: the live clock, the daemon
     ceiling (the SAME env read the lifespan enforces), and the schedule's territory list (read via
     stub.daemon_config — the lifespan's monkeypatch seam, so a patched config flows to the board
-    too). Never inside project."""
+    too). Never inside project. The daemon's spend window enters here too: the one
+    `run_scheduler`'s gates fold (`P5.1`)."""
     schedule, _, _, _, _ = stub.daemon_config()
     conn = await db.connect(DB_PATH)
     try:
@@ -342,6 +343,7 @@ async def get_viewstate() -> HTMLResponse:
             conn,
             datetime.now(UTC),
             daemon_spend_ceiling_usd=_daemon_spend_ceiling_usd(),
+            daemon_spend_window=scheduler.DAEMON_SPEND_WINDOW,
             schedule=tuple(schedule),
         )
     finally:

@@ -1225,14 +1225,14 @@ class _HeldRead:
         self._skip = skip
         real: Callable[..., Awaitable[list[TrajectoryEvent]]] = getattr(db, read)
 
-        async def gated(conn: Any, *args: Any) -> list[TrajectoryEvent]:
+        async def gated(conn: Any, *args: Any, **kwargs: Any) -> list[TrajectoryEvent]:
             if self._skip > 0:
                 self._skip -= 1
             elif not self._armed.is_set():
                 await conn.set_progress_handler(self._hold, 1)
                 self._armed.set()
                 self.entered.set()
-            return await real(conn, *args)
+            return await real(conn, *args, **kwargs)
 
         monkeypatch.setattr(db, read, gated)
 

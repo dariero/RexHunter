@@ -19,7 +19,7 @@ they are one sequence (single-writer append, inv 7).
 """
 
 import dataclasses
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import aiosqlite
 
@@ -66,18 +66,20 @@ async def build_viewstate(
     *,
     run_id: str | None = None,
     daemon_spend_ceiling_usd: float | None = None,
+    daemon_spend_window: timedelta | None = None,
     schedule: tuple[str, ...] = (),
 ) -> ViewState:
     """Assemble the full ViewState: project the log (trajectory tier), overlay each run's
     territory/outcome/ceilings + the territory tier from ``runs`` (the runs ⊕ tier), then overlay
     each prey's verdict status folded from its ``pen_events`` (the pen ⊕ tier). ``clock``,
-    ``daemon_spend_ceiling_usd`` and ``schedule`` are injected (invariant 5's never-stored
-    category) and pass through to ``view.project`` uninterpreted; ``run_id`` selects the ghost
-    cursor for a single-run replay (default: the live all-runs feed)."""
+    ``daemon_spend_ceiling_usd``, ``daemon_spend_window`` and ``schedule`` are injected (invariant
+    5's never-stored category) and pass through to ``view.project`` uninterpreted; ``run_id``
+    selects the ghost cursor for a single-run replay (default: the live all-runs feed)."""
     state = view.project(
         await read_log_rows(conn, run_id=run_id),
         clock,
         daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
+        daemon_spend_window=daemon_spend_window,
         schedule=schedule,
     )
 
