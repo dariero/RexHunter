@@ -138,17 +138,20 @@ current position; this is the entry point, not a one-file answer. Slices are nam
 `P3`); say the slice-ID, or "the slice after `P2.2`". Don't start a slice until the prior
 slice's gate (ADR Definition-of-done) is green.
 
-**Current position (27 Nov 2026, after PR #30):** every slice in the ADR's table has landed, and
+**Current position (28 Nov 2026, after PR #31):** every slice in the ADR's table has landed, and
 `P2.5`, eval tier 2, was the last (PRs #25 to #27); its first live wave ran on 27 Nov on `c030eec`.
 The daemon hunts the six gym territories, with the scripted keyword baseline as its no-spend brain;
 `rexhunter.eval_wave` hunts them and gym-mimic once into a fresh log and scores the wave, and
 `rexhunter.eval_score` scores an existing log. Slice `P5.1`, live boards (Darie's choice of 27 Nov),
-is in progress. Its Part A, now done, readies the spend guards before any adapter exists: P5.1a1 (PR
-#28) has the live brain ask for prompt caching and prices the cache tokens in every spend fold,
-P5.1a2 (PR #29) has the daemon's spend ceiling fold a rolling 24 h, and P5.1a3 (PR #30) has the loop
-give a wrap-up notice before a run's last call; next is Part B, the live Greenhouse and Lever
-adapters. Open besides: park-and-persist on drift (the unmet clause of ADR DoD #4), extraction with
-strict mode (`P5`), and eval tier 3.
+is in progress. Its Part A readies the spend guards: P5.1a1 (PR #28) has the live brain ask for
+prompt caching and prices the cache tokens in every spend fold, P5.1a2 (PR #29) has the daemon's
+spend ceiling fold a rolling 24 h, and P5.1a3 (PR #30) has the loop give a wrap-up notice before a
+run's last call. Its Part B brings the live Greenhouse and Lever boards: P5.1b1 (PR #31) adds the
+board side, `board.live`'s host allowlist and board list (empty until Darie names a board) and the
+Lever and Greenhouse views on the live shapes, with no daemon wired to it yet; next is P5.1b2, the
+daemon side (`REXHUNTER_BOARDS`, a daily live schedule, each territory's next hunt derived from the
+log) and the ADR text. Open besides: park-and-persist on drift (the unmet clause of ADR DoD #4),
+extraction with strict mode (`P5`), and eval tier 3.
 
 **Build log:** `docs/build-log.md` has one entry per slice and upgrade wave, with the commits, the
 forks and who chose them, the tests, the mutants and the wire baselines. Read it when a task needs
