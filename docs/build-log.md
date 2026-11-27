@@ -1120,3 +1120,40 @@ P25-MP31 2. **ADR** (`90fcf32`): the four approved insertions, verbatim. 784 tes
 (761 at 3a69d3f). No subagent, workflow or advisor call. Slice `P2.5` is done. *Next: Darie's
 choice; open are the live wave (paid, her terminal), the live adapters, park-and-persist on drift,
 extraction and strict mode, and eval tier 3.*
+
+**▶ P5.1a1 · Prompt caching, counted – ✅ done on branch `p51-cache` (`63b9862`→`cf1a236`,
+2026-11-27), PR #28.** The first part of slice `P5.1`, live boards (Pillar 5, gate DoD #5's live
+clause; Darie's choice of 27 Nov, P51-D1), whose Part A readies the spend guards before any adapter
+exists: P51-D2, P51-D3 and P51-D6. No API call of any kind, no model change, no ADR edit. Fork
+chosen 27 Nov by rex-orchestrator under her delegation: P51-preflight-cache pc-1. **Counting**
+(`63b9862`, P51-D3): `UsageEvent` gains `cache_creation_input_tokens` and `cache_read_input_tokens`,
+0 by default and left out of the stored payload at 0 (`exclude_if`), so a call that used no cache
+stores the bytes it stored before; stored zeros turn both replays' log digests red (P51-MP7, 8
+replay cases). `brain._read_usage` reads both under the check it gives the other two counts; an
+absent or null cache count reads 0, while a null input or output count still refuses the turn.
+`cost.cost_of` prices a cache write at 1.25 times the model's input price and a read at the model's
+read multiplier (Sonnet 5.5 and Opus 5.5 0.05, Fable 5.2 0.025; the prompt-caching page as read for
+the design on 27 Nov), and an unknown model's write and read at the fallback input price, $15/MTok.
+A usage with no cache tokens folds to the same float as before, to the last bit. **Caching**
+(`cf1a236`, P51-D2): `brain.PROMPT_CACHE`, `{"type": "ephemeral"}` at the top level (the default
+5-minute lifetime, no `ttl`), is sent by `select_brain_for`'s live branch, the daemon's and the live
+wave's brain, and by the wave's count pre-flight (pc-1); `adapter_brain_for`,
+`hunt_smoke._hunt_body` and `count_tokens_preflight` take `prompt_cache`, off by default. **Wire:**
+after both commits bodies 1 to 9 and their headers are byte-identical to `c030eec`'s (1
+`9a55cae7…5a88` 1794 B, 2 `761995a6…b3ef` 1826, 3 `95bd6597…34d1` 1776, 4 `bb8870fe…f8e4` 2205, 5 =
+2, 6 `5f414941…e7a8` 2409, 7 `6410c3d0…cca0` 2441, 8 `16d7595d…c5bf` 2409, 9 `d17fc81e…bc98` 2431),
+each now pinned in the suite on its path. Three bodies are new, each its base with
+`"cache_control":{"type":"ephemeral"}` after `model` and its base's headers but `content-length`:
+10, the live first request on gym-greenhouse, `2ae0821a…2492` 2478 B (body 7's successor); 11,
+gym-mimic's, `d0cd6ff6…a0a2` 2468 (body 9's); 12, the wave's count body, `457ddb66…8ab6` 2446 (body
+8's). **Tests:** tests/test_prompt_cache.py (27, new) and five in tests/test_cost.py. Red on its
+parent: commit 1's 21 on `c030eec` (`ValidationError`, `AttributeError`, `DID NOT RAISE`), commit
+2's two new cases and the pinned lines tests/test_eval_wave.py:268 and :300 on `63b9862`
+(`KeyError`, `TypeError`); the nine body pins are green on both parents by design. Test edits:
+P51-PP1 to P51-PP5 as pinned (tests/test_eval_wave.py:36-40, :266, :269, :270 and :297-298: bodies
+10, 11 and 12, and the field on every live and count request) and P51-PP6
+(tests/test_spend_and_boundary.py:319, a comment). Mutants, each on its own `git archive` copy of
+the commit that brings its code: P51-MP1 4 red, P51-MP2 3, P51-MP3 1, P51-MP4 2, P51-MP5 11, P51-MP6
+2, P51-MP7 9, P51-MP8 2, P51-MP9 3, P51-MP10 8, P51-MP11 1, P51-MP12 1, P51-MP13 3, P51-MP14 1. 816
+tests pass at `cf1a236` (784 at `c030eec`). No subagent, workflow or advisor call. *Next: P5.1a2
+(the daemon's rolling day).*

@@ -113,6 +113,7 @@ async def count_first_bodies(api_key: str) -> dict[str, int]:
                 thinking=brain.HUNT_THINKING,
                 system=GYM_SYSTEM_PROMPT,
                 seed=gym_seed,
+                prompt_cache=True,  # the live wave's first body carries it (`P5.1`)
             )
     return counts
 

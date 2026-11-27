@@ -215,6 +215,11 @@ HUNT_THINKING: dict[str, Any] = {"type": "adaptive", "display": "summarized"}
 # stop_reason=max_tokens (an incomplete tool_use the assembler can't finalize). 4096 clears both.
 HUNT_MAX_TOKENS = 4096
 
+# Prompt caching (`P5.1`): the top-level field turns on automatic caching, at the default 5-minute
+# lifetime. No `ttl` is sent, because cost.py prices every cache write at the 5-minute rate. Only
+# `select_brain_for`'s live branch and the wave's count pre-flight (`eval_wave`) send it.
+PROMPT_CACHE: dict[str, str] = {"type": "ephemeral"}
+
 # The lowest thinking setting per model (W2.2, F5, fork F1): what a thinking-off hunt sends, keyed
 # by API model id like `cost.PRICE_PER_MTOK`, one row per model a hunt runs with thinking off.
 # On Claude Sonnet 5.5, "`disabled` returns a 400 `invalid_request_error`"; its lowest setting is
@@ -274,21 +279,30 @@ class _ProviderResponse(BaseModel):
 
 # The largest token count the boundary reads (W3.4 counts): a validation limit, not a spend
 # ceiling, ten times Claude Sonnet 5.5's 1M-token context window. Under it one call prices at most
-# $900 at the fallback price ($15/$75 per MTok, `cost.py`), so no count the reader passes can make a
-# fold overflow.
+# $1,200 at the fallback price ($15/$75 per MTok, and $15 for a cache write or read, `cost.py`), so
+# no count the reader passes can make a fold overflow.
 MAX_TOKEN_COUNT = 10_000_000
+
+# The prompt cache's two counts (`P5.1`), which the response gives apart from `input_tokens`.
+_CACHE_COUNTS = ("cache_creation_input_tokens", "cache_read_input_tokens")
 
 
 def _read_usage(model: object, counts: dict[str, Any]) -> UsageEvent:
     """The one reader of a response's token counts (W3.4 counts, invariant 3), for the accepted
-    and the refused path alike. It reads `input_tokens` and `output_tokens` only, each a Python int
-    that is not a bool, 0 or more and at most MAX_TOKEN_COUNT; an absent one reads as 0, as before
-    W3.4. Any other value (null, a bool, a string, a float, a negative count, one past the bound)
-    raises ValueError. The other keys of `usage` are not read. A model that is not a string prices
-    at the fallback (`cost.py`), the safe direction for a guard."""
+    and the refused path alike. It reads four counts, `input_tokens`, `output_tokens`,
+    `cache_creation_input_tokens` and `cache_read_input_tokens`, each under the same check: a Python
+    int that is not a bool, 0 or more and at most MAX_TOKEN_COUNT. An absent count reads as 0, as
+    before W3.4, and a null cache count reads as 0 (`P5.1`), while a null `input_tokens` or
+    `output_tokens` still raises; any other value (a bool, a string, a float, a negative count, one
+    past the bound) raises ValueError. `cache_creation` (the 5-minute and 1-hour split) and the
+    other keys of `usage` are not read, because only the 5-minute lifetime is ever asked for and
+    `cost.py` prices every cache write at it. A model that is not a string prices at the fallback
+    (`cost.py`), the safe direction for a guard."""
     read: dict[str, int] = {}
-    for key in ("input_tokens", "output_tokens"):
+    for key in ("input_tokens", "output_tokens", *_CACHE_COUNTS):
         value = counts.get(key, 0)
+        if value is None and key in _CACHE_COUNTS:
+            value = 0
         if type(value) is not int or not 0 <= value <= MAX_TOKEN_COUNT:
             raise ValueError(f"{key}={value!r} is not a token count")
         read[key] = value
@@ -296,6 +310,8 @@ def _read_usage(model: object, counts: dict[str, Any]) -> UsageEvent:
         model=model if isinstance(model, str) else "",
         input_tokens=read["input_tokens"],
         output_tokens=read["output_tokens"],
+        cache_creation_input_tokens=read["cache_creation_input_tokens"],
+        cache_read_input_tokens=read["cache_read_input_tokens"],
     )
 
 
@@ -689,11 +705,13 @@ def build_request_body(
     system: str | None = None,
     thinking: dict[str, Any] | None = None,
     tool_choice: dict[str, Any] | None = None,
+    cache_control: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The Anthropic Messages request body — shared by the adapter and the Unit 2b smoke so there
     is ONE request shape (no drift). Core keys are model / max_tokens / messages / tools; `system`,
-    `thinking`, and `tool_choice` are OPTIONAL and only added when passed, so the Unit 2b smoke
-    (passing none) keeps its captured shape and its guard (tests/test_smoke_offline.py) stays green.
+    `thinking`, `tool_choice` and `cache_control` (`P5.1`) are OPTIONAL and only added when passed,
+    so the Unit 2b smoke (passing none) keeps its captured shape and its guard
+    (tests/test_smoke_offline.py) stays green.
     The always-omitted guards hold by construction on Sonnet 5.5: never
     `temperature`/`top_p`/`top_k` (→ 400 at any value under `anthropic-version: 2026-10-21`), never
     MANUAL thinking `{type:"enabled",budget_tokens}` (→ 400), and `messages` is passed through
@@ -711,6 +729,8 @@ def build_request_body(
         body["thinking"] = thinking
     if tool_choice is not None:
         body["tool_choice"] = tool_choice
+    if cache_control is not None:
+        body["cache_control"] = cache_control
     return body
 
 
@@ -1143,6 +1163,7 @@ def adapter_brain_for(
     stream: bool = False,
     system: str = HUNT_SYSTEM_PROMPT,
     seed: Callable[[str], str] = _seed_directive,
+    prompt_cache: bool = False,
 ) -> Callable[[str], Brain]:
     """A `brain_for` factory (the scheduler's seam, `scheduler.py`) backed by the Anthropic Messages
     API over the INJECTED SDK client (built by `anthropic_client`). `brain()` never opens or closes
@@ -1152,7 +1173,9 @@ def adapter_brain_for(
     Each turn (P5 Unit 2c): project the log into `messages` (`project_messages`, inv 2), opened by
     `seed(territory)`, and thread `system`. Both default to the sniff hunt's (`_seed_directive`,
     `HUNT_SYSTEM_PROMPT`), so a caller that passes neither sends today's bytes; a board hunt passes
-    the gym's (`board.tools`).
+    the gym's (`board.tools`). `prompt_cache` adds `PROMPT_CACHE` to every request, automatic
+    caching at the default 5-minute lifetime that cost.py prices, and only `select_brain_for`'s
+    live branch sets it (`P5.1`), so every other caller sends the bytes it sent before.
     `thinking` defaults to the model's lowest setting, `thinking_floor(model)`
     (W2.2: `{type:"between_tools"}` on Sonnet 5.5; a model with no row raises here, before any
     request is built), 2c's thinking-off hunt (since W2.3 its echoed turn is the whole stored turn,
@@ -1184,6 +1207,7 @@ def adapter_brain_for(
                 system=system,
                 thinking=thinking,
                 tool_choice=HUNT_TOOL_CHOICE,
+                cache_control=PROMPT_CACHE if prompt_cache else None,
             )
             # The attempt's raw I/O (W3.3, invariant 6): the request httpx2 sent (fork R1) and the
             # body as received (fork S1). The stream path keeps every chunk here, so a body cut by a
@@ -1303,7 +1327,9 @@ def select_brain_for(
     Unit 3 — `stream=True` + adaptive thinking, so Rex's reasoning relays through the hub) over a
     real SDK client (`anthropic_client`, max_retries=0 + the pinned wire) and RETURNS that client so
     the caller (lifespan / entrypoints) owns its close. `system` and `seed` reach that adapter
-    (`adapter_brain_for`'s, the sniff hunt's by default); the daemon passes the gym's (D9).
+    (`adapter_brain_for`'s, the sniff hunt's by default); the daemon passes the gym's (D9). The
+    live brain asks for prompt caching (`prompt_cache`, `P5.1`), so the prefix each later call of
+    a hunt repeats can be read from the cache at the read price.
     Any other value is a hard error, never a silent fall-through to spending.
     """
     mode = os.environ.get("REXHUNTER_BRAIN", "stub")
@@ -1325,6 +1351,7 @@ def select_brain_for(
             stream=True,  # the daemon streams reasoning to /events — the Unit-3 brain, not 2c's
             system=system,
             seed=seed,
+            prompt_cache=True,
         )
         return brain_for, client
     raise ValueError(f"unknown REXHUNTER_BRAIN={mode!r} (expected 'stub' or 'live')")

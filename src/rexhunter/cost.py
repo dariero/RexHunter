@@ -29,16 +29,42 @@ PRICE_PER_MTOK: dict[str, tuple[float, float]] = {
 
 # Unknown model → a deliberately-high fallback, at least the dearest row above on each side
 # (pinned by tests/test_cost.py). NEVER 0: a 0 price would fold to $0 forever and silently disarm
-# the spend guard.
+# the spend guard. An unknown model's cache write and read price at the fallback input price, never
+# 0, for the same reason.
 _FALLBACK_PRICE_PER_MTOK: tuple[float, float] = (15.0, 75.0)
+
+# The prompt cache's prices as multiples of a model's input price, the platform.claude.com/docs/en/
+# build-with-claude/prompt-caching multipliers, read on 27 Nov 2026 (`P5.1`): a write at the
+# default 5-minute lifetime, the only one the live brain asks for (`brain.PROMPT_CACHE`), and a
+# read per model. A model a caller's table names with no read row reads at 1.0, its plain input
+# price, which over-estimates and so is the safe direction for a guard.
+CACHE_WRITE_MULTIPLIER = 1.25
+CACHE_READ_MULTIPLIER: dict[str, float] = {
+    "claude-sonnet-5-5": 0.05,
+    "claude-opus-5-5": 0.05,
+    "claude-fable-5-2": 0.025,
+}
 
 
 def cost_of(
     usage: UsageEvent, *, prices: Mapping[str, tuple[float, float]] = PRICE_PER_MTOK
 ) -> float:
     """USD for one brain call's usage, priced by its model in `prices` (high fallback)."""
-    price_in, price_out = prices.get(usage.model, _FALLBACK_PRICE_PER_MTOK)
-    return usage.input_tokens / 1_000_000 * price_in + usage.output_tokens / 1_000_000 * price_out
+    if usage.model in prices:
+        price_in, price_out = prices[usage.model]
+        price_write = price_in * CACHE_WRITE_MULTIPLIER
+        price_read = price_in * CACHE_READ_MULTIPLIER.get(usage.model, 1.0)
+    else:
+        price_in, price_out = _FALLBACK_PRICE_PER_MTOK
+        price_write = price_read = price_in
+    # The two cache terms come last, so a usage with no cache tokens folds to the float it folded
+    # to before `P5.1`, to the last bit (adding 0.0 is exact), and every recorded cost stays put.
+    return (
+        usage.input_tokens / 1_000_000 * price_in
+        + usage.output_tokens / 1_000_000 * price_out
+        + usage.cache_creation_input_tokens / 1_000_000 * price_write
+        + usage.cache_read_input_tokens / 1_000_000 * price_read
+    )
 
 
 def fold_cost(

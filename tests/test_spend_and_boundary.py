@@ -316,7 +316,7 @@ async def test_guard_a_token_count_that_reads_is_counted_as_before(
     tmp_path: Path,
     mock_anthropic: MockAnthropic,
 ) -> None:
-    # Only `input_tokens` and `output_tokens` are read; the other keys of `usage` are not.
+    # The four token counts are read, a null cache count as 0; the other keys of `usage` are not.
     body = _plain("tool_use", [{**SNIFF, "name": "needs_help", "input": {}}], usage)
     hunt = await _hunt(tmp_path, mock_anthropic, _ok(body), stream=False)
     assert hunt.row == ("needs_help", None)
