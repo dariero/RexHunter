@@ -98,6 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 daemon_spend_ceiling_usd=_daemon_spend_ceiling_usd(),
                 publish=hub.publish,
                 notify=hub.notify,
+                wrap_up=client is not None,  # the live brain gets the wrap-up notice (`P5.1`)
             )
         ),
         asyncio.create_task(verdicts.run_job_worker(DB_PATH, drafter=drafter)),

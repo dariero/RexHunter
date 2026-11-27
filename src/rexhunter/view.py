@@ -207,6 +207,8 @@ def _apply(acc: Accumulator, row: LogRow) -> None:
         case events.UsageEvent():
             # spend is folded at finalize via cost.fold_cost (invariant 5)
             run.usage.append((row.created_at, event))
+        case events.WrapUpNoticeEvent():
+            pass  # the brain's cue (`P5.1`), sent to the model, not drawn on the board
         case events.SniffEvent():
             pass  # no producer in src/ (P2.1 vestige); folds to nothing, but stays total over it
         case _:

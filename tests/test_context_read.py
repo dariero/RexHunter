@@ -28,6 +28,7 @@ from rexhunter.events import (
     ToolResultEvent,
     TrajectoryEvent,
     UsageEvent,
+    WrapUpNoticeEvent,
 )
 from rexhunter.loop import Context, Decision, NeedsHelp, ThinkingSink, ToolCallDecision, run_hunt
 from rexhunter.tools import ToolRegistry
@@ -106,11 +107,11 @@ async def test_h1_a_row_of_a_type_the_call_does_not_use_is_never_decoded(tmp_pat
     assert row is not None and (row[0], row[1]) == ("needs_help", None)
 
 
-# ── W: the four types, and the same conversation ─────────────────────────────────────────
+# ── W: the context types, and the same conversation ──────────────────────────────────────
 
 
-def test_the_context_types_are_the_discriminators_of_the_four_events_a_call_uses() -> None:
-    used = (ToolCallEvent, ToolResultEvent, ErrorEvent, UsageEvent)
+def test_the_context_types_are_the_discriminators_of_the_events_a_call_uses() -> None:
+    used = (ToolCallEvent, ToolResultEvent, ErrorEvent, UsageEvent, WrapUpNoticeEvent)
     assert db.CONTEXT_TYPES == tuple(cls.model_fields["type"].default for cls in used)
 
 
@@ -167,7 +168,7 @@ async def test_the_narrow_read_projects_the_same_conversation_as_the_whole_read(
         tmp_path, mock_anthropic, run_dir, stream=stream
     )
     assert calls == 3  # three brain calls, as recorded
-    # The narrow read is the whole read's events of the four types, in seq order.
+    # The narrow read is the whole read's events of the context types, in seq order.
     assert narrow == [e for e in whole if e.type in db.CONTEXT_TYPES]
     if stream:  # the streamed run's whole read holds types the narrow read leaves out
         assert any(isinstance(e, ThinkingDelta) for e in whole)

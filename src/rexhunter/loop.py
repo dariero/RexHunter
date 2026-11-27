@@ -19,7 +19,7 @@ import traceback
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
-from typing import Any, assert_never
+from typing import Any, Literal, assert_never
 
 import aiosqlite
 from pydantic import BaseModel, Field, ValidationError
@@ -34,6 +34,15 @@ logger = logging.getLogger("rexhunter")
 # so this never bites them; the paid smoke (`P5` Unit 2c.2) overrides it low. Enforced in
 # `_call_brain`, before every brain attempt (W3.2-C1).
 COST_CEILING_USD = 1.0
+
+# The wrap-up notice's text (`P5.1`), as Darie approved it on 27 Nov 2026.
+WRAP_UP_TEXT = (
+    "Budget: this is your last call before this hunt's spend limit. Call hunt_complete now with"
+    " the postings you have read that are worth a human's verdict, or needs_help."
+)
+# The rule's multiple of the last call's cost: the coming call and one more like it, so the
+# notice lands on the last call that fits under the run's ceiling.
+WRAP_UP_FACTOR = 2
 
 # ── Error taxonomy + single-attempt execution (Unit C) ───────────────────────
 
@@ -561,6 +570,22 @@ async def _capture_catch(
         )
 
 
+def _wrap_up_reason(
+    context: Context, *, cost_ceiling_usd: float, last_iteration: bool
+) -> Literal["cost", "iterations"] | None:
+    """Why the coming brain call gets the wrap-up notice (`P5.1`), or None. Folded from the run's
+    own context (invariant 5): never a second notice, since the first is in the log; then the cost
+    rule, the run's spend plus `WRAP_UP_FACTOR` times its last call's cost against its ceiling;
+    then the last iteration."""
+    if any(isinstance(event, events.WrapUpNoticeEvent) for event in context):
+        return None
+    usage = [event for event in context if isinstance(event, events.UsageEvent)]
+    last_call = cost.cost_of(usage[-1]) if usage else 0.0
+    if cost.fold_cost(context) + WRAP_UP_FACTOR * last_call >= cost_ceiling_usd:
+        return "cost"
+    return "iterations" if last_iteration else None
+
+
 async def _drive(
     conn: aiosqlite.Connection,
     run_id: str,
@@ -574,6 +599,7 @@ async def _drive(
     cost_ceiling_usd: float,
     daemon_spend_ceiling_usd: float | None = None,
     daemon_spend_since: Callable[[], datetime] | None = None,
+    wrap_up: bool = False,
     publish: db.PublishFn | None = None,
 ) -> tuple[str, str | None]:
     """plan -> act -> observe until a terminal decision, a breaker, or a brain failure.
@@ -587,8 +613,19 @@ async def _drive(
     NeedsHelp is terminal and appends no event; HuntComplete captures the references of its catch
     that the run read into the prey pen (each a PreyCapturedEvent + row, P4; `_capture_catch`)
     THEN closes via runs.outcome. A tool failure or an exhausted brain retry budget aborts.
+    With `wrap_up` (`P5.1`) the loop appends the wrap-up notice before the call
+    `_wrap_up_reason` picks, so the projection puts it in that call's request.
     """
-    for _ in range(max_iterations):
+    for iteration in range(max_iterations):
+        if wrap_up:
+            reason = _wrap_up_reason(
+                await db.read_context(conn, run_id),
+                cost_ceiling_usd=cost_ceiling_usd,
+                last_iteration=iteration == max_iterations - 1,
+            )
+            if reason is not None:
+                notice = events.WrapUpNoticeEvent(text=WRAP_UP_TEXT, reason=reason)
+                await db.append_event(conn, run_id, notice, publish=publish)
         decision = await _call_brain(
             conn,
             run_id,
@@ -646,6 +683,7 @@ async def run_hunt(
     cost_ceiling_usd: float = COST_CEILING_USD,
     daemon_spend_ceiling_usd: float | None = None,
     daemon_spend_since: Callable[[], datetime] | None = None,
+    wrap_up: bool = False,
     publish: db.PublishFn | None = None,
     notify: NotifyFn | None = None,
 ) -> str:
@@ -661,7 +699,8 @@ async def run_hunt(
     `daemon_spend_ceiling_usd` (W3.2-C1) is the scheduler's id-scoped ceiling, checked before
     every brain attempt alongside the per-run one; None (the default) leaves the run ungated by it.
     `daemon_spend_since` is the scheduler's window, the one its launch gate folds (`P5.1`); None
-    (the default) folds the whole log.
+    (the default) folds the whole log. `wrap_up` (`P5.1`, off by default) has the loop give the
+    wrap-up notice before the run's last call, and is recorded on the run's row.
     """
     # Record the run's own caps (4a): the per-run ceiling and max_iterations _drive enforces,
     # snapshotted write-once onto the runs row — the frontend's per-run HP/stamina denominators.
@@ -671,6 +710,7 @@ async def run_hunt(
         territory=territory,
         cost_ceiling_usd=cost_ceiling_usd,
         max_iterations=max_iterations,
+        wrap_up=wrap_up,
     )
     try:
         outcome, abort_reason = await _drive(
@@ -685,6 +725,7 @@ async def run_hunt(
             cost_ceiling_usd=cost_ceiling_usd,
             daemon_spend_ceiling_usd=daemon_spend_ceiling_usd,
             daemon_spend_since=daemon_spend_since,
+            wrap_up=wrap_up,
             publish=publish,
         )
     except asyncio.CancelledError as cancel:

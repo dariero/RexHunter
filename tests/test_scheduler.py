@@ -410,7 +410,8 @@ async def test_scheduler_persists_no_shadow_schedule(
         # cost_ceiling_usd/max_iterations joined in 4a: write-once INPUT facts recorded at
         # start_run (like territory/started_at), pinned immutable by
         # test_recorded_ceiling_is_immutable_across_reads — not timing/derived state, so the
-        # shadow-schedule guard this exact-match exists for is untouched.
+        # shadow-schedule guard this exact-match exists for is untouched. wrap_up joined in `P5.1`
+        # the same way, the loop's setting recorded at start.
         assert cols == sorted(
             [
                 "id",
@@ -421,6 +422,7 @@ async def test_scheduler_persists_no_shadow_schedule(
                 "abort_reason",
                 "cost_ceiling_usd",
                 "max_iterations",
+                "wrap_up",
             ]
         )
     finally:
