@@ -304,8 +304,8 @@ The governing principle: **LLM output is untrusted input.** It is probabilistic 
 | Lossy broadcast hub | Log is truth (invariant 1) | Never – this is the design, not a debt |
 | No auth on the local UI | localhost-only daemon | Any network exposure beyond localhost |
 | Live adapters limited to public ATS APIs (Greenhouse/Lever) | ToS-compliant, stable contracts | Never scrape ToS-prohibited boards |
-| The gym and the board parsers follow the Greenhouse and Lever docs as read on 21 Nov 2026 | Nothing hunts a live board yet | A live response fails the board boundary |
-| Tier 2 scores gym boards only, against marks the gym's author planted | No live board is hunted yet, and a live posting carries no mark | The live Greenhouse and Lever adapters land |
+| The gym and the board parsers follow the Greenhouse and Lever docs as re-read on 27 Nov 2026 | Live boards are hunted from `P5.1`; a body that fails the boundary aborts its run with the bytes kept | A live response fails the board boundary |
+| Tier 2 scores gym boards only, against marks the gym's author planted | A live posting carries no mark, so live hunts go unscored | A tier with human labels is defined |
 
 ## Build sequence (canonical)
 
@@ -337,6 +337,7 @@ done/planned) — both of which reference these slice-IDs and never restate the 
 | **`P3` · Streaming hub** — per-viewer broadcast queues, `Last-Event-ID` resume | 3 | DoD #3 |
 | **`P2.4` · Gym board** – a mock board in Greenhouse and Lever shapes with injected hazards, the `list_postings` and `read_posting` tools, and catch by reference | 2 | DoD #2, gym clause |
 | **`P2.5` · Gym eval, tier 2** – a mimic board, a score folded from a run's log against the gym's planted marks, and a one-wave harness | 2 | DoD #2, eval clause |
+| **`P5.1` · Live boards** – prompt caching with its tokens counted, a rolling-day daemon budget, a wrap-up notice before a run's last call, and the Greenhouse and Lever adapters on live boards behind a host allowlist | 5 | DoD #5, live clause |
 
 Order is **dependency order, not pillar order.** `P3` (Streaming) sits last because the
 prototype's naive SSE feed covered it while the rest was built; the real broadcast hub was
@@ -355,13 +356,15 @@ work proves the seam.
 
 **`P2.5` is eval tier 2.** It scores a hunt's catch against the gym's planted marks, one territory at a time, offline from the run's own log. The score is derived and never stored (invariant 5). A mimic board puts AI words in its decoys' titles and keeps the truth in the description, so it separates judgement from a title filter. The scripted keyword baseline is the floor. A wave hunts each territory once into a fresh log, because a posting already in the pen is not penned again. The slice sets no pass threshold.
 
+**`P5.1` takes Rex to live boards.** Part A readies the spend guards on the gym: live requests ask for prompt caching and every fold counts the cache tokens, the daemon's budget is a rolling 24 h, and a run near its ceiling or its last iteration gets one wrap-up notice so it can still catch what it read. Part B adds the live Greenhouse and Lever boards: the board client reaches only the allowlisted public ATS hosts, by GET; a daemon hunts the gym or the live boards, never both; and each territory's next hunt is derived from the log, so a restart does not re-hunt every board. Live hunts are unscored.
+
 ## Definition of done per pillar (test-first)
 
 1. **Log:** `kill -9` mid-hunt → restart → every pre-kill event queryable; dangling `outcome IS NULL` runs detected and marked `'crashed'` at boot.
 2. **Loop:** a tool that raises, a tool that hangs past timeout, and an LLM returning an unknown tool name each produce typed events and a clean run outcome – never an unhandled exception escaping the loop. **Gym clause (`P2.4`):** on the gym, schema drift, a rate-limit storm, mojibake and a pagination trap each produce typed events that carry the board's raw bytes, and each run ends in a typed outcome. Only a posting the run itself read reaches the pen, and the pen stores the board's bytes for it. **Eval clause (`P2.5`):** the recorded runs of 26 Nov 2026 replay with no network and score exactly as pinned. On the mimic board the baseline catches 2 prey and 4 decoys. A wave hunts each territory once into a fresh log and stops.
 3. **Streaming:** two tabs render identical feeds; a tab closed for a full hunt reopens with zero gaps and zero duplicates; a viewer with a full queue is dropped without slowing the hunt.
 4. **Pause:** restart the process with prey in the pen → verdicts still work; double-clicking FEAST is a no-op; park-and-persist resumes hot within the window and checkpoints cleanly past it.
-5. **Brain:** replaying a recorded run's raw payloads through the parsers requires no network and reproduces identical events; a malformed provider response becomes an `ErrorEvent` carrying the raw payload, with the run ending in a typed outcome.
+5. **Brain:** replaying a recorded run's raw payloads through the parsers requires no network and reproduces identical events; a malformed provider response becomes an `ErrorEvent` carrying the raw payload, with the run ending in a typed outcome. **Live clause (`P5.1`):** a live request carries the cache field, and its cache tokens fold into both ceilings; the daemon's budget folds a rolling 24 h; a run near its ceiling gets one wrap-up notice, and its conversation stays append-only; the board client refuses any host outside the allowlist and any method but GET; the recorded runs of 20 and 26 Nov 2026 replay unchanged.
 
 ---
 
