@@ -1257,3 +1257,40 @@ P51B-MP4 2, P51B-MP5 3, P51B-MP6 2, P51B-MP7 1, P51B-MP8 17, P51B-MP9 4, P51B-MP
 P51B-MP12 1, P51B-MP13 2, P51B-MP14 2, P51B-MP15 4, P51B-MP16 9, P51B-MP17 1, P51B-MP18 1, P51B-MP19
 2, P51B-MP20 17, P51B-MP21 2, P51B-MP22 1. 879 tests pass at `fdb8a02` (837 at `251c4a5`). No
 subagent, workflow or advisor call. *Next: P5.1b2 (the daemon side and the ADR text).*
+
+**▶ P5.1b2 · Live boards, the daemon side – ✅ done on branch `p51-live` (`99b798d`, 2026-11-28), PR
+#32.** The second part of slice `P5.1`'s Part B, which completes the slice: P51B-E3, E4, E5 and E11.
+No API call or network request of any kind; no request body or header changed. Fork chosen 28 Nov by
+rex-orchestrator under Darie's delegation: P51B-deadline dl-1, with the first wait capped at the
+interval, no sleep for a wait of 0, and an injectable `sleep`. **The board set** (`99b798d`, P51B-E3
+and E5): `stub.boards_mode()` reads `REXHUNTER_BOARDS` as `REXHUNTER_BRAIN` is read: `gym` when
+unset, `live`, and any other value, an empty one included, a `ValueError`; `live` with no board in
+`LIVE_BOARDS` is a `RuntimeError`. The lifespan reads it before the boot sweep, so a refused start
+opens no log. In live mode `daemon_config()` gives the live schedule, `dict.fromkeys(LIVE_BOARDS,
+LIVE_INTERVAL)` at 24 h, the keyword baseline over the live boards as the stub brain and a registry
+over them, and the lifespan builds one board client, `live_client(brain.live_transport())`, so every
+network transport is still built in brain.py and verifies against its trust store; with
+`REXHUNTER_BRAIN=live` the live brain hunts them with the gym's prompt and seed, which name no gym.
+`/viewstate` shows the set's territories. A daemon hunts one set: its schedule, its registry and its
+client are that set's. **The first deadline** (P51B-E4): `run_scheduler` reads each territory's
+newest `runs.started_at` once, on its boot connection (`db.latest_run_start`), and each territory
+first sleeps `scheduler.first_wait`: what is left of its interval since that start, by the injected
+`now`, never more than the interval, and nothing when it has no run or that run began an interval or
+more ago. Every later deadline is the monotonic clock's, as before, and nothing is stored (invariant
+5). It holds for every schedule: a gym daemon restarted within 30 s of a hunt waits too. **ADR**
+(`aa6ebbb`, P51B-E11): the `P5.1` row, its paragraph, DoD #5's live clause and the two
+accepted-limits rows, verbatim. **Wire:** bodies 1 to 12 and their headers byte-identical to
+`251c4a5`'s; the four replays pass with no edit. **Tests:** tests/test_live_daemon.py (12, new) and
+tests/test_restart_deadline.py (3, new): on `5869c02` 14 red (`AttributeError` on the new names,
+`DID NOT RAISE ValueError`, `DID NOT RAISE RuntimeError`, `TypeError` on `sleep`, and the gym hunted
+in live mode), 1 green by design (no live board shares a gym name, the list being empty). Every test
+that starts the daemon replaces `brain.live_transport` with a MockTransport. Test edit: P51B-PP2
+(tests/test_stage4_gate.py:81, a comment: the restart waits the hour out). Mutants, each on its own
+`git archive` copy of `99b798d`: P51B-MP23 12 red, P51B-MP24 2, P51B-MP25 1, P51B-MP26 1, P51B-MP27
+1, P51B-MP28 1, P51B-MP29 4, P51B-MP30 5, P51B-MP31 4, P51B-MP32 2, P51B-MP33 1, P51B-MP34 1,
+P51B-MP35 4. The one mutant that would build a live transport outside brain.py is not run, since a
+lifespan test would send its request to the network; tests/test_brain_adapter.py:311-320 pins it
+statically. 894 tests pass at `99b798d` (879 at `5869c02`). No subagent, workflow or advisor call.
+*Slice `P5.1` is done. Next: Darie's; open are a board in `LIVE_BOARDS` and the first live GET (her
+terminal), the Greenhouse unescape variant (P51B-O2), park-and-persist on drift, extraction and
+strict mode, and eval tier 3.*
