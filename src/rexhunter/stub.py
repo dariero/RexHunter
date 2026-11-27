@@ -8,14 +8,20 @@ for `brain()` is the whole of `P5`; nothing here imports an LLM.
 The one seam the lifespan reads is `daemon_config()`; the lifespan gate monkeypatches it to
 inject a deterministic blocking tool. Since `P2.4` (D9) the daemon's default schedule is the six gym
 territories, hunted by the scripted keyword baseline (`board.baseline`); `sniff`, `mock-gym` and
-`build_registry` stay for the recorded replays and the wire check.
+`build_registry` stay for the recorded replays and the wire check. Since `P5.1` `REXHUNTER_BOARDS`
+picks the board set (`boards_mode`): the gym by default, or the live boards (`board.live`), each
+live board hunted once a day (`LIVE_INTERVAL`). Either set is hunted by the same baseline unless
+`REXHUNTER_BRAIN` arms the live brain, and a daemon hunts one set, never both.
 """
 
 import asyncio
+import os
 from collections.abc import Callable, Mapping
+from typing import Literal
 
 import aiosqlite
 
+from rexhunter.board import live
 from rexhunter.board import tools as board_tools
 from rexhunter.board.baseline import baseline_brain_for
 from rexhunter.board.catalogue import GYM_BOARDS
@@ -27,7 +33,10 @@ from rexhunter.verdicts import Drafter
 SNIFF_INTERVAL = 5.0  # the per-sniff beat, mirroring the prototype's cadence
 GYM_INTERVAL = 30.0  # each gym territory's interval (D10)
 DEFAULT_SCHEDULE: dict[str, float] = dict.fromkeys(GYM_BOARDS, GYM_INTERVAL)
+LIVE_INTERVAL = 24 * 3600.0  # each live territory's interval: a public board is read once a day
 MAX_CONCURRENT = 4
+
+type BoardsMode = Literal["gym", "live"]
 
 # The board tools over the lifespan's board client: the daemon's registry is built from the client
 # the lifespan owns, so this seam builds no client itself (`/viewstate` calls it per request).
@@ -88,14 +97,45 @@ def gym_registry(client: BoardClient) -> ToolRegistry:
     return board_tools.build_registry(client, GYM_BOARDS)
 
 
+def live_registry(client: BoardClient) -> ToolRegistry:
+    return board_tools.build_registry(client, live.LIVE_BOARDS)
+
+
+def live_schedule() -> dict[str, float]:
+    return dict.fromkeys(live.LIVE_BOARDS, LIVE_INTERVAL)
+
+
+def boards_mode() -> BoardsMode:
+    """The board set the daemon hunts, by `REXHUNTER_BOARDS`: `gym` when unset, or `live`. Any
+    other value is a hard error, and so is `live` with no board in `LIVE_BOARDS`: the daemon
+    refuses to start rather than hunt nothing or fall back to the other set."""
+    mode = os.environ.get("REXHUNTER_BOARDS", "gym")
+    if mode == "gym":
+        return "gym"
+    if mode == "live":
+        if not live.LIVE_BOARDS:
+            raise RuntimeError("REXHUNTER_BOARDS=live needs a board in board.live.LIVE_BOARDS")
+        return "live"
+    raise ValueError(f"unknown REXHUNTER_BOARDS={mode!r} (expected 'gym' or 'live')")
+
+
 def daemon_config() -> tuple[
     Mapping[str, float], Callable[[str], Brain], RegistryFor, int, Drafter
 ]:
     """The single seam the lifespan reads (and the lifespan gate monkeypatches).
 
     Returns (schedule, brain_for, registry_for, max_concurrent, drafter): the scheduler's knobs,
-    the registry built over the lifespan's board client, and the follow-up worker's drafter.
+    the registry built over the lifespan's board client, and the follow-up worker's drafter. The
+    schedule, the baseline and the registry are one board set's, as `boards_mode` picks it.
     """
+    if boards_mode() == "live":
+        return (
+            live_schedule(),
+            baseline_brain_for(live.LIVE_BOARDS),
+            live_registry,
+            MAX_CONCURRENT,
+            draft_pitch,
+        )
     return (
         DEFAULT_SCHEDULE,
         baseline_brain_for(GYM_BOARDS),

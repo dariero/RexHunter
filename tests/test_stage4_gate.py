@@ -78,7 +78,7 @@ async def test_prey_survives_a_real_restart_and_verdicts_stay_idempotent(
     registry.tool(read_posting, posting_source=True)
 
     def cfg() -> Config:
-        # one territory, a long interval so it hunts exactly ONCE per boot (deterministic pen)
+        # one territory, a long interval: one hunt, and the restart waits it out (deterministic pen)
         return {"gate": 3600.0}, brain_for, lambda _client: registry, 4, drafter
 
     monkeypatch.setattr(server, "DB_PATH", str(db_path))
