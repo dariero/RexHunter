@@ -160,6 +160,10 @@ class ThinkingDelta(_Event):
     text: str
 
 
+def _is_zero(count: int) -> bool:
+    return count == 0
+
+
 class UsageEvent(_Event):
     """Per-brain-call token accounting (ADR pillar 5, `P5`). Run-scoped telemetry (invariant 7)
     the cost breaker folds into a running spend (invariant 5 — cost is DERIVED from these, never a
@@ -171,6 +175,11 @@ class UsageEvent(_Event):
     model: str
     input_tokens: int
     output_tokens: int
+    # The tokens written to and read from the prompt cache (`P5.1`), which the response counts apart
+    # from `input_tokens`. At 0 a field is left out of the stored payload, so a call that used no
+    # cache stores the bytes it stored before `P5.1`, and the recorded logs' digests hold.
+    cache_creation_input_tokens: int = Field(default=0, exclude_if=_is_zero)
+    cache_read_input_tokens: int = Field(default=0, exclude_if=_is_zero)
 
 
 class BrainExchangeEvent(_Event):

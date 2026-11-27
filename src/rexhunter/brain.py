@@ -274,21 +274,30 @@ class _ProviderResponse(BaseModel):
 
 # The largest token count the boundary reads (W3.4 counts): a validation limit, not a spend
 # ceiling, ten times Claude Sonnet 5.5's 1M-token context window. Under it one call prices at most
-# $900 at the fallback price ($15/$75 per MTok, `cost.py`), so no count the reader passes can make a
-# fold overflow.
+# $1,200 at the fallback price ($15/$75 per MTok, and $15 for a cache write or read, `cost.py`), so
+# no count the reader passes can make a fold overflow.
 MAX_TOKEN_COUNT = 10_000_000
+
+# The prompt cache's two counts (`P5.1`), which the response gives apart from `input_tokens`.
+_CACHE_COUNTS = ("cache_creation_input_tokens", "cache_read_input_tokens")
 
 
 def _read_usage(model: object, counts: dict[str, Any]) -> UsageEvent:
     """The one reader of a response's token counts (W3.4 counts, invariant 3), for the accepted
-    and the refused path alike. It reads `input_tokens` and `output_tokens` only, each a Python int
-    that is not a bool, 0 or more and at most MAX_TOKEN_COUNT; an absent one reads as 0, as before
-    W3.4. Any other value (null, a bool, a string, a float, a negative count, one past the bound)
-    raises ValueError. The other keys of `usage` are not read. A model that is not a string prices
-    at the fallback (`cost.py`), the safe direction for a guard."""
+    and the refused path alike. It reads four counts, `input_tokens`, `output_tokens`,
+    `cache_creation_input_tokens` and `cache_read_input_tokens`, each under the same check: a Python
+    int that is not a bool, 0 or more and at most MAX_TOKEN_COUNT. An absent count reads as 0, as
+    before W3.4, and a null cache count reads as 0 (`P5.1`), while a null `input_tokens` or
+    `output_tokens` still raises; any other value (a bool, a string, a float, a negative count, one
+    past the bound) raises ValueError. `cache_creation` (the 5-minute and 1-hour split) and the
+    other keys of `usage` are not read, because only the 5-minute lifetime is ever asked for and
+    `cost.py` prices every cache write at it. A model that is not a string prices at the fallback
+    (`cost.py`), the safe direction for a guard."""
     read: dict[str, int] = {}
-    for key in ("input_tokens", "output_tokens"):
+    for key in ("input_tokens", "output_tokens", *_CACHE_COUNTS):
         value = counts.get(key, 0)
+        if value is None and key in _CACHE_COUNTS:
+            value = 0
         if type(value) is not int or not 0 <= value <= MAX_TOKEN_COUNT:
             raise ValueError(f"{key}={value!r} is not a token count")
         read[key] = value
@@ -296,6 +305,8 @@ def _read_usage(model: object, counts: dict[str, Any]) -> UsageEvent:
         model=model if isinstance(model, str) else "",
         input_tokens=read["input_tokens"],
         output_tokens=read["output_tokens"],
+        cache_creation_input_tokens=read["cache_creation_input_tokens"],
+        cache_read_input_tokens=read["cache_read_input_tokens"],
     )
 
 
