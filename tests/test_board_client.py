@@ -125,7 +125,7 @@ def test_the_boundary_reads_only_the_fields_rex_uses() -> None:
     gh_list = json.dumps({"jobs": [GH_JOB | {"departments": [], "extra": {"a": 1}}], "meta": None})
     page = ADAPTERS["greenhouse"].page(gh_list, "b", 1)
     assert (page.postings[0].posting_id, page.postings[0].title) == ("7", "AI Engineer")
-    posting = ADAPTERS["lever"].posting(json.dumps(LV_POSTING | {"lists": "anything"}), "b")
+    posting = ADAPTERS["lever"].posting(json.dumps(LV_POSTING | {"workplaceType": "anything"}), "b")
     assert (posting.title, posting.location, posting.description) == (
         "AI Engineer",
         "Sydney",
