@@ -33,11 +33,12 @@ TERRITORIES = [
     "gym-pages",
     "gym-mimic",
 ]
-# Body 7 is the daemon's live first request on gym-greenhouse (P2.4); the wire check's body 8 is
-# gym-greenhouse's count body and body 9 gym-mimic's live first request.
-BODY_7 = "6410c3d0206e90a4ec1899fde35f6cabc54635039dab560b3a55e99cd6cfcca0"
-BODY_8 = "16d7595dabcf1c23de57f375d2122df15b29f656ea79e8d7c16893ebe521c5bf"
-BODY_9 = "d17fc81ee94efc1374c8a07ce6ffb047365fbd23cac351df0c46695ef39bbc98"
+# The wire check's body 10 is the daemon's live first request on gym-greenhouse, body 11 gym-mimic's
+# and body 12 gym-greenhouse's count body: bodies 7, 9 and 8, each with prompt caching asked for
+# (P5.1).
+BODY_10 = "2ae0821a905cd9dd9d8ac35446765d99bd394b4a153d97ae55dc3c55f6c42492"
+BODY_11 = "d0cd6ff6cadd35b8cdf10d2ed1a6e49d45f0cbd0f5a86811293936972a1ea0a2"
+BODY_12 = "457ddb6676681959b28f0e324f4e10cddec9648cfe0070d96212676962cc8ab6"
 DUMMY_KEY = "sk-test-not-real"
 
 type Handler = Callable[[httpx2.Request], httpx2.Response]
@@ -264,10 +265,11 @@ def test_the_wave_sends_the_daemons_first_request(
         body = json.loads(request.content)
         assert body["system"] == GYM_SYSTEM_PROMPT
         assert (body["thinking"], body["stream"]) == (brain.HUNT_THINKING, True)
+        assert body["cache_control"] == {"type": "ephemeral"}
         first[body["messages"][0]["content"]] = request.content
     assert set(first) == {gym_seed(t) for t in TERRITORIES}
-    assert hashlib.sha256(first[gym_seed("gym-greenhouse")]).hexdigest() == BODY_7
-    assert hashlib.sha256(first[gym_seed("gym-mimic")]).hexdigest() == BODY_9
+    assert hashlib.sha256(first[gym_seed("gym-greenhouse")]).hexdigest() == BODY_10
+    assert hashlib.sha256(first[gym_seed("gym-mimic")]).hexdigest() == BODY_11
     assert {(t, o) for t, o, *_ in _runs(path)} == {(t, "needs_help") for t in TERRITORIES}
     assert "ceilings: $0.40 a run, $0.75 the wave" in capsys.readouterr().out
 
@@ -295,7 +297,8 @@ def test_the_count_only_wave_counts_each_first_body(
         [{"role": "user", "content": gym_seed(t)}] for t in TERRITORIES
     ]
     assert all("max_tokens" not in b and b["system"] == GYM_SYSTEM_PROMPT for b in bodies)
-    assert hashlib.sha256(sent[0].content).hexdigest() == BODY_8
+    assert all(b["cache_control"] == {"type": "ephemeral"} for b in bodies)
+    assert hashlib.sha256(sent[0].content).hexdigest() == BODY_12
     assert capsys.readouterr().out.splitlines() == [
         *(f"[count-only] {t}: input_tokens=1234" for t in TERRITORIES),
         "[count-only] validated, NO paid call made.",

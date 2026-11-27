@@ -51,13 +51,15 @@ def _hunt_body(
     thinking: dict[str, Any] | None = None,
     system: str = brain.HUNT_SYSTEM_PROMPT,
     seed: Callable[[str], str] | None = None,
+    prompt_cache: bool = False,
 ) -> dict[str, Any]:
     """The iteration-1 messages body — the EXACT shape the adapter's first call sends (same builder,
     same constants), so the pre-flight prices precisely what the paid call will spend on.
     `thinking` None is the adapter's default, the model's floor, by the same lookup; the
     pre-flight drops `max_tokens`, so the thinking hunt's larger budget needs no parameter.
     `system` and `seed` default to the sniff hunt's, as the adapter's do; a gym hunt passes the
-    gym's (`board.tools`)."""
+    gym's (`board.tools`). `prompt_cache` adds the live brain's `brain.PROMPT_CACHE` (`P5.1`), so
+    the wave's pre-flight counts the body the live wave sends; off, the body is the one before."""
     # A seed of None leaves `project_messages` its own default, the sniff hunt's directive, which
     # this module cannot name.
     messages = (
@@ -73,6 +75,7 @@ def _hunt_body(
         system=system,
         thinking=brain.thinking_floor(brain.SMOKE_MODEL) if thinking is None else thinking,
         tool_choice=brain.HUNT_TOOL_CHOICE,
+        cache_control=brain.PROMPT_CACHE if prompt_cache else None,
     )
 
 
@@ -84,12 +87,20 @@ async def count_tokens_preflight(
     thinking: dict[str, Any] | None = None,
     system: str = brain.HUNT_SYSTEM_PROMPT,
     seed: Callable[[str], str] | None = None,
+    prompt_cache: bool = False,
 ) -> int:
     """FREE pre-flight: count input tokens for the EXACT hunt payload (minus `max_tokens`, which the
     count_tokens endpoint does not take). A non-200 STOPS before any paid call — egress / auth /
-    schema is wrong; the free call is where that surfaces, for $0. `system` and `seed` are
-    `_hunt_body`'s."""
-    body = _hunt_body(registry, territory=territory, thinking=thinking, system=system, seed=seed)
+    schema is wrong; the free call is where that surfaces, for $0. `system`, `seed` and
+    `prompt_cache` are `_hunt_body`'s."""
+    body = _hunt_body(
+        registry,
+        territory=territory,
+        thinking=thinking,
+        system=system,
+        seed=seed,
+        prompt_cache=prompt_cache,
+    )
     count_body: dict[str, Any] = {k: v for k, v in body.items() if k != "max_tokens"}
     try:
         result = await client.messages.count_tokens(**count_body)
